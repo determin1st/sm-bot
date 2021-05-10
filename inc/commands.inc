@@ -39,7 +39,7 @@ return [
         'public' => true,
         'cmd'    => 'game',
         'config' => [
-          'rows'  => 6,
+          'rows'  => 10,
           'cols'  => 2,
           'order' => 'name',
           'desc'  => false,

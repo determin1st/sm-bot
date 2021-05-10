@@ -1,9 +1,7 @@
 <?php
-# TODO: form open after inject issues _up button as injected, not opened
-# TODO: input form progress indicator
+# TODO: form state 5 => 0 on refresh
 # TODO: input bob
-# TODO: input form reset from 2 to 0 on creation
-# TODO: make a fractal image renderer for empty outdated messages (Fortune algorithm?)
+# TODO: advanced image renderer (Fortune algorithm?)
 namespace SM;
 class Bot {
   # data {{{
@@ -43,12 +41,12 @@ class Bot {
     if (!self::$inc)
     {
       # set base directories
-      self::$inc = $inc = __DIR__.DIRECTORY_SEPARATOR.'inc'.DIRECTORY_SEPARATOR;
-      self::$datadir = $inc.'data'.DIRECTORY_SEPARATOR;
-      self::$imgdir  = $inc.'img'.DIRECTORY_SEPARATOR;
+      self::$inc     = __DIR__.DIRECTORY_SEPARATOR.'inc'.DIRECTORY_SEPARATOR;
+      self::$datadir = __DIR__.DIRECTORY_SEPARATOR.'data'.DIRECTORY_SEPARATOR;
+      self::$imgdir  = self::$inc.'img'.DIRECTORY_SEPARATOR;
       # load mustache parser
       if (!class_exists('Mustache_Engine')) {
-        require_once $inc.'mustache.php';
+        require(self::$inc.'mustache.php');
       }
       # create parser instance
       self::$tp = $tp = new Mustache_Engine([
@@ -56,7 +54,7 @@ class Bot {
         'escape'  => (function($v) {return $v;}),
       ]);
       # load messages
-      $a = include($inc.'messages.inc');
+      $a = require(self::$inc.'messages.inc');
       foreach ($a as &$b)
       {
         foreach ($b as &$c) {
@@ -66,7 +64,7 @@ class Bot {
       unset($b, $c);
       self::$messages = $a;
       # load button captions
-      $a = include($inc.'buttons.inc');
+      $a = require(self::$inc.'buttons.inc');
       foreach ($a as &$b)
       {
         foreach ($b as &$c) {
@@ -194,12 +192,6 @@ class Bot {
       return $b->itemTaskStop($plan, $a[0], $a[1]);
       ###
     }
-    # log internal problem
-    file_put_contents(
-      __DIR__.DIRECTORY_SEPARATOR.'ERROR.log',
-      date(DATE_ATOM).": ".$a[0]." failed\n",
-      FILE_APPEND
-    );
     return false;
   }
   # }}}
@@ -311,13 +303,21 @@ class Bot {
         /***/
         # }}}
       }
-      elseif (isset($u->message))
+      elseif (isset($u->message) &&
+              ($u = $u->message) &&
+              isset($u->text))
       {
         # {{{
-        $u = $u->message;
-        if (!$this->replyCommand($u))
+        # handle user command or input
+        if ($a = strlen($u->text))
         {
-          # wipe unhandled user input
+          $a = ($u->text[0] === '/')
+            ? $this->replyCommand($u->text)
+            : $this->replyInput($u->text);
+        }
+        # wipe unhandled
+        if (!$a)
+        {
           $a = $this->api->send('deleteMessage', [
             'chat_id'    => $u->chat->id,
             'message_id' => $u->message_id,
@@ -333,25 +333,18 @@ class Bot {
     return $result;
   }
   # }}}
-  private function replyCommand(&$m) # {{{
+  private function replyCommand($text) # {{{
   {
     # prepare {{{
-    # check message content
-    if (!isset($m->text) || !strlen($m->text)) {
-      return false;
-    }
-    $text = $m->text;
-    # handle user input (non-command messages)
-    if ($text[0] !== '/') {
-      return $this->replyInput($m);
-    }
     $lang = $this->user->lang;
     $chat = $this->user->chat;
     # }}}
     # operate {{{
-    # execute command expression
-    $res = '';
-    if (!($item = $this->itemAttach($text, $res)) || $res)
+    # generally, a command creates new message for the item,
+    # because of that, rendering of the item should go with creation hint (flag)
+    $res  = '';
+    $item = $this->itemAttach($text, $res, '', true);
+    if (!$item || $res)
     {
       if ($res && is_string($res))
       {
@@ -390,7 +383,7 @@ class Bot {
     # }}}
     # complete {{{
     # report render failure to the user,
-    # it may help debugging later problems
+    # it may help in debugging later problems
     if (!$res)
     {
       $a = $this->api->send('sendMessage', [
@@ -406,11 +399,10 @@ class Bot {
     # }}}
   }
   # }}}
-  private function replyInput(&$m) # {{{
+  private function replyInput($text) # {{{
   {
     static $types = ['form'];
     # prepare
-    $text = $m->text;
     $conf = &$this->user->config;
     $lang = $this->user->lang;
     $chat = $this->user->chat;
@@ -433,18 +425,17 @@ class Bot {
     {
       return false;# INPUT IS NOT ACCEPTED
     }
-    # execute command with the given input
+    # render item with the given input
     $res = '';
     if (!($item = $this->itemAttach($item, $res, $text)) || $res)
     {
-      # log input problems
+      # report problems
       if ($res && is_string($res)) {
-        $this->log($res);
+        $this->logError($res);
       }
-      # no update
       return false;
     }
-    # update item that receives input
+    # update message that receives input
     $res = $this->editImage(
       $item['id'].':'.$lang,
       null, $item['text'], $item['markup'],
@@ -454,7 +445,7 @@ class Bot {
     if ($res && ~$res) {
       $this->userUpdate($item, $res);
     }
-    # complete negative (to wipe user input)
+    # done
     return false;
   }
   # }}}
@@ -498,8 +489,8 @@ class Bot {
     # }}}
     # operate {{{
     # determine if the message has any root,
-    # this should be done before command execution,
-    # because it may be detached by command
+    # this should be done before item rendering,
+    # because it may be detached afterwards
     $isRooted = false;
     $a = $this->user->config;
     if (array_key_exists('/', $a))
@@ -792,6 +783,9 @@ class Bot {
   private function log($m, $type = 0) # {{{
   {
     static $e = null;
+    if (!is_string($m)) {
+      $m = print_r($m, true);
+    }
     # TO FILE {{{
     if ($type)
     {
@@ -815,9 +809,6 @@ class Bot {
     {
       if (!$e) {
         $e = fopen('php://stderr', 'w');
-      }
-      if (!is_string($m)) {
-        $m = print_r($m, true);
       }
       if ($this->user) {
         $m = trim($this->user->name).'> '.$m;
@@ -845,7 +836,7 @@ class Bot {
   }
   # }}}
   # item blocks {{{
-  private function itemAttach($item, &$error, $input = '') # {{{
+  private function itemAttach($item, &$error, $input = '', $new = false) # {{{
   {
     # prepare {{{
     # check
@@ -939,7 +930,7 @@ class Bot {
       break;
     }
     # }}}
-    # execute common command {{{
+    # execute common sub-routine {{{
     switch ($func) {
     case 'inject':
       # remove self from the view,
@@ -1027,6 +1018,19 @@ class Bot {
       # terminate getUpdates loop or skip webhook
       $error = -1;
       return $item;
+    case '':
+      # check new message desired
+      if ($new)
+      {
+        # to properly render a new message for the item,
+        # previous injection hint should be removed (if it exists)
+        if (array_key_exists('_from', $root['config']))
+        {
+          unset($root['config']['_from']);
+          $this->user->changed = true;
+        }
+      }
+      break;
     }
     # }}}
     switch ($item['type']) {
@@ -1097,7 +1101,7 @@ class Bot {
         $this->user->changed = true;
       }
       # }}}
-      # execute command {{{
+      # execute sub-routine {{{
       switch ($func) {
       case 'first':
         $page = 0;
@@ -1402,7 +1406,9 @@ class Bot {
       }
       $index = $conf['index'];
       $state = $conf['state'];
-      $progress = 0;
+      $stateInfo = array_key_exists('info', $conf)
+        ? $conf['info']
+        : [0, ''];
       # determine fields count
       $count = count($item['fields']);
       # determine field name
@@ -1693,7 +1699,7 @@ class Bot {
           $error = 1;return $item;# NOP guard
         }
         # create task
-        if (!$this->itemTaskStart($item))
+        if (!$this->itemTaskStart($item, $data))
         {
           $error = self::$messages[$lang][11];
           return $item;# NOP break
@@ -1707,7 +1713,7 @@ class Bot {
         if ($state !== 3 || !$args) {
           $error = 1;return $item;# NOP guard
         }
-        $progress = intval($args[0]);
+        $stateInfo[0] = intval($args[0]);
         # }}}
         break;
       case 'done':
@@ -1715,17 +1721,8 @@ class Bot {
         if ($state !== 3 || !$args) {
           $error = 1;return $item;# NOP
         }
-        switch (intval($args[0])) {
-        case 0:
-          $state = 4;
-          break;
-        case 1:
-          $state = 5;
-          break;
-        case 2:
-          $state = 6;
-          break;
-        }
+        $state = intval($args[0]) ? 5 : 4;
+        $stateInfo = [1, $args[1]];
         # }}}
         break;
       case '':
@@ -1760,6 +1757,10 @@ class Bot {
               break;
             }
           }
+        }
+        # reset state info
+        if ($state < 4) {
+          $stateInfo = [0,''];
         }
       }
       # re-determine current/prev/next field names
@@ -1946,9 +1947,9 @@ class Bot {
       # compose
       $text = preg_replace('/\n\s*/m', '', $a);
       $text = self::$tp->render($text, [
-        'desc'     => $b,
-        'fields'   => $fields,
-        'progress' => $progress,
+        'desc'   => $b,
+        'fields' => $fields,
+        'info'   => $stateInfo,
         's0' => ($state === 0),
         's1' => ($state === 1),
         's2' => ($state === 2),
@@ -1966,6 +1967,7 @@ class Bot {
       # store {{{
       $conf['index']  = $index;
       $conf['state']  = $state;
+      $conf['info']   = $stateInfo;
       $item['title']  = $title;
       $item['text']   = $text;
       $item['markup'] = $mkup
@@ -2060,8 +2062,7 @@ class Bot {
         elseif ($d === 'up')
         {
           # {{{
-          # this routine may add standard hint,
-          # check hint variant
+          # determine display variant
           if ($item['parent'])
           {
             # item's parent title
@@ -2081,7 +2082,7 @@ class Bot {
           }
           elseif (array_key_exists('_from', $item['config']))
           {
-            # injected root will return to the origin,
+            # injected root returns to its origin, so,
             # determine item's origin
             if ($e = $this->getItem($item['config']['_from']))
             {
@@ -2111,8 +2112,7 @@ class Bot {
             # so display closeup text
             $e = self::$messages[$lang][10];
           }
-          # add hint
-          $c = self::$tp->render($c, ['hint'=>$e]);
+          $c = self::$tp->render($c, ['name'=>$e]);
           # }}}
         }
         elseif ($d === 'prev' || $d === 'next' || $d === 'last')
@@ -2210,7 +2210,7 @@ class Bot {
     return $a;
   }
   # }}}
-  private function itemTaskStart(&$item) # {{{
+  private function itemTaskStart(&$item, $data) # {{{
   {
     # compose php interpreter command
     $task = __DIR__.DIRECTORY_SEPARATOR.'index.php';
@@ -2230,6 +2230,7 @@ class Bot {
         'id'   => uniqid(),
         'bot'  => $this->id,
         'item' => $item['id'],
+        'data' => $data,
         'user' => $this->user,
       ];
       # write it
@@ -2238,7 +2239,7 @@ class Bot {
       $file = $this->dir.$file;
       if (!file_put_contents($file, json_encode($plan)))
       {
-        $this->logError("itemTaskStart($file) failed");
+        $this->logError("file_put_contents($file) failed");
         return false;
       }
       # launch two processes
@@ -2254,17 +2255,31 @@ class Bot {
   # }}}
   private function itemTaskStop($plan, $type, $file) # {{{
   {
-    # prepare
     # attach user
     $this->user = (object)$plan['user'];
     $this->user->chat = (object)$this->user->chat;
-    $res = 0;
     # operate
     switch ($type) {
     case 'task':
       # work {{{
-      sleep(rand(5, 10));
-      $res = rand(0, 1);
+      # hookup task handlers
+      $a = 'tasks.inc';
+      $a = file_exists($this->dir.$a)
+        ? $this->dir.$a  # bot specific
+        : self::$inc.$a;  # common
+      ###
+      @include_once($a);
+      # execute handler
+      $a = $type.'_'.str_replace(':', '_', $plan['item']);
+      $a = '\\'.__NAMESPACE__.'\\'.$a;
+      if (class_exists($a, false))
+      {
+        $res = $a::handle($plan['data'], $this->user->lang);
+        $msg = $a::$message;
+      }
+      else {
+        $res = -1;# no handler, no problem
+      }
       # }}}
       # complete {{{
       # load configuration
@@ -2272,7 +2287,7 @@ class Bot {
         break;
       }
       # render item
-      $a = '/'.$plan['item']."!done $res";
+      $a = '/'.$plan['item']."!done $res,$msg";
       $b = '';
       if ($c = $this->itemAttach($a, $b))
       {
@@ -2297,12 +2312,11 @@ class Bot {
       # }}}
       break;
     case 'progress':
+      $res = 0;
       while (file_exists($file))
       {
         # suspend {{{
         usleep(500000);# 500ms
-        #sleep(1);
-        # re-check
         if (!file_exists($file)) {
           break;
         }
@@ -2310,7 +2324,7 @@ class Bot {
         # report {{{
         # determine progress value
         $res = $res ? 0 : 1;
-        # load configuration
+        # load and lock configuration
         if (!$this->userConfigAttach()) {
           break;
         }
@@ -2352,27 +2366,27 @@ class Bot {
   # helpers {{{
   public static function file_lock($file) # {{{
   {
-    $id   = uniqid();
-    $lock = $file.'.lock';
-    $try  = 10;
-    while (--$try)
-    {
-      # wait until current lock released
-      while (file_exists($lock)) {
-        usleep(100000);# 100ms
-      }
-      # set new lock
-      if (!file_put_contents($lock, $id) ||
-          !file_exists($lock))
-      {
-        return false;
-      }
-      # make sure no collisions
-      if (file_get_contents($lock) === $id) {
-        return true;
-      }
+    # prepare
+    $id    = uniqid();
+    $count = 99;
+    $lock  = $file.'.lock';
+    # wait until lock released or count exhausted
+    while (file_exists($lock) && --$count) {
+      usleep(100000);# 100ms
     }
-    return false;
+    # check exhausted
+    if (!$count) {
+      return false;
+    }
+    # set new lock and
+    # make sure no collisions
+    if (!file_put_contents($lock, $id) ||
+        !file_exists($lock) ||
+        file_get_contents($lock) !== $id)
+    {
+      return false;
+    }
+    return true;
   }
   # }}}
   public static function file_unlock($file) # {{{

@@ -4,12 +4,12 @@ require_once __DIR__.DIRECTORY_SEPARATOR.'bot.php';
 # check invocation variant
 if (array_key_exists('REQUEST_METHOD', $_SERVER))
 {
-  # WEB
+  # WEBHOOK
   # ...
 }
 elseif ($argc === 4)
 {
-  # CLI
+  # CLI (getUpdates or task)
   if (Bot::command(array_slice($argv, 1))) {
     exit(0);# no problems
   }

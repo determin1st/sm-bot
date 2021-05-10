@@ -180,17 +180,17 @@ page <b>{{page}}</b> of {{page_count}} ({{item_count}})
     {{/s2}}
     {{#s3}}
       {:green_circle:} ввод завершен {{br}}
-      {{#progress}}{:purple_circle:} {{/progress}}
-      {{^progress}}{:blue_circle:} {{/progress}}
+      {{^info.0}}{:blue_circle:} {{/info.0}}
+      {{#info.0}}{:purple_circle:} {{/info.0}}
       обработка..
     {{/s3}}
     {{#s4}}
       {:green_circle:} ввод завершен {{br}}
-      {:red_circle:} ошибка
+      {:red_circle:} ошибка{{#info.1}}: {{info.1}}{{/info.1}}
     {{/s4}}
     {{#s5}}
       {:green_circle:} ввод завершен {{br}}
-      {:green_circle:} выполнено
+      {:green_circle:} выполнено{{#info.1}}: {{info.1}}{{/info.1}}
     {{/s5}}
     {{br}}
     ',# }}}

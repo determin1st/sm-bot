@@ -2,7 +2,7 @@
 return [
   'en' =>
   [
-    'up'       => '{:eject_symbol:} {{hint}}',
+    'up'       => '{:eject_symbol:} {{name}}',
     'prev'     => '{:rewind:} {{name}}',
     'next'     => '{{name}} {:fast_forward:}',
     'first'    => '{:previous_track:}',
@@ -11,7 +11,6 @@ return [
     'stop'     => '{:stop_button:}',
     'fav_on'   => '{:star:}',
     'fav_off'  => '{:sparkles:}{:star:}{:sparkles:}',
-    'quit'     => '{:x:}',
     'refresh'  => '{:arrows_counterclockwise:}',
     'ok'       => 'OK',
     'select0'  => '{{option}}',
@@ -19,7 +18,7 @@ return [
   ],
   'ru' =>
   [
-    'up'       => '{:eject_symbol:} {{hint}}',
+    'up'       => '{:eject_symbol:} {{name}}',
     'prev'     => '{:rewind:} {{name}}',
     'next'     => '{{name}} {:fast_forward:}',
     'first'    => '{:previous_track:}',
@@ -28,7 +27,6 @@ return [
     'stop'     => '{:stop_button:}',
     'fav_on'   => '{:star:}',
     'fav_off'  => '{:sparkles:}{:star:}{:sparkles:}',
-    'quit'     => '{:x:}',
     'refresh'  => '{:arrows_counterclockwise:}',
     'ok'       => 'OK',
     'select0'  => '{{option}}',
