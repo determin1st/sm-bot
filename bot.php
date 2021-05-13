@@ -1,7 +1,7 @@
 <?php
+# TODO: input bob
 # TODO: language merge with en
 # TODO: cach in
-# TODO: input bob
 # TODO: advanced image renderer (Fortune algorithm?)
 namespace SM;
 class Bot {
@@ -155,18 +155,15 @@ class Bot {
     ini_set('html_errors', 0);
     ini_set('implicit_flush', 1);
     set_time_limit(0);
-    set_error_handler(function($errno, $errstr, $errfile, $errline) {
-      if($errno === E_WARNING || $errno === E_NOTICE)
+    set_error_handler(function($no, $str, $file, $line) {
+      if ($no === E_WARNING || $no === E_NOTICE)
       {
         # make it more serious than a warning so it can be caught
-        trigger_error($errstr, E_ERROR);
+        trigger_error($str, E_USER_ERROR);
         return true;
       }
-      else
-      {
-        # fallback to default php error handler
-        return false;
-      }
+      # fallback to default php error handler
+      return false;
     });
     # check
     switch ($a[0]) {
@@ -501,6 +498,7 @@ class Bot {
       return [];
     }
     $lang = $this->user->lang;
+    $userCfg = &$this->user->config;
     # handle game callback first
     if (isset($q->game_short_name) &&
         ($a = $q->game_short_name))
@@ -530,17 +528,16 @@ class Bot {
     }
     # }}}
     # operate {{{
-    # determine if the message has any root,
+    # determine if the message has active root,
     # this should be done before item rendering,
-    # because it may be detached afterwards
+    # because the message may be detached
     $isRooted = false;
-    $a = $this->user->config;
-    if (array_key_exists('/', $a))
+    if (array_key_exists('/', $userCfg))
     {
-      foreach ($a['/'] as $b)
+      foreach ($userCfg['/'] as $b)
       {
-        if (array_key_exists('_msg', $a[$b]) &&
-            $a[$b]['_msg'] === $msg)
+        if (array_key_exists('_msg', $userCfg[$b]) &&
+            $userCfg[$b]['_msg'] === $msg)
         {
           $isRooted = true;
           break;
@@ -586,6 +583,17 @@ class Bot {
                 array_key_exists('_time', $root) &&
                 ($a = time() - $root['_time']) >= 0 &&
                 ($a < self::$MSG_EXPIRE_TIME));
+    # determine if the item has re-activated input
+    $isReactivated = false;
+    if ($root && $item['inputAccepted'])
+    {
+      # make sure it's the first from the start
+      if (!array_key_exists('/', $userCfg) ||
+          $userCfg['/'][0] !== $item['root']['id'])
+      {
+        $isReactivated = true;
+      }
+    }
     # }}}
     # render {{{
     $res = -1;
@@ -596,7 +604,7 @@ class Bot {
       # STANDARD UI element
       # update or create image block
       $a = $item['id'].':'.$lang;
-      if ($isFresh)
+      if ($isFresh && !$isReactivated)
       {
         $img = $isSameItem
           ? null : $this->getTitleImage($a, $item['title']);
@@ -613,7 +621,7 @@ class Bot {
       }
       break;
     case 'game':
-      # GAME/MULTIGAME UI
+      # COMPOUND UI element
       $res = $isSameItem
         ? $this->editMarkup($item['markup'], $msg)
         : $this->sendGame($item);
@@ -1026,6 +1034,7 @@ class Bot {
       break;
     case 'up':
       # check
+      $this->log($root['config']);
       if ($item['parent'])
       {
         # CLIMB UP THE TREE (render parent)
@@ -2331,13 +2340,10 @@ class Bot {
     {
       array_splice($conf['/'], $a, 1);
     }
-    # reset configuration
+    # reset message configuration
     $conf[$root]['_msg']  = 0;
-    $conf[$root]['_item'] = '';
     $conf[$root]['_time'] = 0;
-    if (array_key_exists('_from', $conf[$root])) {
-      unset($conf[$root]['_from']);
-    }
+    $conf[$root]['_item'] = '';
     $this->user->changed = true;
     # done
     return $a;
