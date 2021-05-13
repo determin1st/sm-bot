@@ -68,7 +68,7 @@ page <b>{{page}}</b> of {{page_count}} ({{item_count}})
     {{/fields}}
     {{br}}
     {{^s0}}
-      <i>Статус:</i>{{br}}
+      <i>Status:</i>{{br}}
     {{/s0}}
     {{#s1}}
       {:green_circle:} input steady {{br}}
@@ -79,17 +79,17 @@ page <b>{{page}}</b> of {{page_count}} ({{item_count}})
     {{/s2}}
     {{#s3}}
       {:green_circle:} input steady {{br}}
-      {{#progress}}{:purple_circle:} {{/progress}}
-      {{^progress}}{:blue_circle:} {{/progress}}
-      processing..
+      {{^info.0}}{:blue_circle:} {{/info.0}}
+      {{#info.0}}{:purple_circle:} {{/info.0}}
+      processing{{#info.0}}..{{/info.0}}
     {{/s3}}
     {{#s4}}
       {:green_circle:} input steady {{br}}
-      {:red_circle:} failure
+      {:red_circle:} <b>failure</b>{{#info.1}}: {{info.1}}{{/info.1}}
     {{/s4}}
     {{#s5}}
       {:green_circle:} input steady {{br}}
-      {:green_circle:} complete
+      {:green_circle:} <b>complete</b>{{#info.1}}: {{info.1}}{{/info.1}}
     {{/s5}}
     {{br}}
     ',# }}}
@@ -100,6 +100,10 @@ page <b>{{page}}</b> of {{page_count}} ({{item_count}})
     11 => '{:exclamation:} task start failed',
     12 => 'complete',
     13 => 'select from the list',
+    14 => 'refresh',
+    15 => 'reset',
+    16 => 'previous',
+    17 => 'next',
   ],
   'ru' =>
   [
@@ -182,15 +186,15 @@ page <b>{{page}}</b> of {{page_count}} ({{item_count}})
       {:green_circle:} ввод завершен {{br}}
       {{^info.0}}{:blue_circle:} {{/info.0}}
       {{#info.0}}{:purple_circle:} {{/info.0}}
-      обработка..
+      обработка{{#info.0}}..{{/info.0}}
     {{/s3}}
     {{#s4}}
       {:green_circle:} ввод завершен {{br}}
-      {:red_circle:} ошибка{{#info.1}}: {{info.1}}{{/info.1}}
+      {:red_circle:} <b>ошибка</b>{{#info.1}}: {{info.1}}{{/info.1}}
     {{/s4}}
     {{#s5}}
       {:green_circle:} ввод завершен {{br}}
-      {:green_circle:} выполнено{{#info.1}}: {{info.1}}{{/info.1}}
+      {:green_circle:} <b>выполнено</b>{{#info.1}}: {{info.1}}{{/info.1}}
     {{/s5}}
     {{br}}
     ',# }}}
@@ -201,6 +205,10 @@ page <b>{{page}}</b> of {{page_count}} ({{item_count}})
     11 => '{:exclamation:} не удалось запустить задачу',
     12 => 'завершить',
     13 => 'выберите из списка',
+    14 => 'обновить',
+    15 => 'сбросить',
+    16 => 'предыдущий',
+    17 => 'далее',
   ],
 ];
 ?>
