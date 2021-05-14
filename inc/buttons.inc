@@ -11,7 +11,7 @@ return [
   'fav_off'  => '{:sparkles:}{:star:}{:sparkles:}',
   'refresh'  => '{{name}} {:arrows_counterclockwise:}',
   'ok'       => 'OK',
-  'select0'  => '{{option}}',
-  'select1'  => '{:green_circle:} {{option}}',
+  'select0'  => '{{text}}',
+  'select1'  => '{:green_circle:} {{text}}',
 ];
 ?>

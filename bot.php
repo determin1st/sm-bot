@@ -1,4 +1,5 @@
 <?php
+# TODO: deep link with full path to the item
 # TODO: input bob
 # TODO: language merge with en
 # TODO: cach in
@@ -137,7 +138,7 @@ class Bot {
     if (file_exists($bot->dir.$a)) {
       $b = array_merge($b, include($bot->dir.$a));# specific
     }
-    $bot->commands = $bot->initCommands($b);
+    $bot->commands = $bot->itemAssemble($b);
     # load file_id map
     $a = $bot->dir.'file_id.json';
     $bot->fid = (file_exists($a) && !$bot->opts['debug'])
@@ -155,14 +156,14 @@ class Bot {
     ini_set('html_errors', 0);
     ini_set('implicit_flush', 1);
     set_time_limit(0);
-    set_error_handler(function($no, $str, $file, $line) {
-      if ($no === E_WARNING || $no === E_NOTICE)
+    set_error_handler(function($no, $msg, $file, $line) {
+      if (error_reporting() !== 0)
       {
-        # make it more serious than a warning so it can be caught
-        trigger_error($str, E_USER_ERROR);
+        # was not suppressed with @ operator
+        $msg = "exception($no) in file($line): $file\n$msg\n";
+        throw new \Exception($msg, $no);
         return true;
       }
-      # fallback to default php error handler
       return false;
     });
     # check
@@ -220,7 +221,7 @@ class Bot {
           break;
         }
       }
-      catch (Exception $e) {
+      catch (\Exception $e) {
         $b->logError($e->getMessage());# record to errorlog
       }
       break;
@@ -303,71 +304,80 @@ class Bot {
     $result = true;
     if ($this->userAttach($u))
     {
-      if (isset($u->callback_query))
+      $noWrite = false;
+      try
       {
-        # {{{
-        $u = $u->callback_query;
-        if (($a = $this->replyCallback($u)) === null)
+        if (isset($u->callback_query))
         {
-          # negative result with empty reply (will RESTART the loop)
-          $a = ['callback_query_id' => $u->id];
-          $result = false;
-        }
-        else
-        {
-          # positive result with custom reply (may be empty)
-          $a['callback_query_id'] = $u->id;
-        }
-        if (!$this->api->send('answerCallbackQuery', $a)) {
-          $this->log($this->api->error);
-        }
-        # }}}
-      }
-      elseif (isset($u->inline_query))
-      {
-        # {{{
-        /***
-        $out = (string)rand();
-        $results[] = [
-          "type"  => "article",
-          "id"    => $out,
-          "title" => $out,
-          "input_message_content" => [
-            "message_text"             => $out,
-            "disable_web_page_preview" => true
-          ],
-        ];
-        $client->answerInlineQuery($u->inline_query->id, $results, 1, false);
-        unset($results);
-        /***/
-        # }}}
-      }
-      elseif (isset($u->message) &&
-              ($u = $u->message) &&
-              isset($u->text))
-      {
-        # {{{
-        # handle user command or input
-        if ($a = strlen($u->text))
-        {
-          $a = ($u->text[0] === '/')
-            ? $this->replyCommand($u->text)
-            : $this->replyInput($u->text);
-        }
-        # wipe unhandled
-        if (!$a)
-        {
-          $a = $this->api->send('deleteMessage', [
-            'chat_id'    => $u->chat->id,
-            'message_id' => $u->message_id,
-          ]);
-          if (!$a) {
+          # {{{
+          $u = $u->callback_query;
+          if (($a = $this->replyCallback($u)) === null)
+          {
+            # negative result with empty reply (will RESTART the loop)
+            $a = ['callback_query_id' => $u->id];
+            $result = false;
+          }
+          else
+          {
+            # positive result with custom reply (may be empty)
+            $a['callback_query_id'] = $u->id;
+          }
+          if (!$this->api->send('answerCallbackQuery', $a)) {
             $this->log($this->api->error);
           }
+          # }}}
         }
-        # }}}
+        elseif (isset($u->inline_query))
+        {
+          # {{{
+          /***
+          $out = (string)rand();
+          $results[] = [
+            "type"  => "article",
+            "id"    => $out,
+            "title" => $out,
+            "input_message_content" => [
+              "message_text"             => $out,
+              "disable_web_page_preview" => true
+            ],
+          ];
+          $client->answerInlineQuery($u->inline_query->id, $results, 1, false);
+          unset($results);
+          /***/
+          # }}}
+        }
+        elseif (isset($u->message) &&
+                ($u = $u->message) &&
+                isset($u->text))
+        {
+          # {{{
+          # handle user command or input
+          if ($a = strlen($u->text))
+          {
+            $a = ($u->text[0] === '/')
+              ? $this->replyCommand($u->text)
+              : $this->replyInput($u->text);
+          }
+          # wipe unhandled
+          if (!$a)
+          {
+            $a = $this->api->send('deleteMessage', [
+              'chat_id'    => $u->chat->id,
+              'message_id' => $u->message_id,
+            ]);
+            if (!$a) {
+              $this->log($this->api->error);
+            }
+          }
+          # }}}
+        }
       }
-      $this->userDetach();
+      catch (\Exception $e)
+      {
+        $this->logError($e->getMessage());
+        $noWrite = true;
+      }
+      $this->userDetach($noWrite);
     }
     return $result;
   }
@@ -652,245 +662,8 @@ class Bot {
   }
   # }}}
   # }}}
-  # user {{{
-  private function userAttach($update) # {{{
-  {
-    # prepare
-    $chat = null;
-    $from = null;
-    if (isset($update->callback_query))
-    {
-      if (!isset($update->callback_query->message)) {
-        return false;
-      }
-      $chat = $update->callback_query->message->chat;
-      $from = $update->callback_query->from;
-    }
-    elseif (isset($update->inline_query)) {
-      $from = $update->inline_query->from;
-    }
-    elseif (isset($update->message))
-    {
-      $chat = $update->message->chat;
-      $from = $update->message->from;
-    }
-    # check
-    if (!$from || !isset($from->id) || !isset($from->is_bot)) {
-      return false;
-    }
-    # determine user's directory
-    $dir = $this->dir.$from->id.DIRECTORY_SEPARATOR;
-    if (!file_exists($dir)) {
-      mkdir($dir);
-    }
-    # determine names and language
-    $first_name = isset($from->first_name)
-      ? preg_replace('/[[:^print:]]/', '', trim($from->first_name))
-      : '';
-    $username = isset($from->username)
-      ? $from->username
-      : '';
-    $fullname = $username
-      ? $first_name.'@'.$username
-      : $first_name.'@'.$from->id;
-    if (!array_key_exists('force_lang', $this->opts) ||
-        !($lang = $this->opts['force_lang']))
-    {
-      $lang = (isset($from->language_code) &&
-               array_key_exists($from->language_code, self::$messages))
-        ? $from->language_code
-        : 'en';
-    }
-    # initialize
-    $this->user  = (object)[
-      'chat'     => $chat,
-      'id'       => $from->id,
-      'is_bot'   => $from->is_bot,
-      'is_admin' => in_array($from->id, $this->opts['admins']),
-      'uname'    => $username,
-      'name'     => $fullname,
-      'lang'     => $lang,
-      'dir'      => $dir,
-      'config'   => null,
-      'changed'  => false,
-    ];
-    # attach configuration
-    return $this->userConfigAttach();
-    ###
-    ###
-    # TODO: load favorite games list
-    #$a = $dir.'fav_games.json';
-    #$this->data['fav_games'] = $this->getRefList($a, $this->data['games']);
-  }
-  # }}}
-  private function userConfigAttach($noread = false) # {{{
-  {
-    # aquire lock
-    $file = $this->user->dir.'config.json';
-    if (!self::file_lock($file))
-    {
-      $this->logError("userConfigAttach($file) failed");
-      return false;
-    }
-    # read, decode contents and
-    # set user's configuration
-    if (!$noread)
-    {
-      $this->user->config = file_exists($file)
-        ? json_decode(file_get_contents($file), true)
-        : [];
-    }
-    # done
-    return true;
-  }
-  # }}}
-  private function userUpdate($item, $new_msg) # {{{
-  {
-    # prepare
-    $dir  = $this->user->dir;
-    $conf = &$this->user->config;
-    $root = $item['root']['id'];
-    $old_msg = array_key_exists('_msg', $conf[$root])
-      ? $conf[$root]['_msg']
-      : 0;
-    # check active roots
-    if (!array_key_exists('/', $conf))
-    {
-      # initialize, nothing was active
-      $conf['/'] = [];
-    }
-    elseif (!$old_msg && $new_msg)
-    {
-      # item was not active, but,
-      # there is a chance that another item is opened from it,
-      # so, according to common logic (user intention),
-      # injector message must be found and removed from the view,
-      # in other words, replaced with new message
-      foreach ($conf['/'] as $a)
-      {
-        if (array_key_exists('_from', $conf[$a]) &&
-            $conf[$a]['_from'] === $root)
-        {
-          $this->itemDetach($this->commands[$a]);
-          break;
-        }
-      }
-    }
-    elseif ($old_msg && $new_msg !== $old_msg)
-    {
-      # new message replaces old message, so,
-      # old (current) must be removed
-      $this->itemDetach($item);
-    }
-    # when the new message arrives,
-    # it becomes an active root (may recieve input)
-    if ($new_msg && $new_msg !== $old_msg) {
-      array_unshift($conf['/'], $root);
-    }
-    # update configuration
-    if ($root === $item['id'])
-    {
-      # item is root
-      $conf[$root] = $item['config'];
-    }
-    else
-    {
-      # item and root
-      $conf[$item['id']] = $item['config'];
-      $conf[$root] = $item['root']['config'];
-    }
-    # update root configuration
-    $conf[$root]['_msg']  = $new_msg;
-    $conf[$root]['_item'] = $item['id'];
-    if ($new_msg && $new_msg !== $old_msg) {
-      $conf[$root]['_time'] = time();
-    }
-    # done
-    $this->user->changed = true;
-    return true;
-  }
-  # }}}
-  private function userDetach() # {{{
-  {
-    if ($this->user)
-    {
-      $this->userConfigDetach(!$this->user->changed);
-      $this->user = null;
-    }
-    return true;
-  }
-  # }}}
-  private function userConfigDetach($nowrite = false) # {{{
-  {
-    # write changes
-    $file = $this->user->dir.'config.json';
-    if (!$nowrite) {
-      file_put_contents($file, json_encode($this->user->config));
-    }
-    # release lock and complete
-    self::file_unlock($file);
-    return true;
-  }
-  # }}}
-  # }}}
-  # logger {{{
-  public function log($m, $type = 0) # {{{
-  {
-    static $e = null;
-    if (!is_string($m)) {
-      $m = print_r($m, true);
-    }
-    # TO FILE {{{
-    if ($type)
-    {
-      file_put_contents(
-        $this->errorlog,
-        "<$type> ".date(DATE_ATOM).": $m\n",
-        FILE_APPEND
-      );
-    }
-    elseif (false)
-    {
-      file_put_contents(
-        $this->accesslog,
-        "<$type> ".date(DATE_ATOM).": $m\n",
-        FILE_APPEND
-      );
-    }
-    # }}}
-    # TO STDERR CONSOLE {{{
-    if (!self::$IS_TASK)
-    {
-      if (!$e) {
-        $e = fopen('php://stderr', 'w');
-      }
-      if ($this->user) {
-        $m = trim($this->user->name).'> '.$m;
-      }
-      fwrite($e, $type.'> '.$m."\n");
-    }
-    # }}}
-    # TO SFX DEVICE {{{
-    if (self::$WIN_OS && $this->opts['sfx'] && !self::$IS_TASK)
-    {
-      # play sound through batch-file
-      $m = self::$inc.'sfx';
-      $m = 'START "" /D "'.$m.'" /B play.bat info.wav';
-      if ($m = popen($m, 'r'))
-      {
-        fgetc($m);
-        pclose($m);
-      }
-    }
-    # }}}
-  }
-  # }}}
-  public function logError($m) {
-    $this->log($m, 1);
-  }
-  # }}}
-  # item {{{
-  private function itemAttach($item, &$error, $input = '', $new = false) # {{{
+  # renderer {{{
+  public function itemAttach($item, &$error, $input = '', $new = false)
   {
     # prepare {{{
     # check
@@ -907,7 +680,7 @@ class Bot {
     {
       # check string
       if (!$item || !is_string($item) ||
-          strlen($item) > 800)
+          strlen($item) > 1200)
       {
         $error = (!$item || !is_string($item))
           ? 'not a string'
@@ -915,7 +688,7 @@ class Bot {
         $error = "invalid command string, $error";
         return null;
       }
-      # item is input, parse it
+      # parse it,
       # syntax: /<path>[:<path>][!<func>][ [<arg>[,<arg>]]]
       $a = '|^\/((\w+)(:(\w+)){0,8})(!(\w{1,})){0,1}( (.{1,})){0,1}$|';
       $b = null;
@@ -924,30 +697,30 @@ class Bot {
         $error = 'incorrect command syntax';
         return null;
       }
-      # report
-      $this->log($item);
       # extract parameters
       $id   = $b[1][0];
       $func = $b[6][0];
       $args = strlen($b[8][0])
         ? explode(',', $b[8][0])
         : null;
-      # check deep link invocation tg://<BOT_NAME>?start=<args>
+      # check deep link invocation,
+      # syntax: tg://<BOT_NAME>?start=<args>
       if ($id === 'start' && !$func && $args)
       {
-        $id   = $args[0];
+        # [:] is not allowed in link, [-] is used,
+        # convert special link characters
+        $id   = str_replace('-', ':', $args[0]);
         $args = null;
       }
+      # report
+      $this->log($item);
       # get item
       if (!($item = $this->getItem($id)))
       {
-        $error = 1;
+        $error = 'item not found: '.$id;
         return null;
       }
     }
-    # determine item name
-    $name = explode(':', $id);
-    $name = end($name);
     # prepare input flag
     $isInputAccepted = false;
     # get item's root and configuration
@@ -966,9 +739,9 @@ class Bot {
     $file = '';
     switch ($item['type']) {
     case 'form':
-      # determine full path to data file
+      # determine full path to the datafile
       $data = [];
-      $file = $name.'-'.$item['type'].'.json';
+      $file = $item['type'].'-'.str_replace(':', '-', $item['id']).'.json';
       $file = $item['public']
         ? $this->dir.$file
         : $this->user->dir.$file;
@@ -985,7 +758,7 @@ class Bot {
         : $item['list']['en'];
       break;
     case 'list':
-      # TODO: DELETE! same as form
+      # TODO: DELETE! same as form?
       if (array_key_exists('data', $item) &&
           ($a = $item['data']) &&
           array_key_exists($a, $this->data))
@@ -1034,12 +807,10 @@ class Bot {
       break;
     case 'up':
       # check
-      $this->log($root['config']);
       if ($item['parent'])
       {
         # CLIMB UP THE TREE (render parent)
-        $a = '/'.$item['parent']['id'];
-        return $this->itemAttach($a, $error);
+        return $this->itemAttach('/'.$item['parent']['id'], $error);
       }
       if (array_key_exists('_from', $root['config']))
       {
@@ -1572,8 +1343,11 @@ class Bot {
           # update
           $data[$indexField] = $input;
           $dataChanged = true;
-          # advance to the next field
-          if (++$index === $count)
+          # advance to the next field (if option specified)
+          #if (array_key_exists('submitOnInput', $item) &&
+          if (array_key_exists('submitOnInput', $item) &&
+              $item['submitOnInput'] &&
+              ++$index === $count)
           {
             # last field completes input,
             # change form state
@@ -1696,17 +1470,16 @@ class Bot {
             $state = 0;
             break;
           }
-          # when all the fields are persistent,
-          # there is nothing left to preserve,
-          # so wipe everything and start over again
-          $state = $index = 0;
-          foreach ($item['fields'] as $a => $b)
+          # all the fields are persistent,
+          # preserve data and find first required from the end
+          $state = 0;
+          $index = $count - 1;
+          foreach (array_reverse($item['fields']) as $a => $b)
           {
-            if (array_key_exists($a, $data))
-            {
-              unset($data[$a]);
-              $dataChanged = true;
+            if ($b & 1) {
+              break;
             }
+            --$index;
           }
           break;
         case 2:
@@ -1759,22 +1532,23 @@ class Bot {
               $a > count($b))))
         {
           $this->logError("failed to select field value");
-          $error = 1;return $item;# bad NOP
+          $error = 1;
+          return $item;
         }
         # check same value selected
         if ($a && array_key_exists($indexField, $data) &&
             $data[$indexField] === $b[$a])
         {
-          $error = 1;return $item;# NOP same value
+          # NOP when required
+          if ($item['fields'][$indexField][0] & 1)
+          {
+            $error = 1;
+            return $item;
+          }
+          # de-select (set empty)
+          $a = 0;
         }
-        # check already empty
-        if (!$a && !array_key_exists($indexField, $data))
-        {
-          # empty select always advances
-          ++$index;
-          break;
-        }
-        # change data and advance
+        # change data
         if ($a)
         {
           # correct integer type
@@ -1782,11 +1556,16 @@ class Bot {
             ? intval($b[$a])
             : $b[$a];
         }
-        else {
+        elseif (array_key_exists($indexField, $data)) {
           unset($data[$indexField]);
         }
         $dataChanged = true;
-        ++$index;
+        # advance field index (if option set)
+        if (array_key_exists('submitOnSelect', $item) &&
+            $item['submitOnSelect'])
+        {
+          ++$index;
+        }
         # }}}
         break;
       case 'ok':
@@ -1900,43 +1679,25 @@ class Bot {
       }
       # determine last field flag
       $indexIsLast = ($index === $count - 1);
-      # determine input is accepted
-      if ($state === 0)
+      # re-determine count of empty required fields
+      if ($dataChanged)
       {
+        $emptyRequired = 0;
+        foreach ($item['fields'] as $a => $b)
+        {
+          if (($b[0] & 1) &&
+              (!array_key_exists($a, $data) ||
+              !$data[$a]))
+          {
+            ++$emptyRequired;
+          }
+        }
       }
       # }}}
       # determine markup {{{
       $mkup = [];
-      # compose header {{{
-      $a = $item['markup'];
-      $b = 'H'.$state;
-      if (array_key_exists($b, $a)) {
-        $c = $a[$b];
-      }
-      elseif ($state === 4 || $state === 6) {
-        $c = $a['H1'];
-      }
-      elseif ($state === 5) {
-        $c = $a['H2'];
-      }
-      else {
-        $c = [];
-      }
-      $c = $this->itemInlineMarkup($c, $item, $text, [
-        #'prev' => $prevField,
-        #'next' => $nextField,
-        'prev' => self::$messages[$lang][16],
-        'next' => self::$messages[$lang][17],
-        'last' => self::$messages[$lang][12],
-        'refresh' => self::$messages[$lang][14],
-        'first' => self::$messages[$lang][15],
-      ]);
-      foreach ($c as $a) {
-        $mkup[] = $a;
-      }
-      # }}}
       # compose input selector group {{{
-      if ($state === 0 &&
+      if ($state === 0 && $indexField &&
           array_key_exists($indexField, $item['list']))
       {
         # get value options and column count
@@ -1945,10 +1706,6 @@ class Bot {
         $b = array_slice($b, 1);
         # determine row count
         $d = ceil(count($b) / $c);
-        # determine current value
-        $v = array_key_exists($indexField, $data)
-          ? $data[$indexField]
-          : '';
         # create select group
         for ($i = 0, $k = 0; $i < $d; ++$i)
         {
@@ -1958,12 +1715,18 @@ class Bot {
             # create option
             if ($k < count($b))
             {
+              # determine current or standard
+              $n = (array_key_exists($indexField, $data) &&
+                    !strcmp($data[$indexField], $b[$k]))
+                ? 'select1'
+                : 'select0';
+              # parse it and add to row
               $e[] = [
                 'text' => self::$tp->render(
-                  self::$buttons['select'.($v === $b[$k] ? '1' : '0')],
+                  self::$buttons[$n],
                   [
-                    'index'  => ($k + 1),
-                    'option' => $b[$k],
+                    'index' => ($k + 1),
+                    'text'  => $b[$k],
                   ]
                 ),
                 'callback_data' => '/'.$item['id'].'!select '.($k + 1)
@@ -1981,40 +1744,94 @@ class Bot {
         }
       }
       # }}}
-      # compose empty selector {{{
-      # check current field is not required
-      if ($state === 0 &&
-          !(1 & $item['fields'][$indexField][0]))
+      # compose input value display {{{
+      while ($state === 0 && $indexField)
       {
-        # take single row
-        $mkup[] = [[
-          'text' => self::$messages[$lang][9],
-          'callback_data' => '/'.$item['id'].'!select 0'
-        ]];
+        # check empty
+        if (!array_key_exists($indexField, $data))
+        {
+          # display empty bar
+          $mkup[] = [['text'=>' ','callback_data'=>'!']];
+          break;
+        }
+        # check options list
+        $a = $data[$indexField];
+        if (array_key_exists($indexField, $item['list']))
+        {
+          # check value is already shown in the list
+          $b = array_slice($item['list'][$indexField], 1);
+          if (!is_string($a) && is_string($b[0])) {
+            $a = strval($a);# avoid comparison problem
+          }
+          if (array_search($a, $b, true) !== false)
+          {
+            # display empty bar
+            $mkup[] = [['text'=>' ','callback_data'=>'!']];
+            break;
+          }
+        }
+        # display non-empty value
+        $b = self::$tp->render(self::$buttons['select1'], ['text'=>$a]);
+        $a = !($item['fields'][$indexField][0] & 1)
+          ? '/'.$item['id'].'!select 0' # with de-selector
+          : '!';
+        $mkup[] = [['text'=>$b,'callback_data'=>$a]];
+        break;
       }
       # }}}
-      # compose footer {{{
+      # compose controls {{{
       $a = $item['markup'];
-      $b = 'F'.$state;
+      $b = 'S'.$state;
       if (array_key_exists($b, $a)) {
         $c = $a[$b];
       }
-      elseif ($state > 1) {
-        $c = $a['F1'];
+      elseif ($state === 4 || $state === 6) {
+        $c = $a['S1'];
+      }
+      elseif ($state === 5) {
+        $c = $a['S2'];
       }
       else {
         $c = [['_up']];
       }
       $d = [
-        'prev' => self::$messages[$lang][16],
         'refresh' => self::$messages[$lang][14],
         'first' => self::$messages[$lang][15],
       ];
-      if ($indexIsLast) {
-        $d['last'] = self::$messages[$lang][12];
-      }
-      else {
-        $d['next'] = self::$messages[$lang][17];
+      if ($state === 0 && $indexField)
+      {
+        $d['prev'] = $index
+          ? self::$messages[$lang][16]
+          : '';
+        if ($indexIsLast)
+        {
+          if ($emptyRequired &&
+              (!array_key_exists('noRequiredSubmit', $item) ||
+               $item['noRequiredSubmit']))
+          {
+            # display empty bar
+            $d['last'] = '';
+          }
+          else
+          {
+            # standard
+            $d['last'] = self::$messages[$lang][12];
+          }
+        }
+        elseif (($item['fields'][$indexField][0] & 1) &&
+                !array_key_exists($indexField, $data) &&
+                (!array_key_exists('noRequiredSkip', $item) ||
+                 $item['noRequiredSkip']))
+        {
+          # non-last, empty but required,
+          # display empty bar
+          $d['next'] = '';
+        }
+        else
+        {
+          # standard
+          $d['next'] = self::$messages[$lang][17];
+        }
       }
       $c = $this->itemInlineMarkup($c, $item, $text, $d);
       foreach ($c as $a) {
@@ -2141,7 +1958,7 @@ class Bot {
         @unlink($file);
       }
       elseif (!file_put_contents($file, json_encode($data))) {
-        $this->log('file_put_contents('.$file.') failed');
+        $this->logError('file_put_contents('.$file.') failed');
       }
     }
     # set render flags
@@ -2149,6 +1966,74 @@ class Bot {
     # done
     return $item;
     # }}}
+  }
+  # }}}
+  # item {{{
+  private function itemAssemble(&$m, &$p = null) # {{{
+  {
+    # iterate menu items
+    foreach ($m as $a => &$b)
+    {
+      # set item's identifier, parent and root
+      if ($p)
+      {
+        $b['id']     = $p['id'].':'.$a;
+        $b['parent'] = &$p;
+      }
+      else
+      {
+        $b['id']     = $a;
+        $b['parent'] = null;
+      }
+      # set item's config entry (should have one)
+      if (!array_key_exists('config', $b)) {
+        $b['config'] = [];
+      }
+      # set language texts
+      if (!array_key_exists('text', $b)) {
+        $b['text'] = ['en'=>[]];
+      }
+      if (array_key_exists('text', $b))
+      {
+        # parse emojis and button captions
+        foreach ($b['text'] as $c => &$d)
+        {
+          foreach ($d as &$e)
+          {
+            $e = self::$tp->render($e, BotApi::$emoji, '{: :}');
+            $e = self::$tp->render($e, self::$buttons, '{! !}');
+          }
+        }
+        unset($d, $e);
+        # merge add languages other than [en] with [en],
+        # which allows to gradually translate commands,
+        # so, default [en] captions act as a backup
+        foreach (array_keys(self::$messages) as $c)
+        {
+          if ($c !== 'en')
+          {
+            $d = $b['text']['en'];
+            $b['text'][$c] = array_key_exists($c, $b['text'])
+              ? array_merge($d, $b['text'][$c])
+              : $d;
+          }
+        }
+      }
+      # set item's children dummy (tree navigation is common)
+      if (!array_key_exists('items', $b)) {
+        $b['items'] = null;
+      }
+      # set item's data publicity flag
+      if (!array_key_exists('public', $b)) {
+        $b['public'] = false;
+      }
+      # recurse
+      if ($b['items']) {
+        $this->itemAssemble($b['items'], $b);
+      }
+    }
+    # done
+    return $m;
   }
   # }}}
   private function itemInlineMarkup(&$m, &$item, &$text, $ext = null) # {{{
@@ -2263,7 +2148,13 @@ class Bot {
           if ($ext)
           {
             # do not render this element
-            if (!array_key_exists($d, $ext) || !$ext[$d]) {
+            if (!array_key_exists($d, $ext)) {
+              continue;
+            }
+            # render empty nop
+            if (!$ext[$d])
+            {
+              $row[] = ['text'=>' ','callback_data'=>'!'];
               continue;
             }
             # render specified value
@@ -2418,8 +2309,11 @@ class Bot {
       $res = $a::handle($this, $plan);
       $msg = $a::$message;
     }
-    else {
-      $res = -1;# no handler, no problem
+    else
+    {
+      # no handler, no problem
+      $res = -1;
+      $msg = '';
     }
     # update item
     if ($debug) {
@@ -2432,8 +2326,10 @@ class Bot {
       try {
         $item = $this->itemRefresh($plan['item'], 'done', [$res,$msg]);
       }
-      catch (Exception $e) {
-        $this->logError('exception: '.$e->getMessage());
+      catch (\Exception $e)
+      {
+        $this->logError($e->getMessage());
+        $item = null;
       }
       $this->userConfigDetach(!$item);
     }
@@ -2520,6 +2416,244 @@ class Bot {
     return $item;
   }
   # }}}
+  # }}}
+  # user {{{
+  private function userAttach($update) # {{{
+  {
+    # prepare
+    $chat = null;
+    $from = null;
+    if (isset($update->callback_query))
+    {
+      if (!isset($update->callback_query->message)) {
+        return false;
+      }
+      $chat = $update->callback_query->message->chat;
+      $from = $update->callback_query->from;
+    }
+    elseif (isset($update->inline_query)) {
+      $from = $update->inline_query->from;
+    }
+    elseif (isset($update->message))
+    {
+      $chat = $update->message->chat;
+      $from = $update->message->from;
+    }
+    # check
+    if (!$from || !isset($from->id) || !isset($from->is_bot)) {
+      return false;
+    }
+    # determine user's directory
+    $dir = $this->dir.$from->id.DIRECTORY_SEPARATOR;
+    if (!file_exists($dir)) {
+      mkdir($dir);
+    }
+    # determine names and language
+    $first_name = isset($from->first_name)
+      ? preg_replace('/[[:^print:]]/', '', trim($from->first_name))
+      : '';
+    $username = isset($from->username)
+      ? $from->username
+      : '';
+    $fullname = $username
+      ? $first_name.'@'.$username
+      : $first_name.'@'.$from->id;
+    if (!array_key_exists('force_lang', $this->opts) ||
+        !($lang = $this->opts['force_lang']))
+    {
+      $lang = (isset($from->language_code) &&
+               array_key_exists($from->language_code, self::$messages))
+        ? $from->language_code
+        : 'en';
+    }
+    # initialize
+    $this->user  = (object)[
+      'chat'     => $chat,
+      'id'       => $from->id,
+      'is_bot'   => $from->is_bot,
+      'is_admin' => in_array($from->id, $this->opts['admins']),
+      'uname'    => $username,
+      'name'     => $fullname,
+      'lang'     => $lang,
+      'dir'      => $dir,
+      'config'   => null,
+      'changed'  => false,
+    ];
+    # attach configuration
+    return $this->userConfigAttach();
+    ###
+    ###
+    # TODO: load favorite games list
+    #$a = $dir.'fav_games.json';
+    #$this->data['fav_games'] = $this->getRefList($a, $this->data['games']);
+  }
+  # }}}
+  private function userConfigAttach($noread = false) # {{{
+  {
+    # aquire lock
+    $file = $this->user->dir.'config.json';
+    if (!self::file_lock($file))
+    {
+      $this->logError("userConfigAttach($file) failed");
+      return false;
+    }
+    # read, decode contents and
+    # set user's configuration
+    if (!$noread)
+    {
+      $this->user->config = file_exists($file)
+        ? json_decode(file_get_contents($file), true)
+        : [];
+    }
+    # done
+    return true;
+  }
+  # }}}
+  private function userUpdate($item, $new_msg) # {{{
+  {
+    # prepare
+    $dir  = $this->user->dir;
+    $conf = &$this->user->config;
+    $root = $item['root']['id'];
+    $old_msg = array_key_exists('_msg', $conf[$root])
+      ? $conf[$root]['_msg']
+      : 0;
+    # check active roots
+    if (!array_key_exists('/', $conf))
+    {
+      # initialize, nothing was active
+      $conf['/'] = [];
+    }
+    elseif (!$old_msg && $new_msg)
+    {
+      # item was not active, but,
+      # there is a chance that another item is opened from it,
+      # so, according to common logic (user intention),
+      # injector message must be found and removed from the view,
+      # in other words, replaced with new message
+      foreach ($conf['/'] as $a)
+      {
+        if (array_key_exists('_from', $conf[$a]) &&
+            $conf[$a]['_from'] === $root)
+        {
+          $this->itemDetach($this->commands[$a]);
+          break;
+        }
+      }
+    }
+    elseif ($old_msg && $new_msg !== $old_msg)
+    {
+      # new message replaces old message, so,
+      # old (current) must be removed
+      $this->itemDetach($item);
+    }
+    # when the new message arrives,
+    # it becomes an active root (may recieve input)
+    if ($new_msg && $new_msg !== $old_msg) {
+      array_unshift($conf['/'], $root);
+    }
+    # update configuration
+    if ($root === $item['id'])
+    {
+      # item is root
+      $conf[$root] = $item['config'];
+    }
+    else
+    {
+      # item and root
+      $conf[$item['id']] = $item['config'];
+      $conf[$root] = $item['root']['config'];
+    }
+    # update root configuration
+    $conf[$root]['_msg']  = $new_msg;
+    $conf[$root]['_item'] = $item['id'];
+    if ($new_msg && $new_msg !== $old_msg) {
+      $conf[$root]['_time'] = time();
+    }
+    # done
+    $this->user->changed = true;
+    return true;
+  }
+  # }}}
+  private function userDetach($noWrite = false) # {{{
+  {
+    if ($this->user)
+    {
+      $noWrite = ($noWrite || !$this->user->changed);
+      $this->userConfigDetach($noWrite);
+      $this->user = null;
+    }
+    return true;
+  }
+  # }}}
+  private function userConfigDetach($nowrite = false) # {{{
+  {
+    # write changes
+    $file = $this->user->dir.'config.json';
+    if (!$nowrite) {
+      file_put_contents($file, json_encode($this->user->config));
+    }
+    # release lock and complete
+    self::file_unlock($file);
+    return true;
+  }
+  # }}}
+  # }}}
+  # logger {{{
+  public function log($m, $type = 0) # {{{
+  {
+    static $e = null;
+    if (!is_string($m)) {
+      $m = var_export($m, true);
+    }
+    # TO FILE {{{
+    if ($type)
+    {
+      file_put_contents(
+        $this->errorlog,
+        "<$type> ".date(DATE_ATOM).": $m\n",
+        FILE_APPEND
+      );
+    }
+    elseif (false)
+    {
+      file_put_contents(
+        $this->accesslog,
+        "<$type> ".date(DATE_ATOM).": $m\n",
+        FILE_APPEND
+      );
+    }
+    # }}}
+    # TO STDERR CONSOLE {{{
+    if (!self::$IS_TASK)
+    {
+      if (!$e) {
+        $e = fopen('php://stderr', 'w');
+      }
+      if ($this->user) {
+        $m = trim($this->user->name).'> '.$m;
+      }
+      fwrite($e, $type.'> '.$m."\n");
+    }
+    # }}}
+    # TO SFX DEVICE {{{
+    if (self::$WIN_OS && $this->opts['sfx'] && !self::$IS_TASK)
+    {
+      # play sound through batch-file
+      $m = self::$inc.'sfx';
+      $m = 'START "" /D "'.$m.'" /B play.bat info.wav';
+      if ($m = popen($m, 'r'))
+      {
+        fgetc($m);
+        pclose($m);
+      }
+    }
+    # }}}
+  }
+  # }}}
+  public function logError($m) {
+    $this->log($m, 1);
+  }
   # }}}
   # helpers {{{
   public static function file_lock($file) # {{{
@@ -2650,56 +2784,6 @@ class Bot {
     $a['config'] = $b;
     # done
     return $a;
-  }
-  # }}}
-  private function initCommands(&$m, &$p = null) # {{{
-  {
-    # iterate menu items
-    foreach ($m as $a => &$b)
-    {
-      # set item's identifier, parent and root
-      if ($p)
-      {
-        $b['id']     = $p['id'].':'.$a;
-        $b['parent'] = &$p;
-      }
-      else
-      {
-        $b['id']     = $a;
-        $b['parent'] = null;
-      }
-      # set item's config entry (should have one)
-      if (!array_key_exists('config', $b)) {
-        $b['config'] = [];
-      }
-      # set language texts (emojis, button captions)
-      if (array_key_exists('text', $b))
-      {
-        foreach ($b['text'] as $c => &$d)
-        {
-          foreach ($d as &$e)
-          {
-            $e = self::$tp->render($e, BotApi::$emoji, '{: :}');
-            $e = self::$tp->render($e, self::$buttons, '{! !}');
-          }
-        }
-        unset($d, $e);
-      }
-      # set item's children dummy (tree navigation is common)
-      if (!array_key_exists('items', $b)) {
-        $b['items'] = null;
-      }
-      # set item's data publicity flag
-      if (!array_key_exists('public', $b)) {
-        $b['public'] = false;
-      }
-      # recurse
-      if ($b['items']) {
-        $this->initCommands($b['items'], $b);
-      }
-    }
-    # done
-    return $m;
   }
   # }}}
   private function nullify($msg) # {{{
@@ -3206,7 +3290,7 @@ class Bot {
       if (!array_key_exists('items', $item) ||
           !array_key_exists($a, $item['items']))
       {
-        $error = self::$messages[$lang][1];
+        $error = self::$messages[$this->user->lang][1];
         return null;
       }
       $item = $item['items'][$a];

@@ -71,35 +71,31 @@ page <b>{{page}}</b> of {{page_count}} ({{item_count}})
       <i>Status:</i>{{br}}
     {{/s0}}
     {{#s1}}
-      {:green_circle:} input steady {{br}}
-      {:yellow_circle:} confirm operation
+      {:blue_circle:} confirm operation
     {{/s1}}
     {{#s2}}
       {:yellow_circle:} missing required parameter
     {{/s2}}
     {{#s3}}
-      {:green_circle:} input steady {{br}}
       {{^info.0}}{:blue_circle:} {{/info.0}}
       {{#info.0}}{:purple_circle:} {{/info.0}}
       processing{{#info.0}}..{{/info.0}}
     {{/s3}}
     {{#s4}}
-      {:green_circle:} input steady {{br}}
       {:red_circle:} <b>failure</b>{{#info.1}}: {{info.1}}{{/info.1}}
     {{/s4}}
     {{#s5}}
-      {:green_circle:} input steady {{br}}
       {:green_circle:} <b>complete</b>{{#info.1}}: {{info.1}}{{/info.1}}
     {{/s5}}
     {{br}}
     ',# }}}
     7 => 'string ({{max}})',
     8 => 'number [{{min}}..{{max}}]',
-    9 => '{:heavy_minus_sign:} do not specify',
+    9 => '',
     10 => 'close',
     11 => '{:exclamation:} task start failed',
     12 => 'complete',
-    13 => 'select from the list',
+    13 => 'select option',
     14 => 'refresh',
     15 => 'reset',
     16 => 'previous',
@@ -176,35 +172,31 @@ page <b>{{page}}</b> of {{page_count}} ({{item_count}})
       <i>Статус:</i>{{br}}
     {{/s0}}
     {{#s1}}
-      {:green_circle:} ввод завершен {{br}}
-      {:yellow_circle:} подтвердите действие
+      {:blue_circle:} подтвердите действие
     {{/s1}}
     {{#s2}}
       {:yellow_circle:} не задан обязательный параметр
     {{/s2}}
     {{#s3}}
-      {:green_circle:} ввод завершен {{br}}
       {{^info.0}}{:blue_circle:} {{/info.0}}
       {{#info.0}}{:purple_circle:} {{/info.0}}
       обработка{{#info.0}}..{{/info.0}}
     {{/s3}}
     {{#s4}}
-      {:green_circle:} ввод завершен {{br}}
       {:red_circle:} <b>ошибка</b>{{#info.1}}: {{info.1}}{{/info.1}}
     {{/s4}}
     {{#s5}}
-      {:green_circle:} ввод завершен {{br}}
       {:green_circle:} <b>выполнено</b>{{#info.1}}: {{info.1}}{{/info.1}}
     {{/s5}}
     {{br}}
     ',# }}}
     7 => 'строка ({{max}})',
     8 => 'число [{{min}},{{max}}]',
-    9 => '{:heavy_minus_sign:} не указывать',
+    9 => '',
     10 => 'закрыть',
     11 => '{:exclamation:} не удалось запустить задачу',
     12 => 'завершить',
-    13 => 'выберите из списка',
+    13 => 'выберите опцию',
     14 => 'обновить',
     15 => 'сбросить',
     16 => 'предыдущий',
