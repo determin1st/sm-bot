@@ -1,5 +1,5 @@
-arc/
-data/
+/arc/
+/data/*/
 *.vim
 *.swp
 

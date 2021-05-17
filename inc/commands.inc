@@ -22,37 +22,110 @@ return [
   [
     'type'   => 'menu',
     'markup' => [
-      ['test1','test2'],
       ['_restartLoop'],
+      ['form1','form2'],
+      ['_up'],
     ],
     'text' => [ # {{{
       'en' =>
       [
         '@' => 'debug',
-        '_restartLoop' => 'restart getUpdates loop',
-        'test1' => 'testform (inject)',
-        'test2' => 'testform (open)',
-      ],
-      'ru' =>
-      [
-        '@' => 'debug',
-        '_restartLoop' => 'restart getUpdates loop',
-        'test1' => 'testform (inject)',
-        'test2' => 'testform (open)',
+        '_restartLoop' => 'restart loop',
+        'form1' => 'testform (inject)',
+        'form2' => 'testform (open)',
       ],
     ],
     # }}}
     'items' => [
-      'test1' => # {{{
+      'form1' => # {{{
       [
         'type' => 'injector',
         'path' => 'testform',
       ],
       # }}}
-      'test2' => # {{{
+      'form2' => # {{{
       [
         'type' => 'opener',
         'path' => 'testform',
+      ],
+      # }}}
+    ],
+  ],
+  # }}}
+  'testmenu' => # {{{
+  [
+    'type'   => 'menu',
+    'markup' => [['tree'],['_up']],
+    'text' => ['en'=>['@'=>'testmenu','.'=>'root node']],
+    'items' => [
+      'tree' => # {{{
+      [
+        'type' => 'menu',
+        'markup' => [['nesting'], ['_up']],
+        'text' => [
+          'en' => ['@' => 'tree'],
+        ],
+        'items' => [
+          'nesting' => # {{{
+          [
+            'type' => 'menu',
+            'markup' => [['test'],['another'],['_up']],
+            'text' => [
+              'en' => ['@' => 'nesting'],
+            ],
+            'items' => [
+              'test' => # {{{
+              [
+                'type' => 'menu',
+                'markup' => [['deeper'], ['_up']],
+                'text' => [
+                  'en' => ['@' => 'test'],
+                ],
+                'items' => [
+                  'deeper' => # {{{
+                  [
+                    'type' => 'menu',
+                    'markup' => [['link'], ['_up']],
+                    'text' => [
+                      'en' => ['@' => 'deeper'],
+                    ],
+                    'items' => [
+                      'link' => # {{{
+                      [
+                        'type' => 'menu',
+                        'markup' => [['_up']],
+                        'text' => [
+                          'en' => [
+                            '@' => 'link',
+                            '.' => 'nothing is here, navigate back?'
+                          ],
+                        ],
+                        'items' => [],
+                      ],
+                      # }}}
+                    ],
+                  ],
+                  # }}}
+                ],
+              ],
+              # }}}
+              'another' => # {{{
+              [
+                'type'   => 'menu',
+                'markup' => [['_up']],
+                'text' => [
+                  'en' => [
+                    '@' => 'another',
+                    '.' => 'leaf node',
+                  ],
+                ],
+                'items' => [],
+              ],
+              # }}}
+            ],
+          ],
+          # }}}
+        ],
       ],
       # }}}
     ],
@@ -66,6 +139,7 @@ return [
     'submitOnInput'    => 0,
     'submitOnSelect'   => 0,
     'submitConfirm'    => 0,
+    'inputMoveAround'  => 0,
     'markup' => [
       ###
       # [S]tates:
@@ -108,7 +182,7 @@ Fill the form and try to guess the number.
         'num'    => 'Число',
       ],
     ],
-    'list' => [
+    'options' => [
       'en' =>
       [
         'class'  => [3, 'Darkbone','Archer','Ghost','Berserk','Elf','Fanatic','Colonist','Infant','Hippy'],
@@ -121,119 +195,6 @@ Fill the form and try to guess the number.
         'gender' => [1, 'мужской','женский','LGBTQ+'],
         'num'    => [3, 1,2,3,4,5,6,7,8,9],
       ],
-    ],
-  ],
-  # }}}
-  'testmenu' => # {{{
-  [
-    'type'   => 'menu',
-    'markup' => [['tree'],['testform'],['_up']],
-    'text' => [ # {{{
-      'en' =>
-      [
-        '@' => 'testmenu/',
-      ],
-    ],
-    # }}}
-    'items' => [
-      'tree' => # {{{
-      [
-        'type'   => 'menu',
-        'markup' => [['nesting'], ['_up']],
-        'text' => [ # {{{
-          'en' =>
-          [
-            '@' => 'testmenu/tree/',
-          ],
-        ],
-        # }}}
-        'items' => [
-          'nesting' => # {{{
-          [
-            'type'   => 'menu',
-            'markup' => [['test'],['another'],['_up']],
-            'text' => [ # {{{
-              'en' =>
-              [
-                '@' => 'testmenu/tree/nesting/',
-              ],
-            ],
-            # }}}
-            'items' => [
-              'test' => # {{{
-              [
-                'type'   => 'menu',
-                'markup' => [['deeper'], ['_up']],
-                'text' => [ # {{{
-                  'en' =>
-                  [
-                    '@' => 'testmenu/tree/nesting/test/',
-                  ],
-                ],
-                # }}}
-                'items' => [
-                  'deeper' => # {{{
-                  [
-                    'type'   => 'menu',
-                    'markup' => [['link'], ['_up']],
-                    'text' => [ # {{{
-                      'en' =>
-                      [
-                        '@' => 'testmenu/tree/nesting/test/deeper/',
-                      ],
-                    ],
-                    # }}}
-                    'items' => [
-                      'link' => # {{{
-                      [
-                        'type'   => 'menu',
-                        'markup' => [['_up']],
-                        'text' => [ # {{{
-                          'en' =>
-                          [
-                            '@' => 'testmenu/tree/nesting/test/deeper/link',
-                            '.' => 'this is a leaf node, navigate back?'
-                          ],
-                        ],
-                        # }}}
-                        'items' => [
-                        ],
-                      ],
-                      # }}}
-                    ],
-                  ],
-                  # }}}
-                ],
-              ],
-              # }}}
-              'another' => # {{{
-              [
-                'type'   => 'menu',
-                'markup' => [['_up']],
-                'text' => [ # {{{
-                  'en' =>
-                  [
-                    '@' => 'testmenu/tree/nesting/another',
-                    '.' => 'another leaf node',
-                  ],
-                ],
-                # }}}
-                'items' => [
-                ],
-              ],
-              # }}}
-            ],
-          ],
-          # }}}
-        ],
-      ],
-      # }}}
-      'testform' => # {{{
-      [
-        'type' => 'injector',
-        'path' => 'testform',
-      ],
-      # }}}
     ],
   ],
   # }}}
