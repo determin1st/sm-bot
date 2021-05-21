@@ -1,240 +1,89 @@
 <?php
 namespace SM;
-class type_game {
+class item_testmenu_tree_cycle_start_play {
   # {{{
-  public static function handle($bot, $plan)
+  public static function render(&$item, $bot)
   {
-  }
-  public static
-    $message = '',
-    $result  = [
-      'en' =>
-      [
-        0 => '',
-      ],
-      'ru' =>
-      [
-        0 => '',
-      ],
-    ];
-  # }}}
-  private function editMarkup($markup, $msg) # {{{
-  {
-    $a = $this->api->send('editMessageReplyMarkup', [
-      'chat_id'      => $this->user->chat->id,
-      'message_id'   => $msg,
-      'reply_markup' => $markup,
+    # throw two dices
+    $dice1  = rand(1,6);
+    $dice2  = rand(1,6);
+    $sum    = $dice1 + $dice2;
+    $luck   = ($sum === 12);
+    # render text
+    $item['textContent'] = $bot::render_content($item['content'], [
+      'dice1' => $dice1,
+      'dice2' => $dice2,
+      'sum'   => $sum,
+      'luck'  => $luck,
     ]);
-    if (!$a || $a === true)
+    # add dice values to the title identifier and
+    # check bot's file_id storage (don't render already cached)
+    $id = $item['titleId']."-$dice1-$dice2";
+    if (!($file = $bot->getFileId($id)))
     {
-      $this->log($this->api->error);
-      return -1;
-    }
-    return $a->result->message_id;
-  }
-  # }}}
-  private function sendGame(&$item) # {{{
-  {
-    # check variant
-    if (($game = $item['data'])['is_created'])
-    {
-      # send created game
-      $this->log('game: '.$game['name']);
-      $icon = 0;
-      $res = $this->api->send('sendGame', [
-        'chat_id'              => $this->user->chat->id,
-        'game_short_name'      => 'a'.$game['id'],
-        'disable_notification' => true,
-        'reply_markup'         => $item['markup'],
-      ]);
-    }
-    else
-    {
-      # send multigame
-      $this->log('multigame: '.$game['name']);
-      $icon = $this->sendImage($game['icon_id'], $game['icon'], '', '');
-      if (!$icon) {
-        return 0;
-      }
-      $res = $this->api->send('sendGame', [
-        'chat_id'              => $this->user->chat->id,
-        'game_short_name'      => 'multigame',
-        'disable_notification' => true,
-        'reply_markup'         => $item['markup'],
-      ]);
-    }
-    # check result
-    if (!$res)
-    {
-      $this->log($this->api->error);
-      return 0;
-    }
-    # remove previous icon
-    $conf = &$item['config'];
-    if (array_key_exists('icon', $conf) && $conf['icon'])
-    {
-      $a = $this->api->send('deleteMessage', [
-        'chat_id'    => $this->user->chat->id,
-        'message_id' => $conf['icon'],
-      ]);
-      if (!$a) {
-        $this->log($this->api->error);
-      }
-    }
-    # update config
-    $conf['icon'] = $icon;
-    # done
-    return $res->result->message_id;
-  }
-  # }}}
-  private function getGameUrl($name, $msg) # {{{
-  {
-    # get data
-    if (!($data = $this->data['games']) || !count($data)) {
-      return '';
-    }
-    # determine game identifier
-    if ($name === 'multigame')
-    {
-      # multigame
-      # get identifier from the game command configuration
-      $id = $this->user->config;
-      if (!array_key_exists('game', $id) ||
-          !($id = $id['game']) ||
-          !array_key_exists('id', $id) ||
-          !($id = intval($id['id'])))
+      # render title (overlay)
+      # create blank title image with breadcrumbs
+      $bread = $bot->itemBreadcrumb($item, $bot->user->lang);
+      $img   = $bot->imageTitle('', $bread, null, '', 0);
+      # open dice imagepack
+      $dices = $bot::$imgdir.'dice.png';
+      if (($dices = imagecreatefrompng($dices)) === false)
       {
-        return '';
+        $bot->log("imagecreatefromjpeg($dices) failed");
+        return true;
       }
-      # check
-      if ($id === -1)
-      {
-        # randomize?
-        return '';
-      }
-      $id = strval($id);
-      if (!$msg)
-      {
-        $this->log('TODO: REPOSTED GAME CALLBACK');
-      }
-    }
-    else
-    {
-      # created game (name includes identifier)
-      $id = substr($name, 1);
+      # determine dice picture rects
+      $rect1 = self::getDiceRect($dice1);
+      $rect2 = self::getDiceRect($dice2);
+      # determine dice area offsets (center align)
+      $a = $rect1[2] + $rect2[2];# total width
+      $b = $rect1[3];# total height
+      $x = (640 - $a) / 2;# item's title has constant width
+      $y = 9 + (160 - $b) / 2;# and, height as well
+      # for proper overlay,
+      # set dice transparent color (background)
+      $a = imagecolorat($dices, 1, 1);
+      $b = imagecolortransparent($dices, $a);
+      # copy both dices to the title
+      $a = imagecopy(
+        $img, $dices,
+        $x, $y,
+        $rect1[0], $rect1[1], $rect1[2], $rect1[3]
+      );
+      $b = imagecopy(
+        $img, $dices,
+        $x + $rect1[2], $y,
+        $rect2[0], $rect2[1], $rect2[2], $rect2[3]
+      );
+      # create a file
+      $file = $bot->imageToFile($img);
+      imagedestroy($dices);
     }
     # complete
-    return array_key_exists($id, $data)
-      ? $this->b2b->getGameUrl($data[$id]['url'])
-      : '';
-  }
-  # }}}
-  private function getRefList($file, &$list) # {{{
-  {
-    ###
-    ###
-    # TODO: load favorite games list
-    #$a = $dir.'fav_games.json';
-    #$this->data['fav_games'] = $this->getRefList($a, $this->data['games']);
-    # check
-    if (!$list || !file_exists($file)) {
-      return [];
-    }
-    # load identifiers and
-    # create reference list
-    $a = json_decode(file_get_contents($file), true);
-    $b = [];
-    foreach ($a as $c)
-    {
-      if (array_key_exists($c, $list)) {
-        $b[$c] = &$list[$c];
-      }
-    }
-    # done
-    return $b;
-  }
-  # }}}
-  private function setRefList($file, &$list) # {{{
-  {
-    if ($list)
-    {
-      # collect identifiers
-      $a = [];
-      foreach ($list as $b) {
-        $a[] = $b['id'];
-      }
-      # store
-      if (file_put_contents($file, json_encode($a)) === false)
-      {
-        $this->log('file_put_contents('.$a.') failed');
-        return false;
-      }
-      return true;
-    }
-    return file_exists($file)
-      ? unlink($file) : true;
-  }
-  # }}}
-  private function setDataConfig() # {{{
-  {
-    $a = $this->dir.'games-config.json';
-    $b = json_encode($this->data['config']);
-    if (file_put_contents($a, $b) === false)
-    {
-      $this->log('file_put_contents('.$a.') failed');
-      return false;
-    }
+    $item['titleId'] = $id;
+    $item['titleImage'] = $file;
     return true;
   }
-  # }}}
-  private function loadData() # {{{
+  public static function getDiceRect($dice)
   {
-    # check stored
-    $file = $this->dir.'games.json';
-    if (file_exists($file))
+    static $spec = [73,71];# [width,height]
+    # prepare
+    $rect = [0,0,$spec[0],$spec[1]];
+    $dice = $dice - 1;# [1..N] => [0..N-1]
+    # one row contains 3 images
+    while ($dice > 2)
     {
-      # load from cache
-      if (!($a = file_get_contents($file)) ||
-          !($a = json_decode($a, true)))
-      {
-        $this->log('failed to load '.$file);
-        return null;
-      }
-      # load configuration
-      $file = $this->dir.'games-config.json';
-      if (!file_exists($file) ||
-          !($b = file_get_contents($file)) ||
-          !($b = json_decode($b, true)))
-      {
-        $this->log('failed to load '.$file);
-        return null;
-      }
+      ++$rect[1];
+      $dice = $dice - 3;
     }
-    else
-    {
-      # load from remote
-      if (!($a = $this->b2b->getGames()))
-      {
-        $this->log($this->b2b->error);
-        return null;
-      }
-      # store
-      file_put_contents($file, json_encode($a));
-      # create initial config
-      $file = $this->dir.'games-config.json';
-      $b = [
-        'created' => [],# non-multigames
-      ];
-      file_put_contents($file, json_encode($b));
-    }
-    # set configuration
-    $a['config'] = $b;
-    # done
-    return $a;
+    # calculate offsets
+    $rect[0] = 1 + $dice * (1 + $spec[0]);
+    $rect[1] = 1 + $rect[1] * (1 + $spec[1]);
+    return $rect;
   }
   # }}}
 }
-class task_testform {
+class task_testformmm {
   # {{{
   public static function handle($bot, $plan)
   {

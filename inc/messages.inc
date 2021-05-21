@@ -6,9 +6,10 @@ return [
     1 => '{:exclamation:} command failed',
     2 => '{:exclamation:} operation failed',
     3 => '{:exclamation:} not found',
-    4 => '
+    4 => # LIST template {{{
+    '
 page <b>{{page}}</b> of {{page_count}} ({{item_count}})
-    ', # list status
+    ',# }}}
     5 => 'this list is empty',
     6 => # FORM template {{{
     '
@@ -109,9 +110,10 @@ page <b>{{page}}</b> of {{page_count}} ({{item_count}})
     1 => '{:exclamation:} неверная комманда',
     2 => '{:exclamation:} сбой операции',
     3 => '{:exclamation:} не найдено',
-    4 => '
+    4 => # LIST template {{{
+    '
 страница <b>{{page}}</b> из {{page_count}} ({{item_count}})
-    ',
+    ',# }}}
     5 => 'этот список пуст',
     6 => # FORM template {{{
     '

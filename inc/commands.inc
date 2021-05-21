@@ -1,42 +1,36 @@
 <?php
 return [
-  'game' => # {{{
-  [
-    'type'   => 'game',
-    'data'   => 'games',
-    'markup' => [
-      ['_play'],
-      ['_fav','_up',' '],
-    ],
-    'text'   => [
-      'en' =>
-      [
-      ],
-      'ru' =>
-      [
-      ],
-    ],
-  ],
-  # }}}
   'debug' => # {{{
   [
     'type'   => 'menu',
     'markup' => [
       ['_restartLoop'],
+      ['menu1','menu2'],
       ['form1','form2'],
       ['_up'],
     ],
     'text' => [ # {{{
-      'en' =>
-      [
-        '@' => 'debug',
-        '_restartLoop' => 'restart loop',
-        'form1' => 'testform (inject)',
-        'form2' => 'testform (open)',
-      ],
+      '@' => 'debug',
+      '_restartLoop' => 'restart loop',
+      'menu1' => 'menu (inject)',
+      'menu2' => 'menu (open)',
+      'form1' => 'form (inject)',
+      'form2' => 'form (open)',
     ],
     # }}}
     'items' => [
+      'menu1' => # {{{
+      [
+        'type' => 'injector',
+        'path' => 'testmenu',
+      ],
+      # }}}
+      'menu2' => # {{{
+      [
+        'type' => 'opener',
+        'path' => 'testmenu',
+      ],
+      # }}}
       'form1' => # {{{
       [
         'type' => 'injector',
@@ -54,24 +48,26 @@ return [
   # }}}
   'testmenu' => # {{{
   [
-    'type'   => 'menu',
+    'type' => 'menu',
+    'blocks' => ['test'],
     'markup' => [['tree'],['_up']],
-    'text' => ['en'=>['@'=>'testmenu','.'=>'root node']],
+    'text' => ['en'=>['.'=>'Root node']],
     'items' => [
       'tree' => # {{{
       [
         'type' => 'menu',
-        'markup' => [['nesting'], ['_up']],
-        'text' => [
-          'en' => ['@' => 'tree'],
-        ],
+        'markup' => [['nesting'],['cycle'],['_up']],
         'items' => [
           'nesting' => # {{{
           [
             'type' => 'menu',
             'markup' => [['test'],['another'],['_up']],
             'text' => [
-              'en' => ['@' => 'nesting'],
+              'en' => [
+                '.' => '
+This node has 2 items (separate branches). You can navigate in one or another, as well as out to the parent node.
+                ',
+              ],
             ],
             'items' => [
               'test' => # {{{
@@ -112,16 +108,67 @@ return [
               'another' => # {{{
               [
                 'type'   => 'menu',
-                'markup' => [['_up']],
+                'markup' => [['_go:testmenu:tree:nesting:test:deeper:link'],['_up']],
                 'text' => [
                   'en' => [
                     '@' => 'another',
-                    '.' => 'leaf node',
+                    '.' => '
+leaf node, as well as:
+<code>/testmenu/tree/nesting/test/deeper/link</code>
+
+You may also type a node path as a command, the bot will try to remove this message and create a new one (re-creation). That usually happens fast enough for user to mention. Why? Because it makes item current (user intention) - new message is always the last one displayed in the chat.
+                    ',
                   ],
                 ],
                 'items' => [],
               ],
               # }}}
+            ],
+          ],
+          # }}}
+          'cycle' => # {{{
+          [
+            'type' => 'menu',
+            'markup' => [['start'],['_up']],
+            'text' => [
+              '.' => '
+Nodes below, don\'t have an upward button.
+              ',
+            ],
+            'items' => [
+              'start' =>
+              [
+                'type' => 'menu',
+                'markup' => [['play']],
+                'items' => [
+                  'play' =>
+                  [
+                    'type' => 'menu',
+                    'markup' => [['stop']],
+                    'text' => ['.' => '
+This node has a custom handler. It throws 2 dices and shows their sum at each render. 
+Current sum is <code>{{sum}}</code>. {{^luck}}Prize at <code>12</code>.{{/luck}}
+{{br}}{{br}}
+{{#luck}}
+  Here is your prize:{{br}}
+  {:star:} https://youtu.be/dQw4w9WgXcQ
+{{/luck}}
+{{br}}
+                    '],
+                    'items' => [
+                      'stop' =>
+                      [
+                        'type' => 'menu',
+                        'markup' => [['_go:testmenu:tree:cycle:start']],
+                        'text' => ['.' => '
+Able to get out?
+                        '],
+                        'items' => [],
+                      ],
+                    ],
+                  ],
+                ],
+              ],
             ],
           ],
           # }}}
@@ -134,6 +181,7 @@ return [
   'testform' => # {{{
   [
     'type' => 'form',
+    'blocks' => ['test'],
     'noRequiredSkip'   => 1,
     'noRequiredSubmit' => 1,
     'submitOnInput'    => 0,
