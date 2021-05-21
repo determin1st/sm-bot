@@ -3135,7 +3135,7 @@ class Bot {
   {
     if ($file && array_key_exists($file, $this->fids))
     {
-      $this->logDebug("file_id found: $file");
+      $this->logDebug("file_id used: $file");
       return $this->fids[$file];
     }
     return '';
