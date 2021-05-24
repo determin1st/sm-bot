@@ -14,7 +14,6 @@ class Bot {
         [240,248,255],# darkslateblue (background)
         [72,61,139],  # aliceblue (foreground)
       ],
-      'debug_task' => false,
       'debuglog'   => true,
       'file_id'    => true,
       'force_lang' => '',
@@ -22,7 +21,7 @@ class Bot {
     ],
     $id       = '',   # telegram bot identifier
     $api      = null, # telegram api instance
-    $b2b      = null, # bot's data api instance
+    $b2b      = null, # TODO: bot's data api instance
     $dir      = '',   # bot's data directory
     $errorlog = '',   # bot's ERROR.log
     $accesslog = '',  # bot's ACCESS.log
@@ -31,6 +30,7 @@ class Bot {
     $item     = null, # currently rendered block item
     $user     = null; # current user of the bot
   private
+    $tasks    = [],   # async jobs stack
     $fids     = null; # common [file=>id] map
   public static
     $MSG_EXPIRE_TIME = 48*60*60,# telegram's default
@@ -145,7 +145,7 @@ class Bot {
     $bot->commands = $bot->itemAssemble($b);
     # load file_id map
     $a = $bot->dir.'file_id.json';
-    $bot->fids = (file_exists($a) && $bot->opts['file_id'])
+    $bot->fids = file_exists($a)
       ? json_decode(file_get_contents($a), true)
       : [];
     # done
@@ -206,21 +206,27 @@ class Bot {
           unlink($file);
         }
       }, $a[1]);
-      # attach bot's user
-      $b->user = (object)$plan['user'];
-      $b->user->chat = (object)$b->user->chat;
       # operate
       try
       {
+        # attach bot's user
+        $b->user = (object)$plan['user'];
+        $b->user->chat = (object)$b->user->chat;
+        # load item blocks
+        if (!$b->itemLoadBlocks($plan['item'])) {
+          throw new \Exception($a[0].' failed #'.$plan['id'].': '.$plan['item']);
+        }
+        # execute
         switch ($a[0]) {
         case 'task':
-          if (!$b->itemTaskWork($plan)) {
-            throw new Exception('TASK FAILED #'.$plan['id'].': '.$plan['item']);
+          if (!$b->taskWork($plan)) {
+            throw new \Exception($a[0].' failed #'.$plan['id'].': '.$plan['item']);
           }
+          $b->taskDetach();# enables continuation
           break;
         case 'progress':
-          if (!$b->itemTaskProgress($plan, $a[1])) {
-            throw new Exception('PROGRESS FAILED #'.$plan['id'].': '.$plan['item']);
+          if (!$b->taskProgress($plan, $a[1])) {
+            throw new \Exception($a[0].' failed #'.$plan['id'].': '.$plan['item']);
           }
           break;
         }
@@ -718,7 +724,7 @@ class Bot {
     $item['titleId'] = str_replace(':', '-', $item['id']).'-'.$lang;
     $item['title'] = array_key_exists('@', $text)
       ? $text['@']
-      : $item['name'];
+      : '';
     $item['content'] = array_key_exists('.', $text)
       ? $text['.']
       : '';
@@ -837,25 +843,22 @@ class Bot {
     }
     # }}}
     # load block handlers {{{
-    $a = 'blocks'.DIRECTORY_SEPARATOR;
-    $b = $this->dir.$a;
-    $c = self::$inc.$a;
-    foreach ($item['blocks'] as $a)
+    if (!$this->itemLoadBlocks($item))
     {
-      $a = "$a.php";
-      $a = file_exists($b.$a) ? $b.$a : $c.$a;
-      include_once($a);
+      $this->logError('item blocks failed to load');
+      return null;
     }
-    $ItemHandler = '';
-    # determine handler classes (blocks)
+    # determine item handler class
     $a = '\\'.__NAMESPACE__.'\\';
-    #$a = '';
     $b = str_replace(':', '_', $item['id']);
     $c = $a.'item_'.$b;
     if (class_exists($c, false))
     {
       $ItemHandler = $c;
       $this->logDebug("handler: $ItemHandler");
+    }
+    else {
+      $ItemHandler = '';
     }
     # }}}
     # load data {{{
@@ -878,13 +881,14 @@ class Bot {
     switch ($item['type']) {
     case 'menu':
       # render {{{
-      if ($ItemHandler) {
-        $ItemHandler::render($item, $this);
+      if ($ItemHandler)
+      {
+        $a = $ItemHandler::render($this, $item, $func, $args);
       }
       if (!$item['textContent']) {
         $item['textContent'] = $item['content'];
       }
-      if (!$item['inlineMarkup'])
+      if ($item['inlineMarkup'] === null)
       {
         $item['inlineMarkup'] = $this->itemInlineMarkup(
           $item, $item['markup'], $text
@@ -1414,10 +1418,9 @@ class Bot {
           $error = 1;return $item;# NOP guard
         }
         # create task
-        $a = $this->opts['debug_task'];# debugging?
-        if (!$this->itemTaskStart($item, $data, $a))
+        if (!$this->taskAttach($item, $data, true))
         {
-          $error = $a ? 1 : self::$messages[$lang][11];
+          $error = 1;
           return $item;
         }
         # change form state
@@ -1793,14 +1796,14 @@ class Bot {
       elseif (!$item['title'])
       {
         # STATIC IMAGE? (no text specified)
-        # determine image sources
+        # determine base image paths
         $a = str_replace(':', '-', $item['id']);
         $b = 'img'.DIRECTORY_SEPARATOR;
-        $c = $b.$a.'.jpg';
-        $d = $b.$a.'-'.$lang.'.jpg';
+        $c = $b.$item['titleId'].'.jpg';# more specific first
+        $d = $b.$a.'.jpg';# less specific last
         $a = $this->dir;
         $b = self::$inc;
-        # determine single location
+        # determine single source
         $a = (file_exists($a.$c)
           ? $a.$c : (file_exists($a.$d)
             ? $a.$d : (file_exists($b.$c)
@@ -1810,6 +1813,7 @@ class Bot {
         if ($a)
         {
           # static image file
+          $this->logDebug("image requested: $a");
           $item['titleImage'] = $this->imageFile($a);
         }
         else
@@ -1935,6 +1939,27 @@ class Bot {
     return $m;
   }
   # }}}
+  private function itemLoadBlocks($item) # {{{
+  {
+    # check argument
+    if (is_string($item) &&
+        !($item = $this->itemGet($item)))
+    {
+      return false;
+    }
+    # load block handlers
+    $a = 'blocks'.DIRECTORY_SEPARATOR;
+    $b = $this->dir.$a;
+    $c = self::$inc.$a;
+    foreach ($item['blocks'] as $a)
+    {
+      $a = "$a.php";
+      $a = file_exists($b.$a) ? $b.$a : $c.$a;
+      include_once($a);
+    }
+    return true;
+  }
+  # }}}
   public function itemBreadcrumb(&$item, $lang = '', $short = false) # {{{
   {
     # determine first crumb,
@@ -2021,7 +2046,7 @@ class Bot {
               ? $text[$b]
               : $b;
             $c = self::$tp->render(self::$buttons['item'], ['text'=>$c]);
-            $d = array_key_exists($b, $item['items'])
+            $d = ($item['items'] && array_key_exists($b, $item['items']))
               ? '/'.$item['id'].':'.$b
               : '!';
           }
@@ -2106,7 +2131,11 @@ class Bot {
           else
           {
             # render empty
-            $c = self::$tp->render($c, ['name'=>'']);
+            $c = self::$tp->render($c, [
+              'name' => (array_key_exists($d, $text)
+                ? $text[$d]
+                : '')
+            ]);
           }
           # }}}
         }
@@ -2119,161 +2148,6 @@ class Bot {
     }
     # done
     return $mkup;
-  }
-  # }}}
-  private function itemTaskStart(&$item, $data, $debug = false) # {{{
-  {
-    # compose php interpreter command
-    $task = __DIR__.DIRECTORY_SEPARATOR.'index.php';
-    $task = '"'.PHP_BINARY.'" -f "'.$task.'" -- ';
-    # check
-    if (is_string($item))
-    {
-      # unmanaged, custom operation
-      if (self::async_execute($task.$item)) {
-        $this->log("custom task: $item");
-      }
-    }
-    else
-    {
-      # create item's task plan
-      $plan = [
-        'id'   => uniqid(),
-        'bot'  => $this->id,
-        'item' => $item['id'],
-        'data' => $data,
-        'user' => $this->user,
-      ];
-      if ($debug)
-      {
-        # launch now (debug mode),
-        # as item is passed by reference, it can be replaced,
-        $this->log('task debug: '.$item['id']);
-        $item = $this->itemTaskWork($plan, true);
-        return false;# prevents current attachment (replaced item)
-      }
-      else
-      {
-        # write task file
-        $file = str_replace(':', '-', $item['id']);
-        $file = 'task-'.$file.'.json';
-        $file = $this->user->dir.$file;
-        if (!file_put_contents($file, json_encode($plan)))
-        {
-          $this->logError("file_put_contents($file) failed");
-          return false;
-        }
-        # launch two processes
-        if (self::async_execute($task.'task "'.$file.'" '.$plan['id']) &&
-            self::async_execute($task.'progress "'.$file.'" '.$plan['id']))
-        {
-          $this->log("task: $file");
-        }
-      }
-    }
-    return true;
-  }
-  # }}}
-  private function itemTaskWork($plan, $debug = false) # {{{
-  {
-    # get current time
-    $time = microtime(true);
-    # hookup handlers
-    $a = 'tasks.inc';
-    include_once(self::$inc.$a);# common
-    if (file_exists($this->dir.$a)) {
-      include_once($this->dir.$a);# bot specific
-    }
-    # execute task handler
-    $a = 'task_'.str_replace(':', '_', $plan['item']);
-    $a = '\\'.__NAMESPACE__.'\\'.$a;
-    if (class_exists($a, false))
-    {
-      $res = $a::handle($this, $plan);
-      $msg = $a::$message;
-    }
-    else
-    {
-      # no handler, no problem
-      $res = -1;
-      $msg = '';
-    }
-    # update item
-    if ($debug) {
-      $item = $this->itemTaskUpdate($plan['item'], 'done', [$res,$msg]);
-    }
-    elseif ($this->userConfigAttach())
-    {
-      # measure time spent working and
-      # delay completion for at least 0.4 second
-      $a = 400000;
-      if (($b = microtime(true) - $time) > 0 && $b < $a) {
-        usleep($a - $b);
-      }
-      # to prevent config file deadlock,
-      # lets wrap refresher
-      try
-      {
-        $item = $this->itemTaskUpdate($plan['item'], 'done', [$res,$msg]);
-      }
-      catch (\Exception $e)
-      {
-        $this->logException($e);
-        $item = null;
-      }
-      $this->userConfigDetach(!$item);
-    }
-    # done
-    return $item;
-  }
-  # }}}
-  private function itemTaskProgress($plan, $file) # {{{
-  {
-    $res = 0;
-    while (file_exists($file))
-    {
-      # suspend
-      usleep(500000);# 500ms
-      if (!file_exists($file)) {
-        break;
-      }
-      # determine progress value
-      $res = $res ? 0 : 1;
-      # load configuration
-      if (!$this->userConfigAttach()) {
-        return false;
-      }
-      # update
-      $item = $this->itemTaskUpdate($plan['item'], 'progress', [$res]);
-      # unload configuration (no write)
-      $this->userConfigDetach(true);
-    }
-    return true;
-  }
-  # }}}
-  private function itemTaskUpdate($id, $func, $args) # {{{
-  {
-    # prepare
-    $a = '/'.$id.'!'.$func.' '.implode(',', $args);
-    $b = '';
-    # attach item
-    if (($item = $this->itemAttach($a, $b)) && !$b)
-    {
-      # check displayed
-      $a = $this->user->config;
-      $b = $item['root']['id'];
-      if (array_key_exists($b, $a) &&
-          array_key_exists('_msg', $a[$b]) &&
-          $a[$b]['_msg'] &&
-          $a[$b]['_item'] === $item['id'])
-      {
-        # update
-        $this->itemUpdate($a[$b]['_msg'], $item);
-        return $item;
-      }
-    }
-    # not updated
-    return null;
   }
   # }}}
   public function itemGet($id) # {{{
@@ -2409,8 +2283,8 @@ class Bot {
       # send and check the result
       if (!($res = $this->api->send($func, $res, $file)) || $res === true)
       {
-        $this->log($func.'('.$item['id'].') failed: '.$this->api->error);
-        return -1;
+        $this->logError($func.'('.$item['id'].') failed: '.$this->api->error);
+        return -1;# stay positive
       }
       # store file_id
       if ($item['titleId'] && $file)
@@ -2526,6 +2400,230 @@ class Bot {
   }
   # }}}
   # }}}
+  # task manager {{{
+  public function taskAttach( # {{{
+    &$item,          # object (standard) or string (custom)
+    $data   = null,  # task data
+    $ticker = false, # enables item progress helper
+    $debug  = false  # to catch fatals
+  ) {
+    ###
+    if ($item)
+    {
+      # compose php interpreter command
+      $task = __DIR__.DIRECTORY_SEPARATOR.'index.php';
+      $task = '"'.PHP_BINARY.'" -f "'.$task.'" -- ';
+      # check type
+      if (is_string($item))
+      {
+        # unmanaged, custom operation
+        $this->log("custom task: $item");
+        $this->tasks[] = [0, $task.$item];
+      }
+      else
+      {
+        # standard
+        # determine task plan file
+        $file = 'task-'.str_replace(':', '-', $item['id']).'.json';
+        $file = $this->user->dir.$file;
+        if ($debug)
+        {
+          $plan = -1;
+          $this->log('debug task: '.$item['id']);
+        }
+        else
+        {
+          $plan = uniqid();
+          $this->log("task: $file");
+        }
+        # determine process arguments
+        $args = ' "'.$file.'" '.$plan;
+        # add worker
+        $this->tasks[] = [$plan, $task.'task'.$args, $file, $item['id'], $data];
+        # add ticker
+        if ($ticker) {
+          $this->tasks[] = [$plan, $task.'progress'.$args, $file, $item['id'], $data];
+        }
+      }
+    }
+    return true;
+  }
+  # }}}
+  public function taskDetach() # {{{
+  {
+    # copy and reset first
+    $tasks = $this->tasks;
+    $debug = false;
+    $this->tasks = [];
+    # spawn all tasks one by one
+    foreach ($tasks as $task)
+    {
+      # create plan file
+      if ($task[0])
+      {
+        $file = $task[2];
+        $plan = [
+          'id'   => $task[0],
+          'bot'  => $this->id,
+          'item' => $task[3],
+          'data' => $task[4],
+          'user' => $this->user,
+        ];
+        if (~$task[0])
+        {
+          if (!file_put_contents($file, json_encode($plan)))
+          {
+            $this->logError("file_put_contents($file) failed");
+            break;
+          }
+        }
+        else
+        {
+          # DEBUG: run sync
+          $this->log('========================');
+          $debug = true;
+          if (!$this->taskWork($plan)) {
+            break;
+          }
+          $this->log('========================');
+          continue;
+        }
+      }
+      # launch
+      if (!self::async_execute($task[1])) {
+        break;
+      }
+    }
+    # refresh user configuration (in debug mode)
+    if ($debug) {
+      $this->userConfigDetach();
+    }
+    # done
+    return true;
+  }
+  # }}}
+  private function taskWork($plan) # {{{
+  {
+    # get current time
+    $time = microtime(true);
+    $lang = $this->user->lang;
+    # determine item handler
+    $a = '\\'.__NAMESPACE__.'\\item_';
+    $a = $a.str_replace(':', '_', $plan['item']);
+    if (class_exists($a, false))
+    {
+      # execute
+      if (!($res = $a::task($this, $plan)) ||
+          !is_array($res) ||
+          !(count($res) === 2))
+      {
+        $res = [0];
+      }
+    }
+    else
+    {
+      # no handler, no problem
+      $res = [-1,''];
+    }
+    # locked, measure time spent working and
+    # delay completion for at least 0.3 second
+    $a = 300000;
+    if (($b = microtime(true) - $time) > 0 && $b < $a) {
+      usleep($a - $b);
+    }
+    # update task item and complete
+    return $this->taskUpdate($plan, 'done', $res);
+  }
+  # }}}
+  private function taskProgress($plan, $file) # {{{
+  {
+    static
+      $tickSize = 500000;# 500ms
+      $maxTicks = 2*7200;# x500ms, 7200=1h
+    ###
+    # determine item handler
+    $item = null;
+    $a = '\\'.__NAMESPACE__.'\\item_';
+    $a = $a.str_replace(':', '_', $plan['item']);
+    if (!class_exists($a, false)) {
+      return false;
+    }
+    # start ticks loop
+    $b = method_exists($a, 'tick');
+    $c = 0;# counter
+    $d = 0;# default result
+    while (file_exists($file) && $c < $maxTicks)
+    {
+      # suspend
+      usleep($tickSize);
+      if (!file_exists($file)) {
+        break;
+      }
+      # tick
+      if ($b)
+      {
+        # custom
+        $e = $a::tick($this, $item, $c, $d);
+      }
+      else
+      {
+        # default
+        $e = ($c % 2) ? 1 : 0;
+      }
+      ++$c;
+      # update when changed
+      if ($d !== $e)
+      {
+        $item = $this->taskUpdate($plan, 'progress', [$e]);
+        $d = $e;
+      }
+    }
+    # done
+    return true;
+  }
+  # }}}
+  public function taskUpdate($plan, $func, $args) # {{{
+  {
+    # before any task update is made to the user's view,
+    # configuration must be locked (except the debug case)
+    if (~$plan['id'] && !$this->userConfigAttach()) {
+      return null;
+    }
+    try
+    {
+      # attach task item
+      $a = '/'.$plan['item'].'!'.$func.' '.implode(',', $args);
+      $b = '';
+      if (!($item = $this->itemAttach($a, $b)) || $b) {
+        throw new \Exception("itemAttach($a) failed");
+      }
+      # check displayed
+      # the _item parameter is untrusted..
+      $c = $this->user->config;
+      $b = $item['root']['id'];
+      if (array_key_exists($b, $c) &&
+          array_key_exists('_msg', $c[$b]) &&
+          $c[$b]['_msg'] &&
+          $c[$b]['_item'] === $item['id'])
+      {
+        # force an update
+        $this->itemUpdate($c[$b]['_msg'], $item, true);
+      }
+    }
+    catch (\Exception $e)
+    {
+      $this->logException($e);
+      $item = null;
+    }
+    # release user configuration lock
+    if (~$plan['id']) {
+      $this->userConfigDetach();
+    }
+    # complete
+    return $item;
+  }
+  # }}}
+  # }}}
   # user {{{
   private function userAttach($update) # {{{
   {
@@ -2624,7 +2722,7 @@ class Bot {
     return $this->userConfigAttach();
   }
   # }}}
-  private function userConfigAttach($noread = false) # {{{
+  private function userConfigAttach() # {{{
   {
     # determine filename (depends on chat)
     $file = $this->user->dir.'config';
@@ -2641,12 +2739,9 @@ class Bot {
     }
     # read, decode contents and
     # set user's configuration
-    if (!$noread)
-    {
-      $this->user->config = file_exists($file)
-        ? json_decode(file_get_contents($file), true)
-        : [];
-    }
+    $this->user->config = file_exists($file)
+      ? json_decode(file_get_contents($file), true)
+      : [];
     # done
     $this->user->file = $file;
     return true;
@@ -2718,31 +2813,27 @@ class Bot {
     return true;
   }
   # }}}
-  private function userDetach($noWrite = false) # {{{
+  private function userConfigDetach($nowrite = false) # {{{
   {
-    if ($this->user)
+    if ($file = $this->user->file)
     {
-      $noWrite = ($noWrite || !$this->user->changed);
-      $this->userConfigDetach($noWrite);
-      $this->user = null;
+      # write changes
+      if (!$nowrite && $this->user->changed) {
+        file_put_contents($file, json_encode($this->user->config));
+      }
+      # release lock
+      self::file_unlock($file);
     }
     return true;
   }
   # }}}
-  private function userConfigDetach($nowrite = false) # {{{
+  private function userDetach($nowrite = false) # {{{
   {
-    if ($this->user->file)
+    if ($this->user)
     {
-      # write changes
-      if (!$nowrite)
-      {
-        file_put_contents(
-          $this->user->file,
-          json_encode($this->user->config)
-        );
-      }
-      # release lock
-      self::file_unlock($this->user->file);
+      $this->userConfigDetach($nowrite);
+      $this->taskDetach();
+      $this->user = null;
     }
     return true;
   }
@@ -3118,24 +3209,35 @@ class Bot {
   # }}}
   public function setFileId($file, $id) # {{{
   {
-    # set current
+    # update current
     $this->fids[$file] = $id;
-    # store
+    # prepare
     $a = $this->dir.'file_id.json';
     $b = json_encode($this->fids);
-    if (file_put_contents($a, $b) === false)
+    # lock file
+    if (self::file_lock($a))
     {
-      $this->log('file_put_contents('.$a.') failed');
-      return false;
+      # check changed
+      if (!file_exists($a) || file_get_contents($a) !== $b)
+      {
+        # update
+        if (file_put_contents($a, $b) === false) {
+          $this->logError('file_put_contents('.$a.') failed');
+        }
+      }
+      # release lock
+      self::file_unlock($a);
     }
+    # always sunny
     return true;
   }
   # }}}
   public function getFileId($file) # {{{
   {
-    if ($file && array_key_exists($file, $this->fids))
+    if ($file && array_key_exists($file, $this->fids) &&
+        $this->opts['file_id'])
     {
-      $this->logDebug("file_id used: $file");
+      $this->logDebug("file_id: $file");
       return $this->fids[$file];
     }
     return '';

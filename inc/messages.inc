@@ -94,7 +94,7 @@ page <b>{{page}}</b> of {{page_count}} ({{item_count}})
     8 => 'number [{{min}}..{{max}}]',
     9 => '',
     10 => 'close',
-    11 => '{:exclamation:} task start failed',
+    11 => '{:exclamation:} task failed to start',
     12 => 'complete',
     13 => 'select option',
     14 => 'refresh',
