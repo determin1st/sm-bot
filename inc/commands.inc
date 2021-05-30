@@ -246,5 +246,27 @@ Fill the form and try to guess the number.
     ],
   ],
   # }}}
+  'help' => # {{{
+  [
+    'type'   => 'menu',
+    'markup' => [['_up']],
+    'text' => [
+      'en' =>
+      [
+        '@' => 'help',
+        '.' => '
+<i>How does bot operate?</i>
+        ',
+      ],
+      'ru' =>
+      [
+        '@' => 'справка',
+        '.' => '
+<i>How does bot operate?</i>
+        ',
+      ],
+    ],
+  ],
+  # }}}
 ];
 ?>
