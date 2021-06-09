@@ -10,10 +10,11 @@ return [
   'fav_on'   => '{:star:}',
   'fav_off'  => '{:sparkles:}{:star:}{:sparkles:}',
   'refresh'  => '{{name}} {:arrows_counterclockwise:}',
+  'reset'    => '{:arrows_counterclockwise:} {{name}}',
+  'retry'    => '{:arrow_right_hook:} {{name}}',
   'ok'       => 'OK',
   'select0'  => '{{text}}',
   'select1'  => '{:green_circle:} {{text}}',
   'go'       => '{:arrow_forward:} {{text}}',
-  'item'     => '{:arrow_forward:} {{text}}',
 ];
 ?>

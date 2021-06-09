@@ -1,8 +1,7 @@
 <?php
 namespace SM;
 class item_testmenu_tree_cycle_start_play {
-  # {{{
-  public static function render($bot, &$item)
+  public static function render($bot, &$item) # {{{
   {
     # throw two dices
     $dice1  = rand(1,6);
@@ -10,7 +9,7 @@ class item_testmenu_tree_cycle_start_play {
     $sum    = $dice1 + $dice2;
     $luck   = ($sum === 12);
     # render text
-    $item['textContent'] = $bot::render_content($item['content'], [
+    $item['textContent'] = $bot->render_content($item['content'], [
       'dice1' => $dice1,
       'dice2' => $dice2,
       'sum'   => $sum,
@@ -84,7 +83,7 @@ class item_testmenu_tree_cycle_start_play {
   # }}}
 }
 class task_testformmm {
-  # {{{
+  # DELET {{{
   public static function task($bot, $plan)
   {
     # prepare {{{
