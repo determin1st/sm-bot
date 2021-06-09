@@ -1,5 +1,6 @@
 /arc/
 /data/*/
+!/data/master/
 mustache.php
 *.vim
 *.swp

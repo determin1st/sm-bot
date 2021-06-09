@@ -1,5 +1,5 @@
 <?php
-# TODO: special /reset command
+# TODO: md5 hash to check message updates
 # TODO: upgrade list options, add dynamics
 # TODO: language switch form
 # TODO: input bob
@@ -459,7 +459,7 @@ class Bot {
       }
       return false;
     }
-    # create new or re-create message
+    # create or re-create message
     $res = $this->itemSend($item);
     # update user
     if ($res && ~$res) {
@@ -772,6 +772,7 @@ class Bot {
     $conf = &$item['config'];
     $item['root'] = &$root;
     $item['lang'] = $lang = $this->user->lang;
+    $item['hash'] = '';
     $item['isTitleCached'] = true;
     $item['isInputAccepted'] = false;
     $item['isReactivated'] = $new;
@@ -2280,7 +2281,7 @@ class Bot {
     return $this->itemGet($id);
   }
   # }}}
-  private function itemSend($item) # {{{
+  private function itemSend(&$item) # {{{
   {
     # CUSTOM
     if (($H = $item['handler']) && method_exists($H, 'send')) {
@@ -2294,94 +2295,111 @@ class Bot {
       return 0;
     }
     # assemble parameters
+    $a = $item['textContent'];
+    $b = $item['inlineMarkup'];
     $q = [
       'chat_id' => $this->user->chat->id,
       'photo'   => $item['titleImage'],
       'disable_notification' => true,
     ];
-    if ($item['textContent'])
+    if ($a)
     {
-      $q['caption'] = $item['textContent'];
+      $q['caption']    = $a;
       $q['parse_mode'] = 'HTML';
     }
-    if ($b = $item['inlineMarkup']) {
+    if ($b) {
       $q['reply_markup'] = $b;
     }
     # send
-    if (!($a = $this->api->send('sendPhoto', $q)))
+    if (!($c = $this->api->send('sendPhoto', $q)))
     {
       $this->logError('sendPhoto('.$item['id'].') failed: '.$this->api->error);
       $this->logError($q);
       return 0;
     }
-    # store file_id
+    # set message hash
+    $item['hash'] = hash('md4', $item['titleId'].$a.$b);
+    # set file_id
     if ($item['titleId'] && ($item['titleImage'] instanceOf BotFile))
     {
-      $b = end($a->result->photo);
-      $this->setFileId($item['titleId'], $b->file_id);
+      $a = end($c->result->photo);
+      $this->setFileId($item['titleId'], $c->file_id);
     }
     # done
-    return $a->result->message_id;
+    return $c->result->message_id;
   }
   # }}}
-  private function itemUpdate($msg, $item, $refresh = false) # {{{
+  private function itemUpdate($msg, &$item, $refresh = false) # {{{
   {
     # CUSTOM
     if (($H = $item['handler']) && method_exists($H, 'update')) {
       return $H::update($this, $msg, $item, $refresh);
     }
     # STANDARD
-    # check
-    if ($refresh && $item['titleImage'])
+    # determine API function and parameters
+    $a = $item['textContent'];
+    if ($refresh && ($file = $item['titleImage']))
     {
-      # update image and text/markup
+      # IMAGE and TEXT
+      # {{{
       $func = 'editMessageMedia';
-      $file = $item['titleImage'];
       if ($file instanceof BotFile) {
         $img  = 'attach://'.$file->postname;# attachment
       }
       else
       {
         $img  = $file;# file_id
-        $file = null;# no attachments
+        $file = null;# nope
       }
       $res = [
-        'chat_id'      => $this->user->chat->id,
-        'message_id'   => $msg,
-        'media'        => json_encode([
-          'type'       => 'photo',
-          'media'      => $img,
-          'caption'    => $item['textContent'],
-          'parse_mode' => 'HTML',
-        ]),
+        'type'       => 'photo',
+        'media'      => $img,
+        'caption'    => $a,
+        'parse_mode' => 'HTML',
       ];
-      if ($a = $item['inlineMarkup']) {
-        $res['reply_markup'] = $a;
-      }
+      $res = [
+        'chat_id'    => $this->user->chat->id,
+        'message_id' => $msg,
+        'media'      => json_encode($res),
+      ];
+      # }}}
     }
     else
     {
-      # update only text/markup
+      # TEXT ONLY
+      # {{{
       $func = 'editMessageCaption';
       $file = null;
       $res  = [
-        'chat_id'      => $this->user->chat->id,
-        'message_id'   => $msg,
-        'caption'      => $item['textContent'],
-        'parse_mode'   => 'HTML',
+        'chat_id'    => $this->user->chat->id,
+        'message_id' => $msg,
+        'caption'    => $a,
+        'parse_mode' => 'HTML',
       ];
-      if ($a = $item['inlineMarkup']) {
-        $res['reply_markup'] = $a;
-      }
+      # }}}
     }
-    # send and check the result
+    # add markup
+    if ($b = $item['inlineMarkup']) {
+      $res['reply_markup'] = $b;
+    }
+    # check message hash
+    $c = hash('md4', $item['titleId'].$a.$b);
+    $d = $item['root']['config']['_hash'];
+    if ($c === $d)
+    {
+      $this->logDebug('message not updated (same hash): '.$item['id']);
+      return -1;
+    }
+    # send an update request
     if (!($a = $this->api->send($func, $res, $file)) || $a === true)
     {
       $this->logError($func.'('.$item['id'].') failed: '.$this->api->error);
       $this->logError($res);
       return -1;# stay positive
     }
-    # store file_id
+    # set message hash
+    $item['hash'] = $c;
+    # set file_id
     if ($item['titleId'] && $file)
     {
       $b = end($a->result->photo);
@@ -2840,7 +2858,7 @@ class Bot {
     return true;
   }
   # }}}
-  private function userUpdate($item, $new_msg) # {{{
+  private function userUpdate(&$item, $new_msg) # {{{
   {
     # prepare
     $dir  = $this->user->dir;
@@ -2898,6 +2916,7 @@ class Bot {
     # update root configuration
     $conf[$root]['_msg']  = $new_msg;
     $conf[$root]['_item'] = $item['id'];
+    $conf[$root]['_hash'] = $item['hash'];
     if ($new_msg && $new_msg !== $old_msg) {
       $conf[$root]['_time'] = time();
     }

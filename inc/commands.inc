@@ -503,6 +503,17 @@ How many modes in VIM?
         'q3a1' => '3',
         'q3a2' => '6',
         # }}}
+        'q4' => # {{{
+        '
+What is the optimal algorithm for non-cryptographic use?
+        ',
+        'q4a'  => '0',
+        'q4a0' => 'md4',
+        'q4a1' => 'md5',
+        'q4a2' => 'sha1',
+        'q4a2' => 'crc32',
+        'q4a2' => 'crc16',
+        # }}}
         'q7' => # {{{
         '
 To delete the whole line at the cursor in normal mode..
