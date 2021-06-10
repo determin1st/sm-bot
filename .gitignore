@@ -1,6 +1,8 @@
 /arc/
 /data/*
 !/data/.htaccess
+!/data/master
+/data/master/*
 !/data/master/opts.json.example
 mustache.php
 *.vim
