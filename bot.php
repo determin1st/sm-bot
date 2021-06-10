@@ -1,5 +1,4 @@
 <?php
-# TODO: md5 hash to check message updates
 # TODO: upgrade list options, add dynamics
 # TODO: language switch form
 # TODO: input bob
@@ -439,7 +438,7 @@ class Bot {
       return false;
     }
     # }}}
-    # item command {{{
+    # handle item command {{{
     # generally, a command creates new message for the item,
     # because of that, rendering of the item should go with creation hint (flag)
     $res  = '';
@@ -460,29 +459,20 @@ class Bot {
       return false;
     }
     # create or re-create message
-    $res = $this->itemSend($item);
-    # update user
-    if ($res && ~$res) {
-      $this->userUpdate($item, $res);
-    }
-    # }}}
-    # complete {{{
-    # report render failure to the user,
-    # it may help in debugging later problems
-    if (!$res)
+    if (!$this->itemSend($item))
     {
-      $this->log('command failed');
+      # report failure
+      $this->logError('command failed: '.$text);
       $a = $this->api->send('sendMessage', [
         'chat_id' => $chat->id,
         'text'    => self::$messages[$lang][2].': '.$text,
       ]);
       if (!$a) {
-        $this->log($this->api->error);
+        $this->logError($this->api->error);
       }
     }
-    # negative, wipes user input
-    return false;
     # }}}
+    return false;# wipe user input
   }
   # }}}
   private function replyCallback($q) # {{{
@@ -524,7 +514,7 @@ class Bot {
       return [];# no operation, skip
     }
     # }}}
-    # reply {{{
+    # attach item {{{
     # determine if the message has active root,
     # this should be done before item rendering,
     # because the message may be detached
@@ -574,7 +564,7 @@ class Bot {
     }
     # determine if item is the same,
     # which means it updates itself
-    $isSameItem = ($root && $root['_item'] === $item['id']);
+    #$isSameItem = ($root && $root['_item'] === $item['id']);
     # determine if the message is fresh (not outdated)
     $isFresh = ($root &&
                 array_key_exists('_time', $root) &&
@@ -593,7 +583,8 @@ class Bot {
         }
       }
     }
-    # operate
+    # }}}
+    # reply {{{
     if (!$isFresh || $isReactivated)
     {
       # recreate message
@@ -602,16 +593,10 @@ class Bot {
     elseif ($this->user->changed)
     {
       # update message
-      $res = $this->itemUpdate($msg, $item, !$isSameItem);
+      $res = $this->itemUpdate($msg, $item);
     }
     else {
-      $res = -1;# skip update
-    }
-    # }}}
-    # complete {{{
-    # update user
-    if ($res && ~$res) {
-      $this->userUpdate($item, $res);
+      $res = -1;# skipped
     }
     # nullify non-rooted message
     if (!$isRooted)
@@ -624,7 +609,6 @@ class Bot {
       return [];
     }
     # failure
-    $this->log('callback failed');
     return [
       'text' => self::$messages[$lang][2],
       'show_alert' => true,
@@ -670,11 +654,7 @@ class Bot {
     }
     # update message that receives input
     $res = $item['root']['config']['_msg'];
-    $res = $this->itemUpdate($res, $item);
-    # update user
-    if ($res && ~$res) {
-      $this->userUpdate($item, $res);
-    }
+    $this->itemUpdate($res, $item);
     # done
     return false;
   }
@@ -1852,7 +1832,7 @@ class Bot {
       # }}}
       break;
     }
-    # render title {{{
+    # determine title image {{{
     # check wasn't already rendered
     if (!$item['titleImage'])
     {
@@ -1896,7 +1876,7 @@ class Bot {
       }
       else
       {
-        # TEXT SPECIFIED
+        # SPECIFIED TEXT
         # generate nice header with language specific breadcrumbs
         $a = $this->itemBreadcrumb($item, $lang);
         $item['titleImage'] = $this->imageTitle($item['title'], $a);
@@ -2318,43 +2298,59 @@ class Bot {
       return 0;
     }
     # set message hash
-    $item['hash'] = hash('md4', $item['titleId'].$a.$b);
+    $item['hash'] = $item['titleId'].hash('md4', $a.$b);
     # set file_id
     if ($item['titleId'] && ($item['titleImage'] instanceOf BotFile))
     {
       $a = end($c->result->photo);
       $this->setFileId($item['titleId'], $c->file_id);
     }
-    # done
-    return $c->result->message_id;
+    # complete
+    return $this->userUpdate($item, $c->result->message_id);
   }
   # }}}
-  private function itemUpdate($msg, &$item, $refresh = false) # {{{
+  private function itemUpdate($msg, &$item) # {{{
   {
     # CUSTOM
     if (($H = $item['handler']) && method_exists($H, 'update')) {
-      return $H::update($this, $msg, $item, $refresh);
+      return $H::update($this, $msg, $item);
     }
     # STANDARD
-    # determine API function and parameters
-    $a = $item['textContent'];
-    if ($refresh && ($file = $item['titleImage']))
+    # prepare
+    $root = &$item['root']['config'];
+    $a = $item['titleId'];
+    $b = $item['textContent'];
+    $c = $item['inlineMarkup'];
+    $d = hash('md4', $b.$c);
+    # check message hash
+    if ($a.$d === ($e = $root['_hash']))
+    {
+      $this->logException(new \Exception('itemUpdate('.$item['id'].'): same hash, skipped'));
+      return -1;# positive flag
+    }
+    # determine which API function to use,
+    # image changes when title identifier changes
+    $func = strlen($e) - strlen($d);
+    $func = ($a !== substr($e, 0, $func));
+    # determine message parameters
+    if ($func)
     {
       # IMAGE and TEXT
       # {{{
+      $file = $item['titleImage'];
       $func = 'editMessageMedia';
       if ($file instanceof BotFile) {
-        $img  = 'attach://'.$file->postname;# attachment
+        $e = 'attach://'.$file->postname;# attachment
       }
       else
       {
-        $img  = $file;# file_id
-        $file = null;# nope
+        $e = $file;# file_id
+        $file = null;# not attachment
       }
       $res = [
         'type'       => 'photo',
-        'media'      => $img,
-        'caption'    => $a,
+        'media'      => $e,
+        'caption'    => $b,
         'parse_mode' => 'HTML',
       ];
       $res = [
@@ -2366,47 +2362,38 @@ class Bot {
     }
     else
     {
-      # TEXT ONLY
+      # TEXT
       # {{{
-      $func = 'editMessageCaption';
       $file = null;
+      $func = 'editMessageCaption';
       $res  = [
         'chat_id'    => $this->user->chat->id,
         'message_id' => $msg,
-        'caption'    => $a,
+        'caption'    => $b,
         'parse_mode' => 'HTML',
       ];
       # }}}
     }
-    # add markup
-    if ($b = $item['inlineMarkup']) {
-      $res['reply_markup'] = $b;
+    if ($c) {# add MARKUP
+      $res['reply_markup'] = $c;
     }
-    # check message hash
-    $c = hash('md4', $item['titleId'].$a.$b);
-    $d = $item['root']['config']['_hash'];
-    if ($c === $d)
-    {
-      $this->logDebug('message not updated (same hash): '.$item['id']);
-      return -1;
-    }
-    # send an update request
-    if (!($a = $this->api->send($func, $res, $file)) || $a === true)
+    # send
+    if (!($b = $this->api->send($func, $res, $file)) || $b === true)
     {
       $this->logError($func.'('.$item['id'].') failed: '.$this->api->error);
       $this->logError($res);
-      return -1;# stay positive
+      return 0;
     }
     # set message hash
-    $item['hash'] = $c;
+    $item['hash'] = $a.$d;
     # set file_id
-    if ($item['titleId'] && $file)
+    if ($a && $file)
     {
-      $b = end($a->result->photo);
-      $this->setFileId($item['titleId'], $b->file_id);
+      $c = end($b->result->photo);
+      $this->setFileId($a, $c->file_id);
     }
     # complete
-    return $a->result->message_id;
+    return $this->userUpdate($item, $b->result->message_id);
   }
   # }}}
   private function itemDetach($item) # {{{
@@ -2625,12 +2612,11 @@ class Bot {
     }
     # execute
     if (!($res = $H::task($this, $item, $plan['data'])) ||
-        !is_array($res) || !(count($res) === 2))
+        !is_array($res) || !count($res))
     {
       $res = [0];
     }
-    # measure time spent and
-    # delay completion
+    # measure time spent and delay completion
     $a = 300000;# 300ms
     if (($b = microtime(true) - $time) > 0 && $b < $a) {
       usleep($a - $b);
@@ -2719,8 +2705,8 @@ class Bot {
           $c[$b]['_msg'] &&
           $c[$b]['_item'] === $item['id'])
       {
-        # force an update
-        $this->itemUpdate($c[$b]['_msg'], $item, true);
+        # update
+        $this->itemUpdate($c[$b]['_msg'], $item);
       }
     }
     catch (\Exception $e) {
@@ -2855,6 +2841,7 @@ class Bot {
       : [];
     # done
     $this->user->file = $file;
+    $this->user->changed = false;
     return true;
   }
   # }}}
