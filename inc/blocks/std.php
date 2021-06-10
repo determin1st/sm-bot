@@ -385,7 +385,10 @@ class type_captcha {
           break 2;
         }
         # update
-        $bot->taskRender($item, [$total,$stage,1]);
+        $bot->taskRender($item, [$total,$stage,1], function(&$item) use ($bot) {
+          # make sure update is valid
+          return ($item['config']['A'] === 1);
+        });
         # check stage changed
         if (($A = $item['config']['A']) !== 1)
         {
@@ -396,20 +399,23 @@ class type_captcha {
             break 2;
           }
           # approve correct (with special blink)
-          if (!$bot->taskRender($item, [$total,$stage,2])) {
+          if (!$bot->taskRender($item, [$total,$stage,2]))
+          {
             break 2;
           }
-          # check complete
+          # complete correct
           if ($item['config']['A'] === 5) {
             break 2;
           }
           $bot::delay($blink);
         }
+        /***
         if ($blink)
         {
           $bot::delay($blink);
           $bot->taskRender($item, [$total,$stage,0]);
         }
+        /***/
       }
     }
     # complete

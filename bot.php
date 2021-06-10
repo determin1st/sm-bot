@@ -30,7 +30,6 @@ class Bot {
     $commands = null, # commands tree
     $user     = null; # current user of the bot
   private
-    $isMaster = true, # master-bot?
     $tasks    = [],   # async jobs stack
     $fids     = null; # common [file=>id] map
   public static
@@ -98,29 +97,31 @@ class Bot {
     }
     $dir = $dir.DIRECTORY_SEPARATOR;
     # load options
-    $a = $dir.'opts.json';
-    if (!file_exists($a) ||
-        !($a = file_get_contents($a)) ||
-        !($a = json_decode($a, true)) ||
-        !is_array($a) ||
-        !array_key_exists('token', $a) ||
-        !($token = $a['token']))
+    $opts = $dir.'opts.json';
+    if (!file_exists($opts) ||
+        !($opts = file_get_contents($opts)) ||
+        !($opts = json_decode($opts, true)) ||
+        !is_array($opts) ||
+        !array_key_exists('token', $opts) ||
+        !($token = $opts['token']))
     {
-      echo 'BOT DIRECTORY NOT INITIALIZED';
+      echo 'BOT NOT CONFIGURED';
       return null;
     }
-    # check token and extract identifier
-    $token = explode(':', $token)
-    if (count($token) !== 2 ||
-        !($id = $token[0]))
+    # check token
+    $a = explode(':', $token);
+    if (count($a) !== 2 ||
+        !$a[0] || !$a[1] ||
+        !ctype_digit($a[0]) ||
+        !ctype_alnum($a[1]))
     {
-      echo 'INCORRECT BOT IDENTIFIER SET';
+      echo 'INCORRECT BOT TOKEN';
       return null;
     }
     # create instance
     $bot = new Bot();
-    $bot->isMaster = ($botdir === 'master');
-    $bot->id   = $id;
+    $bot->opts = array_merge($bot->opts, $opts);
+    $bot->id   = $a[0];
     $bot->name = $botdir;
     $bot->dir  = $dir;
     $bot->errorlog  = $dir.'ERROR.log';
@@ -128,7 +129,6 @@ class Bot {
     $bot->fontsdir  = file_exists($dir.'fonts')
       ? $dir.'fonts'.DIRECTORY_SEPARATOR
       : self::$inc.'fonts'.DIRECTORY_SEPARATOR;
-    $bot->opts = array_merge($bot->opts, $a);
     # create api instance
     if (!($bot->api = BotApi::init($token)))
     {
@@ -148,7 +148,7 @@ class Bot {
     $b = file_exists($bot->dir.$a)
       ? include($bot->dir.$a)
       : [];
-    if ($isMaster)
+    if ($botdir === 'master')
     {
       # merge over master
       $c = include(self::$inc.$a);
@@ -269,6 +269,7 @@ class Bot {
     });
     # prepare
     $this->log('#'.$this->name.' started');
+    $this->logDebug(array_keys($this->commands));
     $offset = 0;
     $fails  = 0;
     $cycles = 0;
@@ -411,43 +412,52 @@ class Bot {
     $userCfg = &$this->user->config;
     # }}}
     # handle special command {{{
-    while ($text === '/reset' && $this->user->is_admin)
+    if ($text === '/reset')
     {
       # DEBUG-RESET
       # replied message item configuration should be erased and
       # item should be re-created..
-      # check replied
-      if (isset($msg->reply_to_message) &&
-          array_key_exists('/', $userCfg))
+      # check allowed
+      if (!$this->user->is_admin)
       {
-        # search item's root by message id
-        $a = $msg->reply_to_message->message_id;
-        $c = '';
-        foreach ($userCfg['/'] as $b)
+        $this->log('reset: access denied');
+        return false;
+      }
+      # check replied
+      if (!isset($msg->reply_to_message))
+      {
+        $this->log('reset: no replied message');
+        return false;
+      }
+      # get replied identifier and
+      # remove message
+      $a = $msg->reply_to_message->message_id;
+      $this->itemZap($a);
+      # check roots
+      if (!array_key_exists('/', $userCfg)) {
+        return false;
+      }
+      # find item's root
+      $c = '';
+      foreach ($userCfg['/'] as $b)
+      {
+        if (array_key_exists('_msg', $userCfg[$b]) &&
+            $userCfg[$b]['_msg'] === $a)
         {
-          if (array_key_exists('_msg', $userCfg[$b]) &&
-              $userCfg[$b]['_msg'] === $a)
-          {
-            # item found
-            $c = $userCfg[$b]['_item'];
-            break;
-          }
-        }
-        # check
-        if ($c)
-        {
-          # zap configuration and message
-          if (array_key_exists($c, $userCfg) && $userCfg[$c]) {
-            $userCfg[$c] = [];
-          }
-          $this->itemZap($a);
-          # compose new item command
-          $text = '/'.$c;
+          $c = $userCfg[$b]['_item'];
           break;
         }
       }
-      # not rendered
-      return false;
+      if (!$c) {# not found
+        return false;
+      }
+      # zap item's configuration and message
+      $this->log('reset: '.$c);
+      if (array_key_exists($c, $userCfg) && $userCfg[$c]) {
+        $userCfg[$c] = [];
+      }
+      # compose item command
+      $text = '/'.$c;
     }
     # }}}
     # handle item command {{{
@@ -549,7 +559,7 @@ class Bot {
     {
       # command or path doesn't exist,
       # message contains incorrect markup and
-      # should be terminated
+      # should be removed
       $this->itemZap($msg);
       return null;# restart loop
     }
@@ -796,7 +806,7 @@ class Bot {
           !array_key_exists('_msg', $a['config']) ||
           !$a['config']['_msg'])
       {
-        $this->log('wrong injection root');
+        $this->log('no inject message');
         $error = 1;
         return null;
       }
@@ -806,10 +816,11 @@ class Bot {
       $c['_from'] = $args[0];
       $c['_msg']  = $b['_msg'];
       $c['_time'] = $b['_time'];
-      $c['_item'] = '';# not the same item
+      $c['_item'] = $c['_hash'] = '';# not the same item
       # clear origin
       $b['_msg']  = 0;
       $b['_time'] = 0;
+      $b['_hash'] = '';
       unset($b, $c);
       # replace active root
       $b = &$this->user->config['/'];
@@ -838,9 +849,8 @@ class Bot {
         $c = &$this->user->config[$b];
         $c['_msg']  = $a['_msg'];
         $c['_time'] = $a['_time'];
-        $c['_item'] = '';# same root but not the same item
-        $a['_msg']  = 0;
-        $a['_time'] = 0;
+        $c['_item'] = $c['_hash'] = '';# not the same item
+        $a['_msg']  = $a['_time'] = 0;
         unset($a['_from']);
         unset($a, $c);
         # rename active root
@@ -2321,7 +2331,7 @@ class Bot {
     return $this->userUpdate($item, $c->result->message_id);
   }
   # }}}
-  private function itemUpdate($msg, &$item) # {{{
+  private function itemUpdate($msg, &$item, $reportHashFail = true) # {{{
   {
     # CUSTOM
     if (($H = $item['handler']) && method_exists($H, 'update')) {
@@ -2337,8 +2347,10 @@ class Bot {
     # check message hash
     if ($a.$d === ($e = $root['_hash']))
     {
-      $this->logException(new \Exception('itemUpdate('.$item['id'].'): same hash, skipped'));
-      return -1;# positive flag
+      if ($reportHashFail) {
+        $this->logException(new \Exception('itemUpdate('.$item['id'].'): same message hash, update skipped'));
+      }
+      return -1;# positive
     }
     # determine which API function to use,
     # image changes when title identifier changes
@@ -2473,39 +2485,33 @@ class Bot {
   # }}}
   private function itemZap($msg) # {{{
   {
-    # try a simply delete
+    # try simply delete
     $a = $this->api->send('deleteMessage', [
       'chat_id'    => $this->user->chat->id,
       'message_id' => $msg,
     ]);
     if ($a)
     {
-      # succeeded
-      $b = 'delete';
+      $this->log("message $msg deleted");
+      return true;
     }
-    elseif (($a = $this->api->result) &&
-            isset($a->error_code) &&
-            $a->error_code === 400)
+    # check result details
+    if (($a = $this->api->result) &&
+        isset($a->error_code) &&
+        $a->error_code === 400)
     {
       # message is too old for deletion,
-      # it should be "zapped", parasite markup removed,
-      # no text and neutral image block..
-      # but the message type is unknown,
-      # start with a most common one
-      if ($this->imageZap($msg)) {
-        $b = 'zap';
+      # it should be "nulified": image/text/markup blanked,
+      # but the message type is unknown, so,
+      # try common
+      if ($this->imageZap($msg))
+      {
+        $this->log("message $msg nulified");
+        return true;
       }
-      else {
-        $b = 'impossible';
-      }
+      # eh..
     }
-    else
-    {
-      # failed
-      $b = $this->api->error;
-    }
-    # report
-    $this->log('nullifying message: '.$b);
+    return false;
   }
   # }}}
   # }}}
@@ -2570,7 +2576,7 @@ class Bot {
       $file = $task[2];
       $plan = [
         'id'   => $task[0],
-        'bot'  => $this->id,
+        'bot'  => $this->name,
         'item' => $task[3],
         'data' => $task[4],
         'user' => $this->user,
@@ -2634,11 +2640,16 @@ class Bot {
       usleep($a - $b);
     }
     # complete
-    return $this->taskRender($item, $res, true);
+    return $this->taskUpdate(
+      $item, 'done',
+      $res, $this->opts['debugtask'],
+      null
+    );
   }
   # }}}
   private function taskProgress($plan, $file) # TODO {{{
   {
+    /***
     static
       $tickSize = 500000;# 500ms
       $maxTicks = 2*7200;# x500ms, 7200=1h
@@ -2682,17 +2693,19 @@ class Bot {
     }
     # done
     return true;
+    /***/
   }
   # }}}
-  public function taskRender(&$item, $args, $done = false) # {{{
+  public function taskRender(&$item, $args, $callback = null) # {{{
   {
     return $this->taskUpdate(
-      $item, ($done ? 'done' : 'progress'),
-      $args, $this->opts['debugtask']
+      $item, 'progress',
+      $args, $this->opts['debugtask'],
+      $callback
     );
   }
   # }}}
-  private function taskUpdate(&$item, $func, $args, $debug = false) # {{{
+  private function taskUpdate(&$item, $func, $args, $debug, $callback) # {{{
   {
     # before any task update is made to the user's view,
     # configuration must be locked (except the debug case)
@@ -2717,8 +2730,10 @@ class Bot {
           $c[$b]['_msg'] &&
           $c[$b]['_item'] === $item['id'])
       {
-        # update
-        $this->itemUpdate($c[$b]['_msg'], $item);
+        # callback and update
+        if (!$callback || $callback($item)) {
+          $this->itemUpdate($c[$b]['_msg'], $item, ($func === 'done'));
+        }
       }
     }
     catch (\Exception $e) {
