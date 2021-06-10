@@ -1,5 +1,5 @@
 <?php
-# TODO: upgrade list options, add dynamics
+# TODO: move list/form to std
 # TODO: language switch form
 # TODO: input bob
 # TODO: advanced image renderer (Fortune algorithm?)
@@ -20,32 +20,33 @@ class Bot {
       'sfx'        => true,
     ],
     $id       = '',   # telegram bot identifier
+    $name     = '',   # bot dirname
+    $dir      = '',   # full path to the bot's directory
     $api      = null, # telegram api instance
     $b2b      = null, # TODO: bot's data api instance
-    $dir      = '',   # bot's data directory
     $errorlog = '',   # bot's ERROR.log
     $accesslog = '',  # bot's ACCESS.log
     $fontsdir = '',   # bot's fonts directory
-    $commands = null, # command items tree
-    $item     = null, # currently rendered block item
+    $commands = null, # commands tree
     $user     = null; # current user of the bot
   private
+    $isMaster = true, # master-bot?
     $tasks    = [],   # async jobs stack
     $fids     = null; # common [file=>id] map
   public static
     $MSG_EXPIRE_TIME = 48*60*60,# telegram's default
-    $WIN_OS   = true, # Windows OS environment
-    $IS_TASK  = false,# tasks run without STDOUT/STDERR
-    $inc      = '',   # includes directory
-    $datadir  = '',   # common data directory
-    $imgdir   = '',   # common images directory
-    $tp       = null, # template parser (mustache)
-    $messages = null, # bot service messages
-    $buttons  = null; # common button captions
+    $WIN_OS    = true, # Windows OS environment
+    $IS_TASK   = false,# tasks run without STDOUT/STDERR
+    $inc       = '',   # includes directory
+    $datadir   = '',   # common data directory
+    $imgdir    = '',   # common images directory
+    $tp        = null, # template parser (mustache)
+    $messages  = null, # bot service messages
+    $buttons   = null; # common button captions
   # }}}
   # initializer {{{
   private function __construct() {}
-  public static function init($id)
+  public static function init($botdir)
   {
     # initialize once {{{
     if (!self::$inc)
@@ -89,7 +90,7 @@ class Bot {
     # }}}
     # construct {{{
     # locate bot directory
-    $dir = self::$datadir.$id;
+    $dir = self::$datadir.$botdir;
     if (!file_exists($dir))
     {
       echo 'BOT DIRECTORY NOT FOUND';
@@ -108,39 +109,50 @@ class Bot {
       echo 'BOT DIRECTORY NOT INITIALIZED';
       return null;
     }
-    # match bot identifier
-    if (strncmp($token, $id, strlen($id)) !== 0)
+    # check token and extract identifier
+    $token = explode(':', $token)
+    if (count($token) !== 2 ||
+        !($id = $token[0]))
     {
-      echo 'BOT IDENTIFIER MISMATCH';
+      echo 'INCORRECT BOT IDENTIFIER SET';
       return null;
     }
     # create instance
     $bot = new Bot();
-    $bot->dir = $dir;
-    $bot->errorlog = $dir.'ERROR.log';
+    $bot->isMaster = ($botdir === 'master');
+    $bot->id   = $id;
+    $bot->name = $botdir;
+    $bot->dir  = $dir;
+    $bot->errorlog  = $dir.'ERROR.log';
     $bot->accesslog = $dir.'ACCESS.log';
-    $bot->fontsdir = file_exists($dir.'fonts')
+    $bot->fontsdir  = file_exists($dir.'fonts')
       ? $dir.'fonts'.DIRECTORY_SEPARATOR
       : self::$inc.'fonts'.DIRECTORY_SEPARATOR;
     $bot->opts = array_merge($bot->opts, $a);
-    $bot->id = $id;
     # create api instance
     if (!($bot->api = BotApi::init($token)))
     {
       echo 'BOT API FAILED';
       return null;
     }
+    /***
     # create helper api instance
     if (!($bot->b2b = B2B::init(0)))
     {
       echo 'BOT HELPER API FAILED';
       return null;
     }
-    # load and merge commands
+    /***/
+    # load bot commands
     $a = 'commands.inc';
-    $b = include(self::$inc.$a);# common
-    if (file_exists($bot->dir.$a)) {
-      $b = array_merge($b, include($bot->dir.$a));# specific
+    $b = file_exists($bot->dir.$a)
+      ? include($bot->dir.$a)
+      : [];
+    if ($isMaster)
+    {
+      # merge over master
+      $c = include(self::$inc.$a);
+      $b = array_merge($c, $b);
     }
     $bot->commands = $bot->itemAssemble($b);
     # load file_id map
@@ -178,7 +190,7 @@ class Bot {
         break;
       }
       # enter getUpdates loop
-      cli_set_process_title('sm-bot.getUpdates.'.$b->id);
+      cli_set_process_title('sm-bot.getUpdates.'.$b->name);
       # complete according to the loop logic
       return $b->loop($a[2]);
       ###
@@ -256,7 +268,7 @@ class Bot {
       exit(1);
     });
     # prepare
-    $this->log('sm-bot #'.$this->id.' started');
+    $this->log('#'.$this->name.' started');
     $offset = 0;
     $fails  = 0;
     $cycles = 0;
@@ -303,7 +315,7 @@ class Bot {
       }
     }
     # terminate
-    $this->log("shutdown\n");
+    $this->log('#'.$this->name." finished\n");
     return false;
   }
   # }}}

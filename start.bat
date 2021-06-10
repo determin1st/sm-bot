@@ -16,6 +16,6 @@ set PHP="E:\lab\www\xampp\php\php.exe"
 
 :LOOP
 :: getUpdates <BOT_ID> <timeout>
-%PHP% -f "%CD%\index.php" -- getUpdates 774532944 120
+%PHP% -f "%CD%\index.php" -- getUpdates master 120
 if %ERRORLEVEL% EQU 0 goto LOOP
 exit
