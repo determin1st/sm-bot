@@ -1,5 +1,6 @@
 <?php
-# TODO: move list/form to std
+# TODO: refactor list/form
+# TODO: add list of the list type
 # TODO: language switch form
 # TODO: input bob
 # TODO: advanced image renderer (Fortune algorithm?)
@@ -7,162 +8,439 @@ namespace SM;
 class Bot {
   # data {{{
   public
-    $opts     = [     # default options
-      'admins'     => [],
-      'colors'     => [
-        [240,248,255],# darkslateblue (background)
-        [72,61,139],  # aliceblue (foreground)
+    $opts = [
+      # {{{
+      'bot'    => '',
+      'admins' => [],
+      'colors' => [
+        [240,248,255],# foreground (aliceblue)
+        [0,0,0],      # background (black)
+      ],
+      'fonts'  => [
+        'title'      => 'Cuprum-Bold.ttf',
+        'breadcrumb' => 'Bender-Italic.ttf',
       ],
       'debuglog'   => true,
       'debugtask'  => false,
       'file_id'    => true,
       'force_lang' => '',
       'sfx'        => true,
+      'graceful'   => true,# reply ignored callbacks
+      # }}}
     ],
-    $id       = '',   # telegram bot identifier
-    $name     = '',   # bot dirname
-    $dir      = '',   # full path to the bot's directory
-    $api      = null, # telegram api instance
-    $b2b      = null, # TODO: bot's data api instance
-    $errorlog = '',   # bot's ERROR.log
-    $accesslog = '',  # bot's ACCESS.log
-    $fontsdir = '',   # bot's fonts directory
-    $commands = null, # commands tree
-    $user     = null; # current user of the bot
-  private
-    $tasks    = [],   # async jobs stack
-    $fids     = null; # common [file=>id] map
+    $id  = '',        # bot identifier (data directory name)
+    $api = null,      # api instance (telegram)
+    $tp  = null,      # template parser (mustache)
+    # directories
+    $homedir = '',    # /
+    $incdir  = '',    # /inc/
+    $fontdir = '',    # /inc/font/
+    $botdir  = '',    # /bots/<id>/
+    $datadir = '',    # /data/<id>/
+    # files
+    $errorlog  = '',  # /data/<id>/ERROR.log
+    $accesslog = '',  # /data/<id>/ACCESS.log
+    # static
+    $commands = null, # the tree of commands
+    $buttons  = [
+      # {{{
+      'up'       => '{:eject_symbol:} {{text}}',
+      'close'    => '{:stop_button:} {{text}}',
+      'prev'     => '{:rewind:} {{name}}',
+      'next'     => '{{name}} {:fast_forward:}',
+      'first'    => '{:previous_track:} {{name}}',
+      'last'     => '{{name}} {:next_track:}',
+      'play'     => '{:arrow_forward:}',
+      'fav_on'   => '{:star:}',
+      'fav_off'  => '{:sparkles:}{:star:}{:sparkles:}',
+      'refresh'  => '{{name}} {:arrows_counterclockwise:}',
+      'reset'    => '{:arrows_counterclockwise:} {{name}}',
+      'retry'    => '{:arrow_right_hook:} {{name}}',
+      'ok'       => 'OK',
+      'select0'  => '{{text}}',
+      'select1'  => '{:green_circle:} {{text}}',
+      'go'       => '{:arrow_forward:} {{text}}',
+      # }}}
+    ],
+    $messages = [
+      'en' => [# {{{
+        0 => '{:no_entry_sign:} game not available',
+        1 => '{:exclamation:} command failed',
+        2 => '{:exclamation:} operation failed',
+        3 => '{:exclamation:} not found',
+        4 => '',
+        5 => 'this list is empty',
+        6 => # FORM template {{{
+        '
+{{#desc}}
+  <i>Description:</i>{{br}}
+  {{desc}}{{br}}
+  {{br}}
+{{/desc}}
+<i>Parameters:</i>{{br}}
+{{#fields}}
+  {{#s0}}
+    {{#before}}
+      {{#valueLen}}
+        {:green_circle:} {{name}}: {{value}}
+      {{/valueLen}}
+      {{^valueLen}}
+        {{#required}}{:yellow_circle:} {{/required}}
+        {{^required}}{:green_circle:} {{/required}}
+        {{name}} -
+      {{/valueLen}}
+    {{/before}}
+    {{#current}}
+      {:white_small_square:} <b>{{name}}: </b>
+      {{#valueLen}}<code>&lt;</code>{{value}}<code>&gt;</code>{{/valueLen}}
+      {{^valueLen}}<code>&lt;{{hint}}&gt;</code>{{/valueLen}}
+    {{/current}}
+    {{#after}}
+      {:black_small_square:} {{name}}
+      {{#valueLen}}: {{value}}{{/valueLen}}
+    {{/after}}
+    {{br}}
+  {{/s0}}
+  {{#s1}}
+    {:green_circle:} {{name}}
+    {{#valueLen}}: <b>{{value}}</b>{{/valueLen}}
+    {{^valueLen}} -{{/valueLen}}
+    {{br}}
+  {{/s1}}
+  {{#s2}}
+    {{#required}}
+      {{#valueLen}}{:green_circle:} {{/valueLen}}
+      {{^valueLen}}{:yellow_circle:} {{/valueLen}}
+    {{/required}}
+    {{^required}}
+      {:green_circle:} 
+    {{/required}}
+    {{#valueLen}}{{name}}: {{value}}{{/valueLen}}
+    {{^valueLen}}{{name}} -{{/valueLen}}
+    {{br}}
+  {{/s2}}
+  {{#s3s4s5}}
+    {{#valueLen}}
+      {:green_circle:} {{name}}: <b>{{value}}</b>
+      {{br}}
+    {{/valueLen}}
+  {{/s3s4s5}}
+{{/fields}}
+{{br}}
+{{^s0}}
+  <i>Status:</i>{{br}}
+{{/s0}}
+{{#s1}}
+  {:blue_circle:} confirm operation
+{{/s1}}
+{{#s2}}
+  {:yellow_circle:} missing required parameter
+{{/s2}}
+{{#s3}}
+  {{^info.0}}{:blue_circle:} {{/info.0}}
+  {{#info.0}}{:purple_circle:} {{/info.0}}
+  processing{{#info.0}}..{{/info.0}}
+{{/s3}}
+{{#s4}}
+  {:red_circle:} <b>failure</b>{{#info.1}}: {{info.1}}{{/info.1}}
+{{/s4}}
+{{#s5}}
+  {:green_circle:} <b>complete</b>{{#info.1}}: {{info.1}}{{/info.1}}
+{{/s5}}
+{{br}}
+        ',# }}}
+        7 => 'string ({{max}})',
+        8 => 'number [{{min}}..{{max}}]',
+        9 => '',
+        10 => 'close',
+        11 => '{:exclamation:} task failed to start',
+        12 => 'complete',
+        13 => 'select option',
+        14 => 'refresh',
+        15 => 'reset',
+        16 => 'previous',
+        17 => 'next',
+        18 => 'repeat',
+        19 => '',
+      ],
+      # }}}
+      'ru' => [# {{{
+        0 => '{:no_entry_sign:} игра не доступна',
+        1 => '{:exclamation:} неверная комманда',
+        2 => '{:exclamation:} сбой операции',
+        3 => '{:exclamation:} не найдено',
+        4 => '',
+        5 => 'этот список пуст',
+        6 => # FORM template {{{
+        '
+{{#desc}}
+  <i>Описание:</i>{{br}}
+  {{desc}}{{br}}
+  {{br}}
+{{/desc}}
+<i>Параметры:</i>{{br}}
+{{#fields}}
+  {{#s0}}
+    {{#before}}
+      {{#valueLen}}
+        {:green_circle:} {{name}}: {{value}}
+      {{/valueLen}}
+      {{^valueLen}}
+        {{#required}}{:yellow_circle:} {{/required}}
+        {{^required}}{:green_circle:} {{/required}}
+        {{name}} -
+      {{/valueLen}}
+    {{/before}}
+    {{#current}}
+      {:white_small_square:} <b>{{name}}: </b>
+      {{#valueLen}}<code>&lt;</code>{{value}}<code>&gt;</code>{{/valueLen}}
+      {{^valueLen}}<code>&lt;{{hint}}&gt;</code>{{/valueLen}}
+    {{/current}}
+    {{#after}}
+      {:black_small_square:} {{name}}
+      {{#valueLen}}: {{value}}{{/valueLen}}
+    {{/after}}
+    {{br}}
+  {{/s0}}
+  {{#s1}}
+    {:green_circle:} {{name}}
+    {{#valueLen}}: <b>{{value}}</b>{{/valueLen}}
+    {{^valueLen}} -{{/valueLen}}
+    {{br}}
+  {{/s1}}
+  {{#s2}}
+    {{#required}}
+      {{#valueLen}}{:green_circle:} {{/valueLen}}
+      {{^valueLen}}{:yellow_circle:} {{/valueLen}}
+    {{/required}}
+    {{^required}}
+      {:green_circle:} 
+    {{/required}}
+    {{#valueLen}}{{name}}: {{value}}{{/valueLen}}
+    {{^valueLen}}{{name}} -{{/valueLen}}
+    {{br}}
+  {{/s2}}
+  {{#s3s4s5}}
+    {{#valueLen}}
+      {:green_circle:} {{name}}: <b>{{value}}</b>
+      {{br}}
+    {{/valueLen}}
+  {{/s3s4s5}}
+{{/fields}}
+{{br}}
+{{^s0}}
+  <i>Статус:</i>{{br}}
+{{/s0}}
+{{#s1}}
+  {:blue_circle:} подтвердите действие
+{{/s1}}
+{{#s2}}
+  {:yellow_circle:} не задан обязательный параметр
+{{/s2}}
+{{#s3}}
+  {{^info.0}}{:blue_circle:} {{/info.0}}
+  {{#info.0}}{:purple_circle:} {{/info.0}}
+  обработка{{#info.0}}..{{/info.0}}
+{{/s3}}
+{{#s4}}
+  {:red_circle:} <b>ошибка</b>{{#info.1}}: {{info.1}}{{/info.1}}
+{{/s4}}
+{{#s5}}
+  {:green_circle:} <b>выполнено</b>{{#info.1}}: {{info.1}}{{/info.1}}
+{{/s5}}
+{{br}}
+        ',# }}}
+        7 => 'строка ({{max}})',
+        8 => 'число [{{min}},{{max}}]',
+        9 => '',
+        10 => 'закрыть',
+        11 => '{:exclamation:} не удалось запустить задачу',
+        12 => 'завершить',
+        13 => 'выберите опцию',
+        14 => 'обновить',
+        15 => 'сброс',
+        16 => 'предыдущий',
+        17 => 'далее',
+        18 => 'повторить',
+        19 => '',
+      ],
+      # }}}
+    ],
+    $user  = null, # attached user
+    $tasks = [],   # async jobs to start
+    $fids  = null; # [file:id] map
   public static
-    $MSG_EXPIRE_TIME = 48*60*60,# telegram's default
-    $WIN_OS    = true, # Windows OS environment
-    $IS_TASK   = false,# tasks run without STDOUT/STDERR
-    $inc       = '',   # includes directory
-    $datadir   = '',   # common data directory
-    $imgdir    = '',   # common images directory
-    $tp        = null, # template parser (mustache)
-    $messages  = null, # bot service messages
-    $buttons   = null; # common button captions
+    $IS_WIN  = true,# windows os
+    $IS_TASK = false;# is a task (no STDOUT/STDERR)
   # }}}
   # initializer {{{
   private function __construct() {}
-  public static function init($botdir)
+  public static function init($botid)
   {
-    # initialize once {{{
-    if (!self::$inc)
-    {
-      # set base directories
-      self::$inc     = __DIR__.DIRECTORY_SEPARATOR.'inc'.DIRECTORY_SEPARATOR;
-      self::$datadir = __DIR__.DIRECTORY_SEPARATOR.'data'.DIRECTORY_SEPARATOR;
-      self::$imgdir  = self::$inc.'img'.DIRECTORY_SEPARATOR;
-      # load mustache parser
-      if (!class_exists('Mustache_Engine')) {
-        require(self::$inc.'mustache.php');
-      }
-      # create parser instance
-      self::$tp = $tp = new Mustache_Engine([
-        'charset' => 'UTF-8',
-        'escape'  => (function($v) {return $v;}),
-      ]);
-      # load messages
-      $a = require(self::$inc.'messages.inc');
-      foreach ($a as &$b)
-      {
-        foreach ($b as &$c) {
-          $c = $tp->render($c, BotApi::$emoji, '{: :}');
-        }
-      }
-      unset($b, $c);
-      self::$messages = $a;
-      # load button captions
-      $a = require(self::$inc.'buttons.inc');
-      foreach ($a as $b => &$c) {
-        $c = $tp->render($c, BotApi::$emoji, '{: :}');
-      }
-      unset($b, $c);
-      self::$buttons = $a;
-      # determine OS
-      self::$WIN_OS = (
-        defined('PHP_OS_FAMILY') &&
-        strncasecmp(PHP_OS_FAMILY, 'WIN', 3) === 0
-      );
+    # determine os
+    self::$IS_WIN = (
+      defined('PHP_OS_FAMILY') &&
+      strncasecmp(PHP_OS_FAMILY, 'WIN', 3) === 0
+    );
+    # check identifier
+    if ($botid !== 'master' && (!ctype_digit($botid) || strlen($botid) > 14)) {
+      return null;# ignore
     }
-    # }}}
-    # construct {{{
-    # locate bot directory
-    $dir = self::$datadir.$botdir;
-    if (!file_exists($dir))
+    # create new instance
+    $B = new Bot();
+    $B->id = $botid;
+    # determine directory paths
+    $B->homedir = $homedir = __DIR__.DIRECTORY_SEPARATOR;
+    $B->incdir  = $incdir  = $homedir.'inc'.DIRECTORY_SEPARATOR;
+    $B->fontdir = $incdir.'font'.DIRECTORY_SEPARATOR;
+    $B->datadir = $datadir = $homedir.'data'.DIRECTORY_SEPARATOR.$botid.DIRECTORY_SEPARATOR;
+    # determine file paths
+    $B->errorlog  = $datadir.'ERROR.log';
+    $B->accesslog = $datadir.'ACCESS.log';
+    # check
+    if (!file_exists($datadir))
     {
-      echo 'BOT DIRECTORY NOT FOUND';
+      echo "NO DATA: $datadir";
       return null;
     }
-    $dir = $dir.DIRECTORY_SEPARATOR;
-    # load options
-    $opts = $dir.'opts.json';
-    if (!file_exists($opts) ||
-        !($opts = file_get_contents($opts)) ||
-        !($opts = json_decode($opts, true)) ||
-        !is_array($opts) ||
-        !array_key_exists('token', $opts) ||
-        !($token = $opts['token']))
+    # load configuration
+    if (!file_exists($a = $datadir.'o.json') ||
+        !($a = file_get_contents($a)) ||
+        !($a = json_decode($a, true)) ||
+        !is_array($a) ||
+        !array_key_exists('token', $a) ||
+        !($token = $a['token']))
     {
-      echo 'BOT NOT CONFIGURED';
+      echo "NOT CONFIGURED";
       return null;
     }
-    # check token
-    $a = explode(':', $token);
-    if (count($a) !== 2 ||
-        !$a[0] || !$a[1] ||
-        !ctype_digit($a[0]) ||
-        !ctype_alnum($a[1]))
+    $B->opts = array_merge($B->opts, $a);
+    # determine bot directory
+    $a = ($botid === 'master') ? $botid : $B->opts['bot'];
+    $B->botdir = $botdir = $homedir.'bots'.DIRECTORY_SEPARATOR.$a.DIRECTORY_SEPARATOR;
+    if (!file_exists($botdir))
     {
-      echo 'INCORRECT BOT TOKEN';
+      echo "DIRECTORY NOT FOUND: $botdir";
       return null;
     }
-    # create instance
-    $bot = new Bot();
-    $bot->opts = array_merge($bot->opts, $opts);
-    $bot->id   = $a[0];
-    $bot->name = $botdir;
-    $bot->dir  = $dir;
-    $bot->errorlog  = $dir.'ERROR.log';
-    $bot->accesslog = $dir.'ACCESS.log';
-    $bot->fontsdir  = file_exists($dir.'fonts')
-      ? $dir.'fonts'.DIRECTORY_SEPARATOR
-      : self::$inc.'fonts'.DIRECTORY_SEPARATOR;
     # create api instance
-    if (!($bot->api = BotApi::init($token)))
+    if (!($B->api = BotApi::init($token)))
     {
-      echo 'BOT API FAILED';
+      echo "BOT API FAILED";
       return null;
     }
-    /***
-    # create helper api instance
-    if (!($bot->b2b = B2B::init(0)))
-    {
-      echo 'BOT HELPER API FAILED';
-      return null;
+    # load bot-specific messages/buttons
+    if (file_exists($a = $botdir.'messages.inc')) {
+      $B->messages = array_merge($B->messages, (require_once $a));
     }
-    /***/
-    # load bot commands
+    if (file_exists($a = $botdir.'buttons.inc')) {
+      $B->buttons = array_merge($B->buttons, (require_once $a));
+    }
+    # create parser instance
+    require_once $incdir.'mustache.php';
+    $B->tp = new MustacheEngine([
+      'logger' => (function($m, $n) use ($B) {$B->logMustache($m, $n);})
+    ]);
+    # parse buttons and messages
+    foreach ($B->buttons as &$a) {
+      $a = $B->tp->render($a, '{: :}', BotApi::$EMOJI);
+    }
+    unset($a);
+    foreach ($B->messages as &$a)
+    {
+      foreach ($a as &$b) {
+        $b = $B->tp->render($b, '{: :}', BotApi::$EMOJI);
+      }
+    }
+    unset($a,$b);
+    # load and initialize commands
     $a = 'commands.inc';
-    $b = file_exists($bot->dir.$a)
-      ? include($bot->dir.$a)
-      : [];
-    if ($botdir === 'master')
-    {
-      # merge over master
-      $c = include(self::$inc.$a);
-      $b = array_merge($c, $b);
+    $b = include $botdir.$a;
+    if (file_exists($datadir.$a)) {
+      $b = array_merge($b, (include $datadir.$a));
     }
-    $bot->commands = $bot->itemAssemble($b);
+    $B->commands = $B->initCommands($b);
     # load file_id map
-    $a = $bot->dir.'file_id.json';
-    $bot->fids = file_exists($a)
+    $B->fids = file_exists($a = $datadir.'file_id.json')
       ? json_decode(file_get_contents($a), true)
       : [];
-    # done
-    return $bot;
-    # }}}
+    # include bot command handlers
+    if (file_exists($a = $botdir.'handlers.php')) {
+      require_once $a;
+    }
+    # complete
+    return $B;
+  }
+  private function initCommands(&$m, &$p = null)
+  {
+    foreach ($m as $a => &$b)
+    {
+      # set identifier, parent and root
+      if ($p)
+      {
+        $b['id'] = $p['id'].':'.$a;
+        $b['parent'] = &$p;
+      }
+      else
+      {
+        $b['id'] = $a;
+        $b['parent'] = null;
+      }
+      $b['name'] = $a;
+      # set config entry (must have one)
+      if (!isset($b['config'])) {
+        $b['config'] = [];
+      }
+      # set language texts
+      # - [en]glish must present
+      # - empty must present
+      if (!isset($b['text'])) {
+        $b['text'] = ['en'=>[''=>'']];
+      }
+      elseif (!isset($b['text']['en'])) {
+        $b['text'] = ['en'=>$b['text']];
+      }
+      # render text emojis and button captions
+      foreach ($b['text'] as $c => &$d)
+      {
+        foreach ($d as &$e)
+        {
+          if ($e) {
+            $e = $this->tp->render($e, '{: :}', BotApi::$EMOJI);
+            $e = $this->tp->render($e, '{! !}', $this->buttons);
+          }
+        }
+        if (!isset($d[''])) {
+          $d[''] = '';
+        }
+      }
+      unset($d, $e);
+      # merge languages with [en] (as a fallback),
+      # it will allow to gradually translate commands
+      foreach (array_keys($this->messages) as $c)
+      {
+        if ($c !== 'en')
+        {
+          $d = $b['text']['en'];
+          $b['text'][$c] = isset($b['text'][$c])
+            ? array_merge($d, $b['text'][$c])
+            : $d;
+        }
+      }
+      # set item's children dummy (tree navigation is common)
+      if (!isset($b['items'])) {
+        $b['items'] = null;
+      }
+      # set item's data publicity flag
+      if (!isset($b['isPublicData'])) {
+        $b['isPublicData'] = false;
+      }
+      # recurse
+      if ($b['items']) {
+        $this->initCommands($b['items'], $b);
+      }
+    }
+    return $m;
   }
   # }}}
   # api {{{
@@ -190,7 +468,7 @@ class Bot {
         break;
       }
       # enter getUpdates loop
-      cli_set_process_title('sm-bot.getUpdates.'.$b->name);
+      cli_set_process_title('sm-bot.getUpdates.'.$b->id);
       # complete according to the loop logic
       return $b->loop($a[2]);
       ###
@@ -264,11 +542,11 @@ class Bot {
   private function loop($timeout) # {{{
   {
     # set graceful loop termination
-    self::$WIN_OS && sapi_windows_set_ctrl_handler(function ($i) {
+    self::$IS_WIN && sapi_windows_set_ctrl_handler(function ($i) {
       exit(1);
     });
     # prepare
-    $this->log('#'.$this->name.' started');
+    $this->log('#'.$this->id.' started');
     $this->logDebug(array_keys($this->commands));
     $offset = 0;
     $fails  = 0;
@@ -316,7 +594,7 @@ class Bot {
       }
     }
     # terminate
-    $this->log('#'.$this->name." finished\n");
+    $this->log('#'.$this->id." finished\n");
     return false;
   }
   # }}}
@@ -472,7 +750,7 @@ class Bot {
         $this->log($res);
         $a = $this->api->send('sendMessage', [
           'chat_id' => $chat->id,
-          'text'    => self::$messages[$lang][1].': '.$text,
+          'text'    => $this->messages[$lang][1].': '.$text,
         ]);
         if (!$a) {
           $this->log($this->api->error);
@@ -487,7 +765,7 @@ class Bot {
       $this->logError('command failed: '.$text);
       $a = $this->api->send('sendMessage', [
         'chat_id' => $chat->id,
-        'text'    => self::$messages[$lang][2].': '.$text,
+        'text'    => $this->messages[$lang][2].': '.$text,
       ]);
       if (!$a) {
         $this->logError($this->api->error);
@@ -523,7 +801,7 @@ class Bot {
       else
       {
         return [
-          'text' => self::$messages[$lang][0],
+          'text' => $this->messages[$lang][0],
           'show_alert' => true,
         ];
       }
@@ -559,9 +837,9 @@ class Bot {
     {
       # command or path doesn't exist,
       # message contains incorrect markup and
-      # should be removed
+      # it should be removed
       $this->itemZap($msg);
-      return null;# restart loop
+      return [];
     }
     # check if message belongs to the item's root
     $root = $item['root']['config'];
@@ -591,7 +869,7 @@ class Bot {
     $isFresh = ($root &&
                 array_key_exists('_time', $root) &&
                 ($a = time() - $root['_time']) >= 0 &&
-                ($a < self::$MSG_EXPIRE_TIME));
+                ($a < BotApi::$MESSAGE_LIFETIME));
     # determine if the item has re-activated input
     if (!($isReactivated = $item['isReactivated']))
     {
@@ -612,13 +890,10 @@ class Bot {
       # recreate message
       $res = $this->itemSend($item);
     }
-    elseif ($this->user->changed)
+    else
     {
       # update message
       $res = $this->itemUpdate($msg, $item);
-    }
-    else {
-      $res = -1;# skipped
     }
     # nullify non-rooted message
     if (!$isRooted)
@@ -632,7 +907,7 @@ class Bot {
     }
     # failure
     return [
-      'text' => self::$messages[$lang][2],
+      'text' => $this->messages[$lang][2],
       'show_alert' => true,
     ];
     # }}}
@@ -682,8 +957,8 @@ class Bot {
   }
   # }}}
   # }}}
-  # renderer {{{
-  public function itemAttach($item, &$error, $input = '', $new = false)
+  # item {{{
+  public function itemAttach($item, &$error, $input = '', $new = false) # {{{
   {
     # prepare {{{
     # check
@@ -693,8 +968,7 @@ class Bot {
       $id   = $item['id'];
       $func = '';
       $args = null;
-      # report
-      $this->log('input: '.$id);
+      $text = "/$id [i]";
     }
     else
     {
@@ -732,6 +1006,7 @@ class Bot {
         return null;
       }
       # extract parameters
+      $text = $item;
       $id   = $b[1][0];
       $func = $b[6][0];
       $args = strlen($b[8][0])
@@ -755,44 +1030,34 @@ class Bot {
         $args = null;
       }
       # get item
-      if (!($a = $this->itemGet($id)))
+      if (!($item = $this->itemGet($id)))
       {
         $this->logError("item not found: $id");
         return null;
       }
-      $this->log(
-        $item.
-        ' ['.implode(',', $a['blocks']).']'.
-        ($a['handler'] ? ' handler'.$a['handler'] : '')
-      );
-      $item = $a;
     }
-    # initialize
-    $H = $item['handler'];
-    # attach root and other basic stuff
+    # report
+    $this->log($text);
+    # set variables
+    $name = str_replace(':', '_', $item['id']);
     $root = $this->itemGetRoot($id);
     $conf = &$item['config'];
+    $lang = $item['lang'] = $this->user->lang;
+    $text = &$item['text'][$lang];
+    # initialize
     $item['root'] = &$root;
-    $item['lang'] = $lang = $this->user->lang;
     $item['hash'] = '';
-    $item['isTitleCached'] = true;
+    $item['data'] = null;
+    $item['dataChanged']     = false;
+    $item['isTitleCached']   = true;
     $item['isInputAccepted'] = false;
-    $item['isReactivated'] = $new;
-    # get language specific texts
-    $text = array_key_exists('text', $item)
-      ? $item['text'][$lang]
-      : [];
-    # set basic stuff
+    $item['isReactivated']   = $new;
     $item['titleId'] = str_replace(':', '-', $item['id']).'-'.$lang;
-    $item['title'] = array_key_exists('@', $text)
-      ? $text['@']
-      : '';
-    $item['content'] = array_key_exists('.', $text)
-      ? $text['.']
-      : '';
+    $item['title'] = isset($text['@']) ? $text['@'] : '';
+    $item['content'] = isset($text['.']) ? $text['.'] : '';
     ###
     $item['titleImage'] = null;   # file_id or BotFile
-    $item['textContent'] = '';    # rendered message contents
+    $item['textContent'] = null;  # message text
     $item['inlineMarkup'] = null; # null=skip, []=zap, [buttons]=otherwise
     # }}}
     # handle common function {{{
@@ -806,7 +1071,7 @@ class Bot {
           !array_key_exists('_msg', $a['config']) ||
           !$a['config']['_msg'])
       {
-        $this->log('no inject message');
+        $this->logError('injection origin not found');
         $error = 1;
         return null;
       }
@@ -904,35 +1169,43 @@ class Bot {
       break;
     }
     # }}}
-    # load data {{{
-    # each item may or may not have it's own data
-    $data = [];
-    $dataChanged = false;
-    # determine full path to the datafile
-    $file = $item['type'].'-'.str_replace(':', '-', $item['id']).'.json';
-    $file = $item['isPublicData']
-      ? $this->dir.$file
-      : $this->user->dir.$file;
-    # load data
-    if (file_exists($file) &&
-        ($a = file_get_contents($file)) &&
-        ($a = json_decode($a, true)))
+    # attach data {{{
+    # check
+    if ($a = $item['dataHandler'])
     {
-      $data = $a;
+      # invoke handler
+      if (!$a::attach($this, $item))
+      {
+        $error = 1;
+        return $item;
+      }
     }
+    else
+    {
+      # load from file
+      $file = $item['type'].'_'.$name.'.json';
+      $file = $item['isPublicData']
+        ? $this->datadir.$file
+        : $this->user->dir.$file;
+      if (file_exists($file) && ($a = file_get_contents($file))) {
+        $item['data'] = json_decode($a, true);
+      }
+    }
+    $data = &$item['data'];
     # }}}
+    # render
     switch ($item['type']) {
     case 'menu':
       # {{{
-      if ($H)
+      if ($a = $item['itemHandler'])
       {
-        # menu item handler
-        $H::render($this, $item, $func, $args);
+        # invoke handler
+        $a::render($this, $item, $func, $args);
       }
       else
       {
         # as standard menus never self-refresh,
-        # assume that there is a change (navigational)
+        # assume changed (navigational)
         $this->user->changed = true;
       }
       # use standard text when none set
@@ -947,876 +1220,13 @@ class Bot {
       }
       # }}}
       break;
-    case 'list':
-      # prepare {{{
-      $rows  = $conf['rows'];
-      $cols  = $conf['cols'];
-      $size  = $rows * $cols;
-      $count = $data ? count($data) : 0;
-      # determine total page count
-      if (!($total = intval(ceil($count / $size)))) {
-        $total = 1;
-      }
-      # determine current page
-      if (!array_key_exists('page', $conf))
-      {
-        $conf['page'] = $page = 0;
-        $this->user->changed = true;
-      }
-      elseif (($page = $conf['page']) >= $total)
-      {
-        $conf['page'] = $page = $total - 1;
-        $this->user->changed = true;
-      }
-      # }}}
-      # handle function {{{
-      switch ($func) {
-      case 'first':
-        $page = 0;
-        break;
-      case 'last':
-        $page = $total - 1;
-        break;
-      case 'prev':
-        $page = ($page > 0)
-          ? $page - 1
-          : $total - 1;
-        break;
-      case 'next':
-        $page = ($page < $total - 1)
-          ? $page + 1
-          : 0;
-        break;
-      }
-      # }}}
-      # check {{{
-      if ($page !== $conf['page'])
-      {
-        $this->user->changed = true;
-      }
-      # }}}
-      # render markup {{{
-      $mkup = [];
-      if ($count)
-      {
-        # NON-EMPTY
-        # content {{{
-        # sort list items
-        if (!self::sortList($data, $conf['order'], $conf['desc']))
-        {
-          $this->log('failed to sort data');
-          $error = self::$messages[$lang][2];
-          return $item;
-        }
-        # extract records from the ordered data set
-        $a = $page * $size;
-        $recs = array_slice($data, $a, $size);
-        # create list markup
-        for ($a = 0, $c = 0; $a < $rows; ++$a)
-        {
-          # create row
-          $mkup[$a] = [];
-          for ($b = 0; $b < $cols; ++$b)
-          {
-            # determine caption and command
-            if ($c < count($recs))
-            {
-              $d = $recs[$c]['name'];
-              $e = '/'.$item['cmd'].' '.$recs[$c]['id'];
-            }
-            else
-            {
-              $d = ' ';
-              $e = '!';
-            }
-            # create cell
-            $mkup[$a][$b] = [
-              'text'          => $d,
-              'callback_data' => $e,
-            ];
-            $c++;
-          }
-          if ($c >= count($recs) && !$conf['fixed']) {
-            break;
-          }
-        }
-        # }}}
-        # controls {{{
-        # determine first_last
-        $a = '_first_last';
-        $b = ($total === 1)
-          ? ''
-          : (($total - $page > $page)
-            ? '_last'
-            : '_first'
-          );
-        $this->setMarkupItem($item['markup'], $a, $b, true);
-        # if it's only one page
-        # remove page navigation controls
-        if (!$conf['fixed'] && $total === 1)
-        {
-          $a = ['_first','_last','_prev','_next'];
-          foreach ($a as $b) {
-            $this->setMarkupItem($item['markup'], $b, '', true);
-          }
-        }
-        ###
-        # header
-        if (array_key_exists('head', $item['markup']))
-        {
-          $a = $this->itemInlineMarkup(
-            $item, $item['markup']['head'], $text
-          );
-          foreach (array_reverse($a) as $b) {
-            array_unshift($mkup, $b);
-          }
-        }
-        # footer
-        if (array_key_exists('foot', $item['markup']))
-        {
-          $a = $this->itemInlineMarkup(
-            $item, $item['markup']['foot'], $text
-          );
-          foreach ($a as $b) {
-            array_push($mkup, $b);
-          }
-        }
-        # }}}
-      }
-      else
-      {
-        # EMPTY (controls only)
-        # {{{
-        if (array_key_exists('empty', $item['markup']))
-        {
-          $mkup = $this->itemInlineMarkup(
-            $item, $item['markup']['empty'], $text
-          );
-        }
-        # }}}
-      }
-      $item['inlineMarkup'] = $mkup;
-      # }}}
-      # render content {{{
-      if ($count)
-      {
-        # NON-EMPTY
-        $a = ($item['content'] ?: self::$messages[$lang][4]);
-        $item['textContent'] = self::$tp->render($a, [
-          'item_count'   => $count,
-          'page'         => 1 + $page,
-          'page_count'   => $total,
-          'not_one_page' => ($total > 1),
-        ]);
-      }
-      else
-      {
-        # EMPTY
-        $item['textContent'] = array_key_exists('-', $text)
-          ? $text['-']
-          : self::$messages[$lang][2];
-      }
-      # }}}
-      # set {{{
-      $conf['page'] = $page;
-      # }}}
-      break;
-    case 'form':
-      # prepare {{{
-      # get current state and field index
-      if (!array_key_exists('index', $conf))
-      {
-        $conf['index'] = 0;
-        $conf['state'] = 0;
-        $this->user->changed = true;
-      }
-      $index = $conf['index'];
-      $state = $conf['state'];
-      $stateInfo = array_key_exists('info', $conf)
-        ? $conf['info']
-        : [0, ''];
-      # get language specific options list
-      $options = [];
-      if (array_key_exists('options', $item))
-      {
-        # static options
-        $options = $item['options'];
-        $options = array_key_exists($lang, $options)
-          ? $options[$lang]
-          : $options['en'];
-      }
-      elseif (false)
-      {
-        # dynamic options
-        # TODO: ...
-      }
-      # determine fields count
-      $count = count($item['fields']);
-      # determine field name
-      $indexField = ($state === 0)
-        ? array_keys($item['fields'])[$index]
-        : '';
-      # determine count of empty required fields
-      $emptyRequired = 0;
-      foreach ($item['fields'] as $a => $b)
-      {
-        if (($b[0] & 1) && !array_key_exists($a, $data)) {
-          ++$emptyRequired;
-        }
-      }
-      # }}}
-      # handle input {{{
-      if ($inputLen)
-      {
-        switch ($state) {
-        case 0:
-          # execute input command {{{
-          if ($inputLen === 1)
-          {
-            switch ($input) {
-            case '-':
-              # wipe current field value
-              if (!array_key_exists($indexField, $data)) {
-                $error = 1;return $item;# NOP
-              }
-              unset($data[$indexField]);
-              $dataChanged = true;
-              break 2;
-            case '>':
-              # advance to the next field but don't cycle around
-              if (++$index === $count) {
-                $error = 1;return $item;# NOP
-              }
-              break 2;
-            case '<':
-              # retreat to the previous field but don't cycle around
-              if (--$index < 0) {
-                $error = 1;return $item;# NOP
-              }
-              break 2;
-            }
-          }
-          # }}}
-          # set field value {{{
-          # refine by type
-          $a = $item['fields'][$indexField];
-          switch ($a[1]) {
-          case 'string':
-            $input = substr($input, 0, $a[2]);
-            break;
-          case 'int':
-            $input = intval(substr($input, 0, 16));
-            if ($input < $a[2]) {
-              $input = $a[2];
-            }
-            elseif ($input > $a[3]) {
-              $input = $a[3];
-            }
-            break;
-          case 'list':
-            # check list index specified correctly [1..N]
-            if (!ctype_digit($input) ||
-                ($a = intval($input)) <= 0 ||
-                $a > count($options[$indexField]))
-            {
-              $error = 1; return $item;# NOP
-            }
-            # select value from the list
-            $input = $options[$indexField][$a];
-            break;
-          }
-          # check not changed
-          if (array_key_exists($indexField, $data) &&
-              $data[$indexField] === $input)
-          {
-            $error = 1;return $item;# NOP
-          }
-          # update
-          $data[$indexField] = $input;
-          $dataChanged = true;
-          # advance to the next field (if option specified)
-          #if (array_key_exists('submitOnInput', $item) &&
-          if (array_key_exists('submitOnInput', $item) &&
-              $item['submitOnInput'] &&
-              ++$index === $count)
-          {
-            # last field completes input,
-            # change form state
-            $state = 1;
-          }
-          # }}}
-          break;
-        case 2:
-          # set final required field {{{
-          # check first
-          if ($emptyRequired !== 1)
-          {
-            # NOP, more than one empty required,
-            # this is assumed as non-deterministic state,
-            # no errors either..
-            $error = 1;
-            return $item;
-          }
-          # search field name
-          foreach ($item['fields'] as $a => $b)
-          {
-            if (($b[0] & 1) && !array_key_exists($a, $data)) {
-              break;
-            }
-          }
-          # accept input and store data
-          $data[$a] = $input;
-          $dataChanged = true;
-          # form is now filled (complete),
-          # change its state
-          $state = 1;
-          $index = $count;
-          # }}}
-          break;
-        }
-      }
-      # }}}
-      # handle function {{{
-      switch ($func) {
-      case 'prev': # input index backward {{{
-        if ($state !== 0) {
-          $error = 1;return $item;
-        }
-        if (--$index < 0)
-        {
-          if (array_key_exists('inputMoveAround', $item) &&
-              $item['inputMoveAround'])
-          {
-            $index = $count - 1;
-          }
-          else
-          {
-            $error = 1;
-            return $item;
-          }
-        }
-        break;
-      # }}}
-      case 'next': # input index forward {{{
-        if ($state !== 0) {
-          $error = 1;return $item;
-        }
-        if (++$index === $count)
-        {
-          if (array_key_exists('inputMoveAround', $item) &&
-              $item['inputMoveAround'])
-          {
-            $index = 0;
-          }
-          else
-          {
-            $error = 1;
-            return $item;
-          }
-        }
-        break;
-      # }}}
-      case 'refresh': # form refresher {{{
-        switch ($state) {
-        case 1:
-        case 4:
-        case 5:
-          # reset filled, failed and completed form states,
-          # clear all non-persistent fields and
-          # set input to the first one
-          $a = -1;
-          $b = 0;
-          foreach ($item['fields'] as $c => $d)
-          {
-            if (!($d[0] & 2))
-            {
-              if (!~$a) {
-                $a = $b;
-              }
-              if (array_key_exists($c, $data))
-              {
-                unset($data[$c]);
-                $dataChanged = true;
-              }
-            }
-            ++$b;
-          }
-          # set input index to the first non-persistent field and
-          # reset completed form state
-          if (~$a)
-          {
-            $index = $a;
-            $state = 0;
-            break;
-          }
-          # all the fields are persistent,
-          # preserve data and find first required from the end
-          $state = 0;
-          $index = $count - 1;
-          foreach (array_reverse($item['fields']) as $a => $b)
-          {
-            if ($b & 1) {
-              break;
-            }
-            --$index;
-          }
-          break;
-        case 2:
-          # required field missing,
-          # locate the index of the first empty required,
-          $index = 0;
-          foreach ($item['fields'] as $a => $b)
-          {
-            if (($b[0] & 1) && !array_key_exists($a, $data)) {
-              break;
-            }
-            ++$index;
-          }
-          # check not found
-          if ($index === $count)
-          {
-            # this is a rare case occurse when command structure changes and
-            # don't cataches with previous state,
-            # because of all the required are filled,
-            # complete form input
-            $state = 1;
-          }
-          else
-          {
-            # refreshing resets form into input state
-            $state = 0;
-          }
-          break;
-        case 3:
-          # this is a positive waiting state,
-          # refreshing doesn't do anything here
-          # because it's the job of the item's task
-          $error = 1;return $item;# NOP
-        case 6:
-          # TODO: errors display state
-          $error = 1;return $item;# NOP for now
-        }
-        break;
-      # }}}
-      case 'select': # input selector {{{
-        if ($state !== 0 || !$args ||
-            ($a = intval($args[0])) < 0 ||
-            ($a &&
-             (!array_key_exists($indexField, $options) ||
-              !($b = $options[$indexField]) ||
-              $a > count($b))))
-        {
-          $this->logError("failed to select field value");
-          $error = 1;
-          return $item;
-        }
-        # check same value selected
-        if ($a && array_key_exists($indexField, $data) &&
-            $data[$indexField] === $b[$a])
-        {
-          # NOP when required
-          if ($item['fields'][$indexField][0] & 1)
-          {
-            $error = 1;
-            return $item;
-          }
-          # de-select (set empty)
-          $a = 0;
-        }
-        # change data
-        if ($a)
-        {
-          # correct integer type
-          $data[$indexField] = ($item['fields'][$indexField][1] === 'int')
-            ? intval($b[$a])
-            : $b[$a];
-        }
-        elseif (array_key_exists($indexField, $data)) {
-          unset($data[$indexField]);
-        }
-        $dataChanged = true;
-        # advance field index (if option set)
-        if (array_key_exists('submitOnSelect', $item) &&
-            $item['submitOnSelect'])
-        {
-          ++$index;
-        }
-        break;
-      # }}}
-      case 'last': # submit input {{{
-        if ($state !== 0 || $index === $count) {
-          $error = 1; return $item;# NOP
-        }
-        # TODO: autofill
-        # set final index value
-        $index = $count;
-        # check confirmation required
-        if (array_key_exists('submitConfirm', $item) &&
-            $item['submitConfirm'])
-        {
-          break;
-        }
-        # check any required fields miss
-        if ($emptyRequired > 0) {
-          break;
-        }
-        # continue to form submittion..
-        $state = 1;
-      # }}}
-      case 'ok': # submit form {{{
-        # check mode is correct
-        if (!in_array($state, [1,4])) {
-          $error = 1;return $item;# NOP guard
-        }
-        # create task
-        if (!$this->taskAttach($item, $data, true))
-        {
-          $error = 1;
-          return $item;
-        }
-        # change form state
-        $state = 3;
-        break;
-      # }}}
-      case 'progress': # form progress {{{
-        if ($state !== 3 || !$args) {
-          $error = 1;return $item;# NOP guard
-        }
-        $stateInfo[0] = intval($args[0]);
-        break;
-      # }}}
-      case 'done': # form result {{{
-        if (!in_array($state,[1,4,3]) || !$args)
-        {
-          $error = "incorrect state ($state) or no args";
-          return $item;
-        }
-        $state = intval($args[0]) ? 5 : 4;
-        $stateInfo = [1, base64_decode($args[1])];
-        break;
-      # }}}
-      case 'first': # form reset {{{
-        # make sure in the correct state
-        if ($state < 4 && $state !== 2)
-        {
-          $error = 'form reset is only possible after completion or failure';
-          return $item;
-        }
-        # wipe data
-        $data = [];
-        $dataChanged = true;
-        # reset input index and state
-        $state = $index = 0;
-        break;
-      # }}}
-      case '':
-        # SKIP
-        break;
-      default:
-        # NOP error
-        $this->logError("unknown form function: $func");
-        $error = self::$messages[$lang][2];
-        return $item;
-      }
-      # }}}
-      # sync changes {{{
-      if ($index !== $conf['index'] ||
-          $state !== $conf['state'])
-      {
-        # set flag
-        $this->user->changed = true;
-        # check input completion state
-        if ($state === 0 && $index === $count)
-        {
-          # resolve to completed (optimistic)
-          $state = 1;
-          # check all required fields are set
-          foreach ($item['fields'] as $a => $b)
-          {
-            if (($b[0] & 1) &&
-                !array_key_exists($a, $data))
-            {
-              # required missing!
-              $state = 2;
-              break;
-            }
-          }
-        }
-        # reset state info
-        if ($state < 4) {
-          $stateInfo = [0,''];
-        }
-      }
-      # re-determine current/prev/next field names
-      $indexField = '';
-      $nextField  = $prevField = '';
-      if ($state === 0)
-      {
-        $a = array_keys($item['fields']);
-        $indexField = $a[$index];
-        # determine localized captions
-        if ($count > 1)
-        {
-          $nextField  = ($index + 1 < $count)
-            ? $a[$index + 1]
-            : $a[0];
-          $prevField  = ($index - 1 >= 0)
-            ? $a[$index - 1]
-            : $a[$count - 1];
-          $nextField = $text[$nextField];
-          $prevField = $text[$prevField];
-        }
-      }
-      # determine last field flag
-      $indexIsLast = ($index === $count - 1);
-      # re-determine count of empty required fields
-      if ($dataChanged)
-      {
-        $emptyRequired = 0;
-        foreach ($item['fields'] as $a => $b)
-        {
-          if (($b[0] & 1) && !array_key_exists($a, $data)) {
-            ++$emptyRequired;
-          }
-        }
-      }
-      # }}}
-      # render markup {{{
-      $mkup = [];
-      # compose input selector group {{{
-      if ($state === 0 && $indexField &&
-          array_key_exists($indexField, $options))
-      {
-        # get value options and column count
-        $b = $options[$indexField];
-        $c = $b[0];
-        $b = array_slice($b, 1);
-        # determine row count
-        $d = ceil(count($b) / $c);
-        # create select group
-        for ($i = 0, $k = 0; $i < $d; ++$i)
-        {
-          # create row
-          for ($j = 0, $e = []; $j < $c; ++$j)
-          {
-            # create option
-            if ($k < count($b))
-            {
-              # determine current or standard
-              $n = (array_key_exists($indexField, $data) &&
-                    !strcmp($data[$indexField], $b[$k]))
-                ? 'select1'
-                : 'select0';
-              # parse it and add to row
-              $e[] = [
-                'text' => self::$tp->render(
-                  self::$buttons[$n],
-                  [
-                    'index' => ($k + 1),
-                    'text'  => $b[$k],
-                  ]
-                ),
-                'callback_data' => '/'.$item['id'].'!select '.($k + 1)
-              ];
-            }
-            else
-            {
-              # empty pad
-              $e[] = ['text'=>' ','callback_data'=>'!'];
-            }
-            ++$k;
-          }
-          # add row
-          $mkup[] = $e;
-        }
-      }
-      # }}}
-      # compose input value display {{{
-      while ($state === 0 && $indexField)
-      {
-        # check empty
-        if (!array_key_exists($indexField, $data))
-        {
-          # display empty bar
-          $mkup[] = [['text'=>' ','callback_data'=>'!']];
-          break;
-        }
-        # check options list
-        $a = $data[$indexField];
-        if (array_key_exists($indexField, $options))
-        {
-          # check value is already shown in the list
-          $b = array_slice($options[$indexField], 1);
-          if (!is_string($a) && is_string($b[0])) {
-            $a = strval($a);# avoid comparison problem
-          }
-          if (array_search($a, $b, true) !== false)
-          {
-            # display empty bar
-            $mkup[] = [['text'=>' ','callback_data'=>'!']];
-            break;
-          }
-        }
-        # display non-empty value
-        $b = self::$tp->render(self::$buttons['select1'], ['text'=>$a]);
-        $a = !($item['fields'][$indexField][0] & 1)
-          ? '/'.$item['id'].'!select 0' # with de-selector
-          : '!';
-        $mkup[] = [['text'=>$b,'callback_data'=>$a]];
-        break;
-      }
-      # }}}
-      # compose controls {{{
-      # select markup
-      $a = $item['markup'];
-      $b = 'S'.$state;
-      if (array_key_exists($b, $a)) {
-        $c = $a[$b];
-      }
-      elseif ($state === 4 || $state === 6) {
-        $c = $a['S1'];
-      }
-      elseif ($state === 5) {
-        $c = $a['S2'];
-      }
-      else {
-        $c = [['_up']];
-      }
-      # select controls
-      $d = [
-        'first' => self::$messages[$lang][15],# reset
-      ];
-      $d['refresh'] = ($state === 5)
-        ? self::$messages[$lang][18] # repeat
-        : self::$messages[$lang][14];# refresh
-      if ($state === 0 && $indexField)
-      {
-        $d['prev'] = $index
-          ? self::$messages[$lang][16]
-          : '';
-        if ($indexIsLast)
-        {
-          if ($emptyRequired &&
-              (!array_key_exists('noRequiredSubmit', $item) ||
-               $item['noRequiredSubmit']))
-          {
-            # display empty bar
-            $d['last'] = '';
-          }
-          else
-          {
-            # standard
-            $d['last'] = self::$messages[$lang][12];
-          }
-        }
-        elseif (($item['fields'][$indexField][0] & 1) &&
-                !array_key_exists($indexField, $data) &&
-                (!array_key_exists('noRequiredSkip', $item) ||
-                 $item['noRequiredSkip']))
-        {
-          # non-last, empty but required,
-          # display empty bar
-          $d['next'] = '';
-        }
-        else
-        {
-          # standard
-          $d['next'] = self::$messages[$lang][17];
-        }
-      }
-      # render
-      $c = $this->itemInlineMarkup($item, $c, $text, $d);
-      foreach ($c as $a) {
-        $mkup[] = $a;
-      }
-      # }}}
-      $item['inlineMarkup'] = $mkup;
-      # }}}
-      # render content {{{
-      # compose input fields
-      $fields = [];
-      $i = 0;
-      foreach ($item['fields'] as $a => $b)
-      {
-        # determine type hint
-        switch ($b[1]) {
-        case 'string':
-          $c = self::$messages[$lang][7];
-          $c = self::$tp->render($c, ['max'=>$b[2]]);
-          break;
-        case 'int':
-          $c = self::$messages[$lang][8];
-          $c = self::$tp->render($c, ['min'=>$b[2],'max'=>$b[3]]);
-          break;
-        case 'list':
-          $c = self::$messages[$lang][13];
-          break;
-        default:
-          $c = '.';
-          break;
-        }
-        # determine value
-        $d = array_key_exists($a, $data)
-          ? $data[$a]
-          : '';
-        # add form field descriptor
-        $fields[] = [
-          'name' => (array_key_exists($a, $text)
-            ? $text[$a]
-            : $a),
-          'value'    => $d,
-          'valueLen' => strlen($d),
-          'before'   => ($index > $i),
-          'current'  => ($index === $i),
-          'after'    => ($index < $i),
-          'required' => ($b[0] & 1),
-          'hint'     => $c,
-        ];
-        $i++;
-      }
-      # get custom or common template
-      $a = array_key_exists('*', $text)
-        ? $text['*']
-        : self::$messages[$lang][6];
-      # get description
-      $b = array_key_exists('.', $text)
-        ? preg_replace('/\n\s*/m', ' ', trim($text['.']))
-        : '';
-      # compose full text
-      $item['textContent'] = $this->render_content($a, [
-        'desc'   => $b,
-        'fields' => $fields,
-        'info'   => $stateInfo,
-        's0' => ($state === 0),
-        's1' => ($state === 1),
-        's2' => ($state === 2),
-        's3' => ($state === 3),
-        's4' => ($state === 4),
-        's5' => ($state === 5),
-        's6' => ($state === 6),
-        's1s3' => ($state === 1 || $state === 3),
-        's3s4' => ($state === 3 || $state === 4),
-        's3s5' => ($state === 3 || $state === 5),
-        's3s4s5' => ($state === 3 || $state === 4 || $state === 5),
-      ]);
-      # }}}
-      # set {{{
-      $conf['index']  = $index;
-      $conf['state']  = $state;
-      $conf['info']   = $stateInfo;
-      $item['isInputAccepted'] = (
-        ($state === 0) ||
-        ($state === 2 && $emptyRequired === 1)
-      );
-      # }}}
-      break;
     case 'opener':
     case 'injector':
       # {{{
       # check destination
       if (!array_key_exists('path', $item))
       {
-        $error = self::$messages[$lang][1];
+        $error = $this->messages[$lang][1];
         return $item;
       }
       # compose command (simply open or inject)
@@ -1828,33 +1238,32 @@ class Bot {
       return $this->itemAttach($a, $error);
       # }}}
     default:
-      # CUSTOM {{{
+      # {{{
       # check
-      if (!$H)
+      if (!($a = $item['typeHandler']))
       {
         $this->logError('unknown type: '.$item['type']);
+        $error = $this->messages[$lang][3];
         return null;
       }
-      # render
-      if (!$H::render($this, $item, $func, $args))
+      # invoke
+      if (!$a::render($this, $item, $func, $args))
       {
-        $this->logError('handler failed: '.$item['id']);
-        return null;
+        $this->logError('render failed: '.$a);
+        $error = $this->messages[$lang][2];
+        return $item;
       }
       # set defaults
-      if (!$item['textContent']) {
+      if ($item['textContent'] === null) {
         $item['textContent'] = $item['content'];
       }
-      if ($item['inlineMarkup'] === null && $item['markup'])
-      {
-        $item['inlineMarkup'] = $this->itemInlineMarkup(
-          $item, $item['markup'], $text
-        );
+      if ($item['inlineMarkup'] === null && $item['markup']) {
+        $item['inlineMarkup'] = $this->itemInlineMarkup($item, $item['markup'], $text);
       }
       # }}}
       break;
     }
-    # determine title image {{{
+    # set title image {{{
     # check wasn't already rendered
     if (!$item['titleImage'])
     {
@@ -1874,8 +1283,8 @@ class Bot {
         $b = 'img'.DIRECTORY_SEPARATOR;
         $c = $b.$item['titleId'].'.jpg';# more specific first
         $d = $b.$a.'.jpg';# less specific last
-        $a = $this->dir;
-        $b = self::$inc;
+        $a = $this->botdir;
+        $b = $this->incdir;
         # determine single source
         $a = (file_exists($a.$c)
           ? $a.$c : (file_exists($a.$d)
@@ -1886,8 +1295,8 @@ class Bot {
         if ($a)
         {
           # static image file
-          $this->logDebug("image requested: $a");
-          $item['titleImage'] = $this->imageFile($a);
+          $this->logDebug("image request: $a");
+          $item['titleImage'] = new BotFile($a, false);
         }
         else
         {
@@ -1905,118 +1314,82 @@ class Bot {
       }
     }
     # }}}
-    # encode markup {{{
-    if ($a = $item['inlineMarkup']) {
-      $item['inlineMarkup'] = json_encode(['inline_keyboard'=>$a]);
+    # set inline markup {{{
+    if ($item[$a = 'inlineMarkup']) {
+      $item[$a] = json_encode(['inline_keyboard'=>$item[$a]]);
+    } else {
+      $item[$a] = '';
     }
     # }}}
-    # save data {{{
-    if ($dataChanged && $file)
+    # set data {{{
+    if ($item['dataChanged'])
     {
-      if (!$data) {
-        @unlink($file);
+      if ($a = $item['dataHandler'])
+      {
+        # invoke handler
+        if (!$a::detach($this, $item)) {
+          $this->logError("data detach failed: $a");
+        }
       }
-      elseif (!file_put_contents($file, json_encode($data))) {
-        $this->logError('file_put_contents('.$file.') failed');
+      else
+      {
+        # store file
+        if ($data && !file_put_contents($file, json_encode($data))) {
+          $this->logError('file_put_contents('.$file.') failed');
+        }
+        elseif (!$data && !@unlink($file)) {
+          $this->logError('unlink('.$file.') failed');
+        }
       }
     }
     # }}}
     return $item;
   }
   # }}}
-  # item {{{
-  private function itemAssemble(&$m, &$p = null) # {{{
+  public function itemGet($id) # {{{
   {
-    # iterate menu items
-    foreach ($m as $a => &$b)
-    {
-      # set item's identifier, parent and root
-      if ($p)
-      {
-        $b['id'] = $p['id'].':'.$a;
-        $b['parent'] = &$p;
-      }
-      else
-      {
-        $b['id'] = $a;
-        $b['parent'] = null;
-      }
-      $b['name'] = $a;
-      # set item's config entry (should have one)
-      if (!array_key_exists('config', $b)) {
-        $b['config'] = [];
-      }
-      # set language texts
-      # - [en]glish must present
-      # - empty must present
-      if (!array_key_exists('text', $b)) {
-        $b['text'] = ['en'=>[''=>'']];
-      }
-      elseif (!array_key_exists('en', $b['text'])) {
-        $b['text'] = ['en'=>$b['text']];
-      }
-      # parse emojis and button captions
-      foreach ($b['text'] as $c => &$d)
-      {
-        foreach ($d as &$e)
-        {
-          if ($e) {
-            $e = self::$tp->render($e, BotApi::$emoji, '{: :}');
-            $e = self::$tp->render($e, self::$buttons, '{! !}');
-          }
-        }
-        if (!array_key_exists('', $d)) {
-          $d[''] = '';
-        }
-      }
-      unset($d, $e);
-      # merge add languages other than [en] with [en],
-      # which allows to gradually translate commands,
-      # so, default [en] captions act as a backup
-      foreach (array_keys(self::$messages) as $c)
-      {
-        if ($c !== 'en')
-        {
-          $d = $b['text']['en'];
-          $b['text'][$c] = array_key_exists($c, $b['text'])
-            ? array_merge($d, $b['text'][$c])
-            : $d;
-        }
-      }
-      # set item's children dummy (tree navigation is common)
-      if (!array_key_exists('items', $b)) {
-        $b['items'] = null;
-      }
-      # set item's data publicity flag
-      if (!array_key_exists('isPublicData', $b)) {
-        $b['isPublicData'] = false;
-      }
-      # set blocks list
-      if (array_key_exists('blocks', $b))
-      {
-        # specified
-        array_unshift($b['blocks'], 'std');
-      }
-      else
-      {
-        if ($b['parent'])
-        {
-          # inherit
-          $b['blocks'] = $b['parent']['blocks'];
-        }
-        else
-        {
-          # standard
-          $b['blocks'] = ['std'];
-        }
-      }
-      # recurse
-      if ($b['items']) {
-        $this->itemAssemble($b['items'], $b);
-      }
+    # get item
+    # search from the root
+    $item = $this->commands;
+    $path = explode(':', $id);
+    if (!array_key_exists($path[0], $item)) {
+      return null;
     }
+    $item = $item[$path[0]];
+    # iterate remaining path
+    foreach (array_slice($path, 1) as $a)
+    {
+      if (!array_key_exists('items', $item) ||
+          !array_key_exists($a, $item['items']))
+      {
+        $error = $this->messages[$this->user->lang][1];
+        return null;
+      }
+      $item = $item['items'][$a];
+    }
+    # attach item's configuration
+    if (!array_key_exists($id, $this->user->config)) {
+      $this->user->config[$id] = $item['config'];
+    }
+    $item['config'] = &$this->user->config[$id];
+    # set handlers
+    $a = '\\'.__NAMESPACE__.'\\';
+    $b = str_replace(':', '_', $item['id']);
+    $item['dataHandler'] = class_exists(($c = $a.'data_'.$b), false) ? $c : '';
+    $item['itemHandler'] = class_exists(($c = $a.'item_'.$b), false) ? $c : '';
+    $item['typeHandler'] = class_exists(($c = $a.'type_'.$item['type']), false) ? $c : '';
     # done
-    return $m;
+    return $item;
+  }
+  # }}}
+  public function itemGetRoot($id) # {{{
+  {
+    # extract root identfier
+    if (($i = strpos($id, ':')) !== false) {
+      $id = substr($id, 0, $i);
+    }
+    # complete
+    return $this->itemGet($id);
   }
   # }}}
   public function itemBreadcrumb(&$item, $lang = '', $short = false) # {{{
@@ -2068,9 +1441,7 @@ class Bot {
     return $bread;
   }
   # }}}
-  public function itemInlineMarkup( # {{{
-    &$item, &$m, &$text, $ext = null
-  )
+  public function itemInlineMarkup(&$item, &$m, &$text, $ext = null) # {{{
   {
     # check
     if (!$m) {
@@ -2111,7 +1482,7 @@ class Bot {
           {
             # child goto
             $c = array_key_exists($b, $text) ? $text[$b] : $b;
-            $c = self::$tp->render(self::$buttons['go'], ['text'=>$c]);
+            $c = $this->tp->render($this->buttons['go'], ['text'=>$c]);
             $d = '/'.$item['id'].':'.$b;
           }
           else
@@ -2131,9 +1502,9 @@ class Bot {
           # determine goto caption
           $c = array_key_exists($b, $text)
             ? $text[$b]
-            : self::$buttons['go'];
+            : $this->buttons['go'];
           $d = '/'.substr($d, 3);
-          $c = self::$tp->render($c, [
+          $c = $this->tp->render($c, [
             'text' => str_replace(':', '/', $d)
           ]);
           # compose nav button
@@ -2143,8 +1514,8 @@ class Bot {
         # determine default caption
         $c = array_key_exists($b, $text)
           ? $text[$b]
-          : (array_key_exists($d, self::$buttons)
-            ? self::$buttons[$d]
+          : (array_key_exists($d, $this->buttons)
+            ? $this->buttons[$d]
             : (array_key_exists($d, $text)
               ? $text[$d]
               : $d));
@@ -2168,10 +1539,10 @@ class Bot {
           else
           {
             # CLOSE button (message will be deleted)
-            $e = self::$messages[$lang][10];
-            $c = self::$buttons['close'];
+            $e = $this->messages[$lang][10];
+            $c = $this->buttons['close'];
           }
-          $c = self::$tp->render($c, ['text'=>$e]);
+          $c = $this->tp->render($c, ['text'=>$e]);
           # }}}
         }
         elseif ($d === 'prev' || $d === 'next' ||
@@ -2193,12 +1564,12 @@ class Bot {
               continue;
             }
             # render specified value
-            $c = self::$tp->render($c, ['name'=>$ext[$d]]);
+            $c = $this->tp->render($c, ['name'=>$ext[$d]]);
           }
           else
           {
             # render without extras
-            $c = self::$tp->render($c, [
+            $c = $this->tp->render($c, [
               'name' => (array_key_exists($d, $text)
                 ? $text[$d]
                 : '')
@@ -2220,74 +1591,11 @@ class Bot {
     return $mkup;
   }
   # }}}
-  public function itemGet($id) # {{{
-  {
-    # get item
-    # search from the root
-    $item = $this->commands;
-    $path = explode(':', $id);
-    if (!array_key_exists($path[0], $item)) {
-      return null;
-    }
-    $item = $item[$path[0]];
-    # iterate remaining path
-    foreach (array_slice($path, 1) as $a)
-    {
-      if (!array_key_exists('items', $item) ||
-          !array_key_exists($a, $item['items']))
-      {
-        $error = self::$messages[$this->user->lang][1];
-        return null;
-      }
-      $item = $item['items'][$a];
-    }
-    # attach item's configuration
-    if (!array_key_exists($id, $this->user->config)) {
-      $this->user->config[$id] = $item['config'];
-    }
-    $item['config'] = &$this->user->config[$id];
-    # load block handlers
-    $a = 'blocks'.DIRECTORY_SEPARATOR;
-    $b = $this->dir.$a;
-    $c = self::$inc.$a;
-    foreach ($item['blocks'] as $a)
-    {
-      $a = "$a.php";
-      $a = file_exists($b.$a) ? $b.$a : $c.$a;
-      include_once($a);
-    }
-    # determine item handler
-    $a = '\\'.__NAMESPACE__.'\\';
-    $b = str_replace(':', '_', $item['id']);
-    $c = $a.'type_'.$item['type'];
-    $b = $a.'item_'.$b;
-    $a = '';
-    if (class_exists($b, false)) {
-      $a = $b;
-    }
-    elseif (class_exists($c, false)) {
-      $a = $c;
-    }
-    $item['handler'] = $a;
-    # complete
-    return $item;
-  }
-  # }}}
-  public function itemGetRoot($id) # {{{
-  {
-    # extract root identfier
-    if (($i = strpos($id, ':')) !== false) {
-      $id = substr($id, 0, $i);
-    }
-    # complete
-    return $this->itemGet($id);
-  }
-  # }}}
   private function itemSend(&$item) # {{{
   {
     # CUSTOM
-    if (($H = $item['handler']) && method_exists($H, 'send')) {
-      return $H::send($this, $item);
+    if (($a = $item['typeHandler']) && method_exists($a, 'send')) {
+      return $a::send($this, $item);
     }
     # STANDARD
     # check title specified
@@ -2297,45 +1605,46 @@ class Bot {
       return 0;
     }
     # assemble parameters
-    $a = $item['textContent'];
-    $b = $item['inlineMarkup'];
+    $a = $item['titleId'];
+    $b = $item['textContent'];
+    $c = $item['inlineMarkup'];
     $q = [
       'chat_id' => $this->user->chat->id,
       'photo'   => $item['titleImage'],
       'disable_notification' => true,
     ];
-    if ($a)
+    if ($b)
     {
-      $q['caption']    = $a;
+      $q['caption']    = $b;
       $q['parse_mode'] = 'HTML';
     }
-    if ($b) {
-      $q['reply_markup'] = $b;
+    if ($c) {
+      $q['reply_markup'] = $c;
     }
     # send
-    if (!($c = $this->api->send('sendPhoto', $q)))
+    if (!($d = $this->api->send('sendPhoto', $q)))
     {
       $this->logError('sendPhoto('.$item['id'].') failed: '.$this->api->error);
       $this->logError($q);
       return 0;
     }
     # set message hash
-    $item['hash'] = $item['titleId'].hash('md4', $a.$b);
+    $item['hash'] = $a.hash('md4', $b.$c);
     # set file_id
-    if ($item['titleId'] && ($item['titleImage'] instanceOf BotFile))
+    if ($a && ($item['titleImage'] instanceOf BotFile))
     {
-      $a = end($c->result->photo);
-      $this->setFileId($item['titleId'], $c->file_id);
+      $b = end($d->result->photo);
+      $this->setFileId($a, $b->file_id);
     }
     # complete
-    return $this->userUpdate($item, $c->result->message_id);
+    return $this->userUpdate($item, $d->result->message_id);
   }
   # }}}
   private function itemUpdate($msg, &$item, $reportHashFail = true) # {{{
   {
     # CUSTOM
-    if (($H = $item['handler']) && method_exists($H, 'update')) {
-      return $H::update($this, $msg, $item);
+    if (($a = $item['typeHandler']) && method_exists($a, 'update')) {
+      return $a::update($this, $msg, $item);
     }
     # STANDARD
     # prepare
@@ -2420,6 +1729,37 @@ class Bot {
     return $this->userUpdate($item, $b->result->message_id);
   }
   # }}}
+  private function itemZap($msg) # {{{
+  {
+    # try simply delete
+    $a = $this->api->send('deleteMessage', [
+      'chat_id'    => $this->user->chat->id,
+      'message_id' => $msg,
+    ]);
+    if ($a)
+    {
+      $this->log("message $msg deleted");
+      return true;
+    }
+    # check result details
+    if (($a = $this->api->result) &&
+        isset($a->error_code) &&
+        $a->error_code === 400)
+    {
+      # message is too old for deletion,
+      # it should be "nulified": image/text/markup blanked,
+      # but the message type is unknown, so,
+      # try common
+      if ($this->imageZap($msg))
+      {
+        $this->log("message $msg nulified");
+        return true;
+      }
+      # eh..
+    }
+    return false;
+  }
+  # }}}
   private function itemDetach($item) # {{{
   {
     # prepare
@@ -2437,7 +1777,7 @@ class Bot {
     $this->log('detaching /'.$root);
     # check message timestamp (telegram allows to delete only "fresh" messages)
     if (($a = time() - $conf[$root]['_time']) >= 0 &&
-        ($a < self::$MSG_EXPIRE_TIME))
+        ($a < BotApi::$MESSAGE_LIFETIME))
     {
       # wipe it
       $a = $this->api->send('deleteMessage', [
@@ -2481,37 +1821,6 @@ class Bot {
     $this->user->changed = true;
     # done
     return $a;
-  }
-  # }}}
-  private function itemZap($msg) # {{{
-  {
-    # try simply delete
-    $a = $this->api->send('deleteMessage', [
-      'chat_id'    => $this->user->chat->id,
-      'message_id' => $msg,
-    ]);
-    if ($a)
-    {
-      $this->log("message $msg deleted");
-      return true;
-    }
-    # check result details
-    if (($a = $this->api->result) &&
-        isset($a->error_code) &&
-        $a->error_code === 400)
-    {
-      # message is too old for deletion,
-      # it should be "nulified": image/text/markup blanked,
-      # but the message type is unknown, so,
-      # try common
-      if ($this->imageZap($msg))
-      {
-        $this->log("message $msg nulified");
-        return true;
-      }
-      # eh..
-    }
-    return false;
   }
   # }}}
   # }}}
@@ -2576,7 +1885,7 @@ class Bot {
       $file = $task[2];
       $plan = [
         'id'   => $task[0],
-        'bot'  => $this->name,
+        'bot'  => $this->id,
         'item' => $task[3],
         'data' => $task[4],
         'user' => $this->user,
@@ -2623,13 +1932,13 @@ class Bot {
       return false;# unlikely
     }
     # possess handler
-    if (!($H = $item['handler']))
+    if (!($a = $item['typeHandler']))
     {
       $this->logError('handler not found: '.$plan['item']);
       return false;# no handler
     }
     # execute
-    if (!($res = $H::task($this, $item, $plan['data'])) ||
+    if (!($res = $a::task($this, $item, $plan['data'])) ||
         !is_array($res) || !count($res))
     {
       $res = [0];
@@ -2719,7 +2028,7 @@ class Bot {
       $a = '/'.$item['id'].'!'.$func.$a;
       $b = '';
       if (!($item = $this->itemAttach($a, $b)) || $b) {
-        throw new \Exception("itemAttach($a) failed");
+        throw new \Exception("failed to attach: $a");
       }
       # check displayed
       # the _item parameter is untrusted..
@@ -2732,7 +2041,7 @@ class Bot {
       {
         # callback and update
         if (!$callback || $callback($item)) {
-          $this->itemUpdate($c[$b]['_msg'], $item, ($func === 'done'));
+          $this->itemUpdate($c[$b]['_msg'], $item, ($func !== 'done'));
         }
       }
     }
@@ -2785,8 +2094,7 @@ class Bot {
     }
     # determine chat name
     $chat->name = (
-      (isset($chat->title) ? $chat->title : $chat->id).
-      '@'.
+      (isset($chat->title) ? $chat->title : $chat->id).'@'.
       (isset($chat->username) ? $chat->username : $chat->id)
     );
     # determine user names and language
@@ -2797,13 +2105,12 @@ class Bot {
       ? $from->username
       : $from->id;
     $fullname = $first_name.'@'.$username;
-    if (!array_key_exists('force_lang', $this->opts) ||
-        !($lang = $this->opts['force_lang']))
+    if (!($lang = $this->opts['force_lang']) ||
+        !isset($from->language_code) ||
+        !($lang = $from->language_code) ||
+        !isset($this->messages[$lang]))
     {
-      $lang = (isset($from->language_code) &&
-               array_key_exists($from->language_code, self::$messages))
-        ? $from->language_code
-        : 'en';
+      $lang = 'en';
     }
     # attach refined object
     $this->user = (object)[
@@ -2824,11 +2131,11 @@ class Bot {
     if ($chat->type !== 'private' &&
         !$this->user->is_admin)
     {
-      # complain, no service :(
-      $this->log('chat ['.$chat->name.'] ignored');
-      # callback should be replied for a graceful ignore
-      if ($isCallback)
+      # complain and ignore
+      $this->log('access denied, '.$chat->name);
+      if ($isCallback && $this->opts['graceful'])
       {
+        # close callback for user convinience
         $a = $update->callback_query->id;
         $a = ['callback_query_id' => $a];
         if (!$this->api->send('answerCallbackQuery', $a)) {
@@ -2838,7 +2145,7 @@ class Bot {
       return false;
     }
     # set directory
-    $this->user->dir = $this->dir.$from->id.DIRECTORY_SEPARATOR;
+    $this->user->dir = $this->datadir.$from->id.DIRECTORY_SEPARATOR;
     if (!file_exists($this->user->dir)) {
       @mkdir($this->user->dir);
     }
@@ -2855,10 +2162,19 @@ class Bot {
       $file = $file.strval($chat->id);
     }
     $file = $file.'.json';
-    # aquire lock
-    if (!self::file_lock($file))
+    # aquire a lock
+    while (true)
     {
-      $this->logError("failed to lock: $file");
+      # try to aquire
+      if (self::file_lock($file)) {
+        break;
+      }
+      $this->logError("lock failed: $file");
+      # try with force
+      if (!self::file_lock($file, true)) {
+        break;
+      }
+      $this->logError("forced lock failed: $file");
       return false;
     }
     # read, decode contents and
@@ -3002,11 +2318,12 @@ class Bot {
       fwrite($e, $type.'> '.$m."\n");
     }
     # }}}
+    /***
     # TO SFX DEVICE {{{
-    if (self::$WIN_OS && $this->opts['sfx'] && !self::$IS_TASK)
+    if (self::$IS_WIN && $this->opts['sfx'] && !self::$IS_TASK)
     {
       # play sound through batch-file
-      $m = self::$inc.'sfx';
+      $m = $this->incdir.'sfx';
       $m = 'START "" /D "'.$m.'" /B play.bat info.wav';
       if ($m = popen($m, 'r'))
       {
@@ -3015,6 +2332,7 @@ class Bot {
       }
     }
     # }}}
+    /***/
   }
   # }}}
   public function logError($m)
@@ -3033,6 +2351,15 @@ class Bot {
       $this->log($m, 0);
     }
   }
+  public function logMustache($m, $level)
+  {
+    if ($level) {
+      $this->log('sm-mustache: '.$m, 1);
+    }
+    elseif ($this->opts['debuglog']) {
+      $this->log('sm-mustache: '.$m, 0);
+    }
+  }
   # }}}
   # image {{{
   public function imageTitle( # {{{
@@ -3044,9 +2371,9 @@ class Bot {
   )
   {
     # prepare {{{
-    # determine defaults
+    # get font and color
     if (!$font) {
-      $font = $this->fontsdir.'title.ttf';
+      $font = $this->fontdir.$this->opts['fonts']['title'];
     }
     if (!$color) {
       $color = $this->opts['colors'];
@@ -3140,17 +2467,10 @@ class Bot {
     return new BotFile($file, $temp);
   }
   # }}}
-  private function imageFile($path) # {{{
-  {
-    # TODO: refine to proper size
-    # create as non-temporary
-    return new BotFile($path, false);
-  }
-  # }}}
   private function imageZap($msg) # {{{
   {
     # get or create empty image
-    if (array_key_exists('empty', $this->fids))
+    if (isset($this->fids['empty']))
     {
       $img = $this->fids['empty'];
       $media = false;
@@ -3198,8 +2518,7 @@ class Bot {
     return true;
   }
   # }}}
-  # TODO:
-  private function createEmptyImage($variant, $fg = null, $bg = null) # {{{
+  private function createEmptyImage($variant) # {{{
   {
     # create image (RGB color)
     if (($img = @imagecreatetruecolor(640, 160)) === false)
@@ -3207,13 +2526,9 @@ class Bot {
       $this->log('imagecreatetruecolor() failed');
       return null;
     }
-    # determine colors
-    if (!$bg) {
-      $bg = [72,61,139];# darkslateblue
-    }
-    if (!$fg) {
-      $fg = [240,248,255];# aliceblue
-    }
+    # get colors
+    $fg = $this->opts['colors'][0];
+    $bg = $this->opts['colors'][1];
     # allocate colors and fill the background
     if ((($bg = imagecolorallocate($img, $bg[0], $bg[1], $bg[2])) === false) ||
         (($fg = imagecolorallocate($img, $fg[0], $fg[1], $fg[2])) === false) ||
@@ -3244,7 +2559,7 @@ class Bot {
   # }}}
   # }}}
   # helpers {{{
-  public static function file_lock($file) # {{{
+  public static function file_lock($file, $force = false) # {{{
   {
     # prepare
     $id    = uniqid();
@@ -3255,8 +2570,14 @@ class Bot {
       usleep(100000);# 100ms
     }
     # check exhausted
-    if (!$count) {
-      return false;
+    if (!$count)
+    {
+      # check not forced or apply force (remove lockfile)
+      if (!$force || !@unlink($lock)) {
+        return false;
+      }
+      # try last time
+      return self::file_lock($file);
     }
     # set new lock and
     # make sure no collisions
@@ -3280,7 +2601,7 @@ class Bot {
   # }}}
   public static function async_execute($command) # {{{
   {
-    if (self::$WIN_OS)
+    if (self::$IS_WIN)
     {
       # this will not work,
       # kept for history of stdin/out redirection to NUL,
@@ -3333,19 +2654,19 @@ class Bot {
     ### {{current}}, apply specific template trims
     $data['br']  = "\n";
     $data['end'] = BotApi::$hex[0];
-    $text = self::$tp->render(preg_replace('/\n\s*/m', '', $text), $data);
+    $text = $this->tp->render(preg_replace('/\n\s*/m', '', $text), $data);
     $text = str_replace("\r", '', $text);
     ### {[base]}
-    return self::$tp->render($text, [
+    return $this->tp->render($text, [
       'user' => $this->user,
     ], '{[ ]}');
   }
   # }}}
-  public static function delay($time) # {{{
+  public static function delay($sec) # {{{
   {
     # determine base and remainder
-    $a = intval($time);
-    $b = intval(100000 * ($time - $a));
+    $a = intval($sec);
+    $b = intval(100000 * ($sec - $a));
     # sleep
     if ($a) {sleep($a);}
     if ($b) {usleep($b);}
@@ -3356,7 +2677,7 @@ class Bot {
     # update current
     $this->fids[$file] = $id;
     # prepare
-    $a = $this->dir.'file_id.json';
+    $a = $this->datadir.'file_id.json';
     $b = json_encode($this->fids);
     # lock file
     if (self::file_lock($a))
@@ -3420,57 +2741,20 @@ class Bot {
     }
   }
   # }}}
-  public static function sortList(&$list, $k, $desc = false) # {{{
-  {
-    # define numeric keys (others are strings)
-    static $keys = ['id','order'];
-    # check
-    if (in_array($k, $keys))
-    {
-      # sort numbers
-      $c = uasort($list, function($a, $b) use ($k, $desc) {
-        # check equal and resolve by unique identifier
-        if ($a[$k] === $b[$k]) {
-          return ($a['id'] > $b['id']) ? 1 : -1;
-        }
-        # operate
-        return $desc
-          ? (($a[$k] > $b[$k]) ? -1 :  1)
-          : (($a[$k] > $b[$k]) ?  1 : -1);
-      });
-    }
-    else
-    {
-      # sort strings
-      $c = uasort($list, function($a, $b) use ($k, $desc) {
-        # compare items
-        if (($c = strcmp($a[$k], $b[$k])) === 0)
-        {
-          # resolve equal by unique identifier
-          return ($a['id'] > $b['id']) ? 1 : -1;
-        }
-        # operate
-        return $desc
-          ? (($c > 0) ? -1 :  1)
-          : (($c > 0) ?  1 : -1);
-      });
-    }
-    return $c;
-  }
-  # }}}
 }
 class BotApi {
   # {{{
   private
     $curl  = null,
-    $token = '';
-  private static
-    $url = 'https://api.telegram.org/bot';
+    $token = '',
+    $url   = 'https://api.telegram.org/bot';
   public
     $error  = '',
     $result = null;
   public static
-    $emoji = [
+    $MESSAGE_LIFETIME = 48*60*60,
+    $EMOJI = [
+      # {{{
       'arrow_up'         => "\xE2\xAC\x86",
       'arrow_down'       => "\xE2\xAC\x87",
       'arrow_up_small'   => "\xF0\x9F\x94\xBC",
@@ -3521,22 +2805,25 @@ class BotApi {
       'purple_circle'    => "\xF0\x9F\x9F\xA3",
       'arrow_right_hook' => "\xE2\x86\xAA",
       'tada'             => "\xF0\x9F\x8E\x89",
+      # }}}
     ],
     $hex = [
       "\xC2\xAD",# SOFT HYPHEN U+00AD
       "\xC2\xA0",# non-breakable space (nbsp)
     ];
+  ###
   # initializer {{{
   private function __construct($curl, $token)
   {
     $this->curl  = $curl;
     $this->token = $token;
+    $this->url   = $this->url.$token;
   }
   public static function init($token)
   {
     # create curl instance
     if (!function_exists('curl_init') || !($curl = curl_init())) {
-      exit('curl missing');
+      return null;
     }
     # configure it
     curl_setopt_array($curl, [
@@ -3570,7 +2857,7 @@ class BotApi {
     }
     # send
     curl_setopt_array($this->curl, [
-      CURLOPT_URL  => self::$url.$this->token.'/'.$method,
+      CURLOPT_URL  => $this->url.'/'.$method,
       CURLOPT_POST => true,
       CURLOPT_POSTFIELDS => $args,
     ]);
@@ -3633,6 +2920,1669 @@ class BotFile extends \CURLFile {
       unlink($this->name);
       $this->name = '';
     }
+  }
+  # }}}
+}
+class type_list {
+  # {{{
+  static public $template = [
+    'en' => # {{{
+    '
+page <b>{{page}}</b> of {{page_count}} ({{item_count}})
+    ',
+    # }}}
+    'ru' => # {{{
+    '
+страница <b>{{page}}</b> из {{page_count}} ({{item_count}})
+    ',
+    # }}}
+  ];
+  # }}}
+  static function render($bot, &$item, $func, $args) # {{{
+  {
+    # prepare {{{
+    $conf  = &$item['config'];
+    $data  = &$item['data'];
+    $lang  = $bot->user->lang;
+    $text  = &$item['text'][$lang];
+    if (!isset($conf['rows']) || !isset($conf['cols']) ||
+        !isset($item['markup']))
+    {
+      return false;
+    }
+    $rows  = $conf['rows'];
+    $cols  = $conf['cols'];
+    $size  = $rows * $cols;
+    $count = $data ? count($data) : 0;
+    # determine total page count
+    if (!($total = intval(ceil($count / $size)))) {
+      $total = 1;
+    }
+    # determine current page
+    if (!isset($conf['page']))
+    {
+      $conf['page'] = $page = 0;
+      $bot->user->changed = true;
+    }
+    elseif (($page = $conf['page']) >= $total)
+    {
+      $conf['page'] = $page = $total - 1;
+      $bot->user->changed = true;
+    }
+    # }}}
+    # handle list function {{{
+    switch ($func) {
+    case 'first':
+      $page = 0;
+      break;
+    case 'last':
+      $page = $total - 1;
+      break;
+    case 'prev':
+      $page = ($page > 0)
+        ? $page - 1
+        : $total - 1;
+      break;
+    case 'next':
+      $page = ($page < $total - 1)
+        ? $page + 1
+        : 0;
+      break;
+    }
+    # }}}
+    # set markup {{{
+    if ($count)
+    {
+      # NON-EMPTY
+      # sort list items
+      $mkup = [];
+      if (!self::sort($data, $conf['order'], $conf['desc']))
+      {
+        $bot->logError('failed to sort');
+        return false;
+      }
+      # extract records from the ordered data set
+      $a = $page * $size;
+      $d = array_slice($data, $a, $size);
+      # create list
+      for ($a = 0, $c = 0; $a < $rows; ++$a)
+      {
+        $mkup[$a] = [];
+        for ($b = 0; $b < $cols; ++$b)
+        {
+          # determine caption and command
+          if ($c < count($d))
+          {
+            $d = $d[$c]['name'];
+            $e = '/'.$item['id'].'!id '.$d[$c]['id'];
+          }
+          else
+          {
+            $d = ' ';
+            $e = '!';
+          }
+          # create cell
+          $mkup[$a][$b] = [
+            'text'          => $d,
+            'callback_data' => $e,
+          ];
+          $c++;
+        }
+        if ($c >= count($d) && !$conf['fixed']) {
+          break;
+        }
+      }
+      /***
+      # determine first_last
+      $a = '_first_last';
+      $b = ($total === 1)
+        ? ''
+        : (($total - $page > $page) ? '_last' : '_first');
+      $bot->setMarkupItem($item['markup'], $a, $b, true);
+      # if it's only one page
+      # remove page navigation controls
+      if (!$conf['fixed'] && $total === 1)
+      {
+        $a = ['_first','_last','_prev','_next'];
+        foreach ($a as $b) {
+          $bot->setMarkupItem($item['markup'], $b, '', true);
+        }
+      }
+      /***/
+      # add controls
+      $a = isset($item['markup']['.'])
+        ? $item['markup']['.']
+        : [['_up']];
+      $mkup[] = $bot->itemInlineMarkup($item, $a, $text);
+    }
+    else
+    {
+      # EMPTY
+      $a = isset($item['markup']['empty'])
+        ? $item['markup']['empty']
+        : [['_up']];
+      $mkup = $bot->itemInlineMarkup($item, $a, $text);
+    }
+    $item['inlineMarkup'] = &$mkup;
+    # }}}
+    # set content {{{
+    if ($count)
+    {
+      # NON-EMPTY
+      $a = ($item['content'] ?: self::$template[$lang]);
+      $item['textContent'] = $bot->tp->render($a, [
+        'item_count'   => $count,
+        'page'         => 1 + $page,
+        'page_count'   => $total,
+        'not_one_page' => ($total > 1),
+      ]);
+    }
+    else
+    {
+      # EMPTY
+      $item['textContent'] = isset($text['-'])
+        ? $text['-'] : '';
+    }
+    # }}}
+    # complete
+    if ($page !== $conf['page'])
+    {
+      $conf['page'] = $page;
+      $bot->user->changed = true;
+    }
+    return true;
+  }
+  # }}}
+  static function sort(&$list, $k, $desc = false) # {{{
+  {
+    # define numeric keys (others are strings)
+    static $keys = ['id','order'];
+    # check
+    if (in_array($k, $keys))
+    {
+      # sort numbers
+      $c = uasort($list, function($a, $b) use ($k, $desc) {
+        # check equal and resolve by unique identifier
+        if ($a[$k] === $b[$k]) {
+          return ($a['id'] > $b['id']) ? 1 : -1;
+        }
+        # operate
+        return $desc
+          ? (($a[$k] > $b[$k]) ? -1 :  1)
+          : (($a[$k] > $b[$k]) ?  1 : -1);
+      });
+    }
+    else
+    {
+      # sort strings
+      $c = uasort($list, function($a, $b) use ($k, $desc) {
+        # compare items
+        if (($c = strcmp($a[$k], $b[$k])) === 0)
+        {
+          # resolve equal by unique identifier
+          return ($a['id'] > $b['id']) ? 1 : -1;
+        }
+        # operate
+        return $desc
+          ? (($c > 0) ? -1 :  1)
+          : (($c > 0) ?  1 : -1);
+      });
+    }
+    return $c;
+  }
+  # }}}
+}
+class type_form {
+  static function render($bot, &$item, $func, $args) # {{{
+  {
+    # prepare {{{
+    # get current state and field index
+    if (!array_key_exists('index', $conf))
+    {
+      $conf['index'] = 0;
+      $conf['state'] = 0;
+      $this->user->changed = true;
+    }
+    $index = $conf['index'];
+    $state = $conf['state'];
+    $stateInfo = array_key_exists('info', $conf)
+      ? $conf['info']
+      : [0, ''];
+    # get language specific options list
+    $options = [];
+    if (array_key_exists('options', $item))
+    {
+      # static options
+      $options = $item['options'];
+      $options = array_key_exists($lang, $options)
+        ? $options[$lang]
+        : $options['en'];
+    }
+    elseif (false)
+    {
+      # dynamic options
+      # TODO: ...
+    }
+    # determine fields count
+    $count = count($item['fields']);
+    # determine field name
+    $indexField = ($state === 0)
+      ? array_keys($item['fields'])[$index]
+      : '';
+    # determine count of empty required fields
+    $emptyRequired = 0;
+    foreach ($item['fields'] as $a => $b)
+    {
+      if (($b[0] & 1) && !array_key_exists($a, $data)) {
+        ++$emptyRequired;
+      }
+    }
+    # }}}
+    # handle input {{{
+    if ($inputLen)
+    {
+      switch ($state) {
+      case 0:
+        # execute input command {{{
+        if ($inputLen === 1)
+        {
+          switch ($input) {
+          case '-':
+            # wipe current field value
+            if (!array_key_exists($indexField, $data)) {
+              $error = 1;return $item;# NOP
+            }
+            unset($data[$indexField]);
+            $item['dataChanged'] = true;
+            break 2;
+          case '>':
+            # advance to the next field but don't cycle around
+            if (++$index === $count) {
+              $error = 1;return $item;# NOP
+            }
+            break 2;
+          case '<':
+            # retreat to the previous field but don't cycle around
+            if (--$index < 0) {
+              $error = 1;return $item;# NOP
+            }
+            break 2;
+          }
+        }
+        # }}}
+        # set field value {{{
+        # refine by type
+        $a = $item['fields'][$indexField];
+        switch ($a[1]) {
+        case 'string':
+          $input = substr($input, 0, $a[2]);
+          break;
+        case 'int':
+          $input = intval(substr($input, 0, 16));
+          if ($input < $a[2]) {
+            $input = $a[2];
+          }
+          elseif ($input > $a[3]) {
+            $input = $a[3];
+          }
+          break;
+        case 'list':
+          # check list index specified correctly [1..N]
+          if (!ctype_digit($input) ||
+              ($a = intval($input)) <= 0 ||
+              $a > count($options[$indexField]))
+          {
+            $error = 1; return $item;# NOP
+          }
+          # select value from the list
+          $input = $options[$indexField][$a];
+          break;
+        }
+        # check not changed
+        if (array_key_exists($indexField, $data) &&
+            $data[$indexField] === $input)
+        {
+          $error = 1;return $item;# NOP
+        }
+        # update
+        $data[$indexField] = $input;
+        $item['dataChanged'] = true;
+        # advance to the next field (if option specified)
+        #if (array_key_exists('submitOnInput', $item) &&
+        if (array_key_exists('submitOnInput', $item) &&
+            $item['submitOnInput'] &&
+            ++$index === $count)
+        {
+          # last field completes input,
+          # change form state
+          $state = 1;
+        }
+        # }}}
+        break;
+      case 2:
+        # set final required field {{{
+        # check first
+        if ($emptyRequired !== 1)
+        {
+          # NOP, more than one empty required,
+          # this is assumed as non-deterministic state,
+          # no errors either..
+          $error = 1;
+          return $item;
+        }
+        # search field name
+        foreach ($item['fields'] as $a => $b)
+        {
+          if (($b[0] & 1) && !array_key_exists($a, $data)) {
+            break;
+          }
+        }
+        # accept input and store data
+        $data[$a] = $input;
+        $item['dataChanged'] = true;
+        # form is now filled (complete),
+        # change its state
+        $state = 1;
+        $index = $count;
+        # }}}
+        break;
+      }
+    }
+    # }}}
+    # handle function {{{
+    switch ($func) {
+    case 'prev': # input index backward {{{
+      if ($state !== 0) {
+        $error = 1;return $item;
+      }
+      if (--$index < 0)
+      {
+        if (array_key_exists('inputMoveAround', $item) &&
+            $item['inputMoveAround'])
+        {
+          $index = $count - 1;
+        }
+        else
+        {
+          $error = 1;
+          return $item;
+        }
+      }
+      break;
+    # }}}
+    case 'next': # input index forward {{{
+      if ($state !== 0) {
+        $error = 1;return $item;
+      }
+      if (++$index === $count)
+      {
+        if (array_key_exists('inputMoveAround', $item) &&
+            $item['inputMoveAround'])
+        {
+          $index = 0;
+        }
+        else
+        {
+          $error = 1;
+          return $item;
+        }
+      }
+      break;
+    # }}}
+    case 'refresh': # form refresher {{{
+      switch ($state) {
+      case 1:
+      case 4:
+      case 5:
+        # reset filled, failed and completed form states,
+        # clear all non-persistent fields and
+        # set input to the first one
+        $a = -1;
+        $b = 0;
+        foreach ($item['fields'] as $c => $d)
+        {
+          if (!($d[0] & 2))
+          {
+            if (!~$a) {
+              $a = $b;
+            }
+            if (array_key_exists($c, $data))
+            {
+              unset($data[$c]);
+              $item['dataChanged'] = true;
+            }
+          }
+          ++$b;
+        }
+        # set input index to the first non-persistent field and
+        # reset completed form state
+        if (~$a)
+        {
+          $index = $a;
+          $state = 0;
+          break;
+        }
+        # all the fields are persistent,
+        # preserve data and find first required from the end
+        $state = 0;
+        $index = $count - 1;
+        foreach (array_reverse($item['fields']) as $a => $b)
+        {
+          if ($b & 1) {
+            break;
+          }
+          --$index;
+        }
+        break;
+      case 2:
+        # required field missing,
+        # locate the index of the first empty required,
+        $index = 0;
+        foreach ($item['fields'] as $a => $b)
+        {
+          if (($b[0] & 1) && !array_key_exists($a, $data)) {
+            break;
+          }
+          ++$index;
+        }
+        # check not found
+        if ($index === $count)
+        {
+          # this is a rare case occurse when command structure changes and
+          # don't cataches with previous state,
+          # because of all the required are filled,
+          # complete form input
+          $state = 1;
+        }
+        else
+        {
+          # refreshing resets form into input state
+          $state = 0;
+        }
+        break;
+      case 3:
+        # this is a positive waiting state,
+        # refreshing doesn't do anything here
+        # because it's the job of the item's task
+        $error = 1;return $item;# NOP
+      case 6:
+        # TODO: errors display state
+        $error = 1;return $item;# NOP for now
+      }
+      break;
+    # }}}
+    case 'select': # input selector {{{
+      if ($state !== 0 || !$args ||
+          ($a = intval($args[0])) < 0 ||
+          ($a &&
+            (!array_key_exists($indexField, $options) ||
+            !($b = $options[$indexField]) ||
+            $a > count($b))))
+      {
+        $this->logError("failed to select field value");
+        $error = 1;
+        return $item;
+      }
+      # check same value selected
+      if ($a && array_key_exists($indexField, $data) &&
+          $data[$indexField] === $b[$a])
+      {
+        # NOP when required
+        if ($item['fields'][$indexField][0] & 1)
+        {
+          $error = 1;
+          return $item;
+        }
+        # de-select (set empty)
+        $a = 0;
+      }
+      # change data
+      if ($a)
+      {
+        # correct integer type
+        $data[$indexField] = ($item['fields'][$indexField][1] === 'int')
+          ? intval($b[$a])
+          : $b[$a];
+      }
+      elseif (array_key_exists($indexField, $data)) {
+        unset($data[$indexField]);
+      }
+      $item['dataChanged'] = true;
+      # advance field index (if option set)
+      if (array_key_exists('submitOnSelect', $item) &&
+          $item['submitOnSelect'])
+      {
+        ++$index;
+      }
+      break;
+    # }}}
+    case 'last': # submit input {{{
+      if ($state !== 0 || $index === $count) {
+        $error = 1; return $item;# NOP
+      }
+      # TODO: autofill
+      # set final index value
+      $index = $count;
+      # check confirmation required
+      if (array_key_exists('submitConfirm', $item) &&
+          $item['submitConfirm'])
+      {
+        break;
+      }
+      # check any required fields miss
+      if ($emptyRequired > 0) {
+        break;
+      }
+      # continue to form submittion..
+      $state = 1;
+    # }}}
+    case 'ok': # submit form {{{
+      # check mode is correct
+      if (!in_array($state, [1,4])) {
+        $error = 1;return $item;# NOP guard
+      }
+      # create task
+      if (!$this->taskAttach($item, $data, true))
+      {
+        $error = 1;
+        return $item;
+      }
+      # change form state
+      $state = 3;
+      break;
+    # }}}
+    case 'progress': # form progress {{{
+      if ($state !== 3 || !$args) {
+        $error = 1;return $item;# NOP guard
+      }
+      $stateInfo[0] = intval($args[0]);
+      break;
+    # }}}
+    case 'done': # form result {{{
+      if (!in_array($state,[1,4,3]) || !$args)
+      {
+        $error = "incorrect state ($state) or no args";
+        return $item;
+      }
+      $state = intval($args[0]) ? 5 : 4;
+      $stateInfo = [1, base64_decode($args[1])];
+      break;
+    # }}}
+    case 'first': # form reset {{{
+      # make sure in the correct state
+      if ($state < 4 && $state !== 2)
+      {
+        $error = 'form reset is only possible after completion or failure';
+        return $item;
+      }
+      # wipe data
+      $data = [];
+      $item['dataChanged'] = true;
+      # reset input index and state
+      $state = $index = 0;
+      break;
+    # }}}
+    case '':
+      # SKIP
+      break;
+    default:
+      # NOP error
+      $this->logError("unknown form function: $func");
+      $error = $this->messages[$lang][2];
+      return $item;
+    }
+    # }}}
+    # sync changes {{{
+    if ($index !== $conf['index'] ||
+        $state !== $conf['state'])
+    {
+      # set flag
+      $this->user->changed = true;
+      # check input completion state
+      if ($state === 0 && $index === $count)
+      {
+        # resolve to completed (optimistic)
+        $state = 1;
+        # check all required fields are set
+        foreach ($item['fields'] as $a => $b)
+        {
+          if (($b[0] & 1) &&
+              !array_key_exists($a, $data))
+          {
+            # required missing!
+            $state = 2;
+            break;
+          }
+        }
+      }
+      # reset state info
+      if ($state < 4) {
+        $stateInfo = [0,''];
+      }
+    }
+    # re-determine current/prev/next field names
+    $indexField = '';
+    $nextField  = $prevField = '';
+    if ($state === 0)
+    {
+      $a = array_keys($item['fields']);
+      $indexField = $a[$index];
+      # determine localized captions
+      if ($count > 1)
+      {
+        $nextField  = ($index + 1 < $count)
+          ? $a[$index + 1]
+          : $a[0];
+        $prevField  = ($index - 1 >= 0)
+          ? $a[$index - 1]
+          : $a[$count - 1];
+        $nextField = $text[$nextField];
+        $prevField = $text[$prevField];
+      }
+    }
+    # determine last field flag
+    $indexIsLast = ($index === $count - 1);
+    # re-determine count of empty required fields
+    if ($item['dataChanged'])
+    {
+      $emptyRequired = 0;
+      foreach ($item['fields'] as $a => $b)
+      {
+        if (($b[0] & 1) && !array_key_exists($a, $data)) {
+          ++$emptyRequired;
+        }
+      }
+    }
+    # }}}
+    # render markup {{{
+    $mkup = [];
+    # compose input selector group {{{
+    if ($state === 0 && $indexField &&
+        array_key_exists($indexField, $options))
+    {
+      # get value options and column count
+      $b = $options[$indexField];
+      $c = $b[0];
+      $b = array_slice($b, 1);
+      # determine row count
+      $d = ceil(count($b) / $c);
+      # create select group
+      for ($i = 0, $k = 0; $i < $d; ++$i)
+      {
+        # create row
+        for ($j = 0, $e = []; $j < $c; ++$j)
+        {
+          # create option
+          if ($k < count($b))
+          {
+            # determine current or standard
+            $n = (array_key_exists($indexField, $data) &&
+                  !strcmp($data[$indexField], $b[$k]))
+              ? 'select1'
+              : 'select0';
+            # parse it and add to row
+            $e[] = [
+              'text' => $this->tp->render(
+                $this->buttons[$n],
+                [
+                  'index' => ($k + 1),
+                  'text'  => $b[$k],
+                ]
+              ),
+              'callback_data' => '/'.$item['id'].'!select '.($k + 1)
+            ];
+          }
+          else
+          {
+            # empty pad
+            $e[] = ['text'=>' ','callback_data'=>'!'];
+          }
+          ++$k;
+        }
+        # add row
+        $mkup[] = $e;
+      }
+    }
+    # }}}
+    # compose input value display {{{
+    while ($state === 0 && $indexField)
+    {
+      # check empty
+      if (!array_key_exists($indexField, $data))
+      {
+        # display empty bar
+        $mkup[] = [['text'=>' ','callback_data'=>'!']];
+        break;
+      }
+      # check options list
+      $a = $data[$indexField];
+      if (array_key_exists($indexField, $options))
+      {
+        # check value is already shown in the list
+        $b = array_slice($options[$indexField], 1);
+        if (!is_string($a) && is_string($b[0])) {
+          $a = strval($a);# avoid comparison problem
+        }
+        if (array_search($a, $b, true) !== false)
+        {
+          # display empty bar
+          $mkup[] = [['text'=>' ','callback_data'=>'!']];
+          break;
+        }
+      }
+      # display non-empty value
+      $b = $this->tp->render($this->buttons['select1'], ['text'=>$a]);
+      $a = !($item['fields'][$indexField][0] & 1)
+        ? '/'.$item['id'].'!select 0' # with de-selector
+        : '!';
+      $mkup[] = [['text'=>$b,'callback_data'=>$a]];
+      break;
+    }
+    # }}}
+    # compose controls {{{
+    # select markup
+    $a = $item['markup'];
+    $b = 'S'.$state;
+    if (array_key_exists($b, $a)) {
+      $c = $a[$b];
+    }
+    elseif ($state === 4 || $state === 6) {
+      $c = $a['S1'];
+    }
+    elseif ($state === 5) {
+      $c = $a['S2'];
+    }
+    else {
+      $c = [['_up']];
+    }
+    # select controls
+    $d = [
+      'first' => $this->messages[$lang][15],# reset
+    ];
+    $d['refresh'] = ($state === 5)
+      ? $this->messages[$lang][18] # repeat
+      : $this->messages[$lang][14];# refresh
+    if ($state === 0 && $indexField)
+    {
+      $d['prev'] = $index
+        ? $this->messages[$lang][16]
+        : '';
+      if ($indexIsLast)
+      {
+        if ($emptyRequired &&
+            (!array_key_exists('noRequiredSubmit', $item) ||
+              $item['noRequiredSubmit']))
+        {
+          # display empty bar
+          $d['last'] = '';
+        }
+        else
+        {
+          # standard
+          $d['last'] = $this->messages[$lang][12];
+        }
+      }
+      elseif (($item['fields'][$indexField][0] & 1) &&
+              !array_key_exists($indexField, $data) &&
+              (!array_key_exists('noRequiredSkip', $item) ||
+                $item['noRequiredSkip']))
+      {
+        # non-last, empty but required,
+        # display empty bar
+        $d['next'] = '';
+      }
+      else
+      {
+        # standard
+        $d['next'] = $this->messages[$lang][17];
+      }
+    }
+    # render
+    $c = $this->itemInlineMarkup($item, $c, $text, $d);
+    foreach ($c as $a) {
+      $mkup[] = $a;
+    }
+    # }}}
+    $item['inlineMarkup'] = $mkup;
+    # }}}
+    # render content {{{
+    # compose input fields
+    $fields = [];
+    $i = 0;
+    foreach ($item['fields'] as $a => $b)
+    {
+      # determine type hint
+      switch ($b[1]) {
+      case 'string':
+        $c = $this->messages[$lang][7];
+        $c = $this->tp->render($c, ['max'=>$b[2]]);
+        break;
+      case 'int':
+        $c = $this->messages[$lang][8];
+        $c = $this->tp->render($c, ['min'=>$b[2],'max'=>$b[3]]);
+        break;
+      case 'list':
+        $c = $this->messages[$lang][13];
+        break;
+      default:
+        $c = '.';
+        break;
+      }
+      # determine value
+      $d = array_key_exists($a, $data)
+        ? $data[$a]
+        : '';
+      # add form field descriptor
+      $fields[] = [
+        'name' => (array_key_exists($a, $text)
+          ? $text[$a]
+          : $a),
+        'value'    => $d,
+        'valueLen' => strlen($d),
+        'before'   => ($index > $i),
+        'current'  => ($index === $i),
+        'after'    => ($index < $i),
+        'required' => ($b[0] & 1),
+        'hint'     => $c,
+      ];
+      $i++;
+    }
+    # get custom or common template
+    $a = array_key_exists('*', $text)
+      ? $text['*']
+      : $this->messages[$lang][6];
+    # get description
+    $b = array_key_exists('.', $text)
+      ? preg_replace('/\n\s*/m', ' ', trim($text['.']))
+      : '';
+    # compose full text
+    $item['textContent'] = $this->render_content($a, [
+      'desc'   => $b,
+      'fields' => $fields,
+      'info'   => $stateInfo,
+      's0' => ($state === 0),
+      's1' => ($state === 1),
+      's2' => ($state === 2),
+      's3' => ($state === 3),
+      's4' => ($state === 4),
+      's5' => ($state === 5),
+      's6' => ($state === 6),
+      's1s3' => ($state === 1 || $state === 3),
+      's3s4' => ($state === 3 || $state === 4),
+      's3s5' => ($state === 3 || $state === 5),
+      's3s4s5' => ($state === 3 || $state === 4 || $state === 5),
+    ]);
+    # }}}
+    # set {{{
+    $conf['index']  = $index;
+    $conf['state']  = $state;
+    $conf['info']   = $stateInfo;
+    $item['isInputAccepted'] = (
+      ($state === 0) ||
+      ($state === 2 && $emptyRequired === 1)
+    );
+    # }}}
+  }
+  # }}}
+}
+class type_game {
+  # {{{
+  static function handle($bot, $plan)
+  {
+    # prepare {{{
+    # check data
+    if (!$data || !($count = count($data)))
+    {
+      $error = $bot->messages[$lang][0];
+      return $item;
+    }
+    # determine game identifier
+    if (!$func && $args)
+    {
+      # specified
+      if (($id = $args[0]) === '-1') {
+        $id = array_rand($data, 1);# random
+      }
+    }
+    else
+    {
+      # previous
+      $id = array_key_exists('id', $conf)
+        ? $conf['id']
+        : '';
+    }
+    # get game
+    if (!array_key_exists($id, $data))
+    {
+      $this->log('game not found');
+      $error = $bot->messages[$lang][2];
+      return $item;
+    }
+    $data = $data[$id];
+    # get game icon
+    $a = $this->data['config']['created'];
+    if ($isCreated = in_array($id, $a))
+    {
+      $icon_id = '';
+      $icon = null;
+    }
+    else
+    {
+      ###
+      # game icon is only related to multigame,
+      # it may include instructions and full-size logo
+      # for admin to create the game with @botfather
+      # also, when remote icon is not provided,
+      # it will be auto-generated (as a title block)
+      ###
+      if ($icon = $data['icon'])
+      {
+        # get stored file_id or
+        # compose remote url for upload
+        $icon_id = 'game-'.$id.'-icon';
+        $icon = array_key_exists($icon_id, $this->fids)
+          ? $this->fids[$icon_id]
+          : $this->b2b->getIconUrl($icon);
+      }
+      else
+      {
+        # get stored file_id or
+        # generate temporary icon file
+        $icon_id = 'game-'.$id.'-name';
+        if (array_key_exists($icon_id, $this->fids)) {
+          $icon = $this->fids[$icon_id];
+        }
+        elseif (!($icon = $this->imageTitle($data['name'])))
+        {
+          $error = $bot->messages[$lang][2];
+          return $item;
+        }
+      }
+    }
+    # get favorites
+    $a = 'fav_'.$item['data'];
+    $fav_data = null;
+    if (array_key_exists($a, $this->data)) {
+      $fav_data = &$this->data[$a];
+    }
+    # }}}
+    # handle function {{{
+    switch ($func) {
+    case 'fav_on':
+      if ($fav_data !== null && !array_key_exists($data['id'], $fav_data)) {
+        $fav_data[$data['id']] = $data;
+      }
+      break;
+    case 'fav_off':
+      if ($fav_data !== null && array_key_exists($data['id'], $fav_data)) {
+        unset($fav_data[$data['id']]);
+      }
+      break;
+    }
+    # }}}
+    # check {{{
+    if ($page !== $conf['page'])
+    {
+      $this->user->changed = true;
+    }
+    # }}}
+    # determine markup {{{
+    # set favorite control
+    $a = ($fav_data === null)
+      ? ''
+      : '_fav_'.(array_key_exists($data['id'], $fav_data)
+        ? 'off'
+        : 'on');
+    $this->setMarkupItem($item['markup'], '_fav', $a);
+    # create
+    $mkup = $this->itemInlineMarkup(
+      $item, $item['markup'], $text
+    );
+    # }}}
+    # set {{{
+    $conf['id']         = $id;
+    $data['icon_id']    = $icon_id;
+    $data['icon']       = $icon;
+    $data['is_created'] = $isCreated;
+    $item['data']       = &$data;
+    # }}}
+  }
+  private function editMarkup($markup, $msg) # {{{
+  {
+    $a = $this->api->send('editMessageReplyMarkup', [
+      'chat_id'      => $this->user->chat->id,
+      'message_id'   => $msg,
+      'reply_markup' => $markup,
+    ]);
+    if (!$a || $a === true)
+    {
+      $this->log($this->api->error);
+      return -1;
+    }
+    return $a->result->message_id;
+  }
+  # }}}
+  private function sendGame(&$item) # {{{
+  {
+    # check variant
+    if (($game = $item['data'])['is_created'])
+    {
+      # send created game
+      $this->log('game: '.$game['name']);
+      $icon = 0;
+      $res = $this->api->send('sendGame', [
+        'chat_id'              => $this->user->chat->id,
+        'game_short_name'      => 'a'.$game['id'],
+        'disable_notification' => true,
+        'reply_markup'         => $item['markup'],
+      ]);
+    }
+    else
+    {
+      # send multigame
+      $this->log('multigame: '.$game['name']);
+      $icon = $this->sendImage($game['icon_id'], $game['icon'], '', '');
+      if (!$icon) {
+        return 0;
+      }
+      $res = $this->api->send('sendGame', [
+        'chat_id'              => $this->user->chat->id,
+        'game_short_name'      => 'multigame',
+        'disable_notification' => true,
+        'reply_markup'         => $item['markup'],
+      ]);
+    }
+    # check result
+    if (!$res)
+    {
+      $this->log($this->api->error);
+      return 0;
+    }
+    # remove previous icon
+    $conf = &$item['config'];
+    if (array_key_exists('icon', $conf) && $conf['icon'])
+    {
+      $a = $this->api->send('deleteMessage', [
+        'chat_id'    => $this->user->chat->id,
+        'message_id' => $conf['icon'],
+      ]);
+      if (!$a) {
+        $this->log($this->api->error);
+      }
+    }
+    # update config
+    $conf['icon'] = $icon;
+    # done
+    return $res->result->message_id;
+  }
+  # }}}
+  private function getGameUrl($name, $msg) # {{{
+  {
+    # get data
+    if (!($data = $this->data['games']) || !count($data)) {
+      return '';
+    }
+    # determine game identifier
+    if ($name === 'multigame')
+    {
+      # multigame
+      # get identifier from the game command configuration
+      $id = $this->user->config;
+      if (!array_key_exists('game', $id) ||
+          !($id = $id['game']) ||
+          !array_key_exists('id', $id) ||
+          !($id = intval($id['id'])))
+      {
+        return '';
+      }
+      # check
+      if ($id === -1)
+      {
+        # randomize?
+        return '';
+      }
+      $id = strval($id);
+      if (!$msg)
+      {
+        $this->log('TODO: REPOSTED GAME CALLBACK');
+      }
+    }
+    else
+    {
+      # created game (name includes identifier)
+      $id = substr($name, 1);
+    }
+    # complete
+    return array_key_exists($id, $data)
+      ? $this->b2b->getGameUrl($data[$id]['url'])
+      : '';
+  }
+  # }}}
+  private function getRefList($file, &$list) # {{{
+  {
+    ###
+    ###
+    # TODO: load favorite games list
+    #$a = $dir.'fav_games.json';
+    #$this->data['fav_games'] = $this->getRefList($a, $this->data['games']);
+    # check
+    if (!$list || !file_exists($file)) {
+      return [];
+    }
+    # load identifiers and
+    # create reference list
+    $a = json_decode(file_get_contents($file), true);
+    $b = [];
+    foreach ($a as $c)
+    {
+      if (array_key_exists($c, $list)) {
+        $b[$c] = &$list[$c];
+      }
+    }
+    # done
+    return $b;
+  }
+  # }}}
+  private function setRefList($file, &$list) # {{{
+  {
+    if ($list)
+    {
+      # collect identifiers
+      $a = [];
+      foreach ($list as $b) {
+        $a[] = $b['id'];
+      }
+      # store
+      if (file_put_contents($file, json_encode($a)) === false)
+      {
+        $this->log('file_put_contents('.$a.') failed');
+        return false;
+      }
+      return true;
+    }
+    return file_exists($file)
+      ? unlink($file) : true;
+  }
+  # }}}
+  private function setDataConfig() # {{{
+  {
+    $a = $this->dir.'games-config.json';
+    $b = json_encode($this->data['config']);
+    if (file_put_contents($a, $b) === false)
+    {
+      $this->log('file_put_contents('.$a.') failed');
+      return false;
+    }
+    return true;
+  }
+  # }}}
+  private function loadData() # {{{
+  {
+    # check stored
+    $file = $this->dir.'games.json';
+    if (file_exists($file))
+    {
+      # load from cache
+      if (!($a = file_get_contents($file)) ||
+          !($a = json_decode($a, true)))
+      {
+        $this->log('failed to load '.$file);
+        return null;
+      }
+      # load configuration
+      $file = $this->dir.'games-config.json';
+      if (!file_exists($file) ||
+          !($b = file_get_contents($file)) ||
+          !($b = json_decode($b, true)))
+      {
+        $this->log('failed to load '.$file);
+        return null;
+      }
+    }
+    else
+    {
+      # load from remote
+      if (!($a = $this->b2b->getGames()))
+      {
+        $this->log($this->b2b->error);
+        return null;
+      }
+      # store
+      file_put_contents($file, json_encode($a));
+      # create initial config
+      $file = $this->dir.'games-config.json';
+      $b = [
+        'created' => [],# non-multigames
+      ];
+      file_put_contents($file, json_encode($b));
+    }
+    # set configuration
+    $a['config'] = $b;
+    # done
+    return $a;
+  }
+  # }}}
+  # }}}
+}
+class type_captcha {
+  # {{{
+  public static
+    $STEP   = 2,# seconds, one decrement
+    $BLINK  = 0,# seconds, indicator blinks
+    $PAUSE  = 2,# seconds, transition
+    $STAGES = 3,# total indicator stages
+    $TEMPLATE = # {{{
+    '
+    <a href="tg://user?id={[user.id]}">{[user.name]}</a> 
+    {{#A1}}
+      {{#t1}}
+        {{#blink}}{:red_circle:}{{/blink}}
+        {{^blink}}{:orange_circle:}{{/blink}}
+      {{/t1}}
+      {{#t2}}
+        {{#blink}}{:orange_circle:}{{/blink}}
+        {{^blink}}{:purple_circle:}{{/blink}}
+      {{/t2}}
+      {{#t3}}
+        {{#blink}}{:purple_circle:}{{/blink}}
+        {{^blink}}{:blue_circle:}{{/blink}}
+      {{/t3}}
+      <b> {{time}}</b>
+      {{br}}{{br}}
+      {{question}}
+    {{/A1}}
+    {{#A2}}
+      {:red_circle:} <a href="https://youtu.be/mQ_AdzWE5Ec">timed out</a>
+    {{/A2}}
+    {{#A3}}
+      {:green_circle:} correct
+      {{br}}{{br}}
+      {{question}}
+    {{/A3}}
+    {{#A4}}
+      {:red_circle:} incorrect
+      {{br}}{{br}}
+      {{question}}
+    {{/A4}}
+    {{#A5}}
+      {:green_circle:} qualified
+      {{br}}{{br}}
+      {:tada:}{:tada:}{:tada:}
+    {{/A5}}
+    {{#A6}}
+      {:red_circle:} failed
+    {{/A6}}
+    {{br}}{{end}}
+    ';
+    # }}}
+  ###
+  static function getTotalSize($time)
+  {
+    $step   = self::$STEP;
+    $blink  = self::$BLINK;
+    $stages = self::$STAGES;
+    $size   = intval(ceil($time / $stages));
+    $total  = intval($stages * ceil($size / $step));
+    return [$total,$size];
+  }
+  static function getQA($q, $A)
+  {
+    # extract question's answers
+    $a = [];
+    $b = 0;
+    while (array_key_exists(($c = $q.'a'.$b), $A)) {
+      $a[$c] = $A[$c]; ++$b;
+    }
+    return $a;
+  }
+  static function getMixedQA($q, $A)
+  {
+    # get answers and mixup
+    $a = array_keys(self::getQA($q, $A));
+    shuffle($a);
+    return $a;
+  }
+  # }}}
+  static function render($bot, &$item, $func, $args) # {{{
+  {
+    # prepare {{{
+    $conf  = &$item['config'];
+    $text  = $item['text'][$bot->user->lang];
+    $retry = $item['retry'];
+    $A = 0;
+    if ($init = array_key_exists('A', $conf))
+    {
+      $A = $conf['A'];# current captcha stage
+      $B = $conf['B'];# total ticks left
+      $C = $conf['C'];# question group index
+      $D = $conf['D'];# question index
+      $E = $conf['E'];# question answer keys
+      $F = $conf['F'];# current time stage
+      $G = $conf['G'];# current blink state
+      $H = $conf['H'];# current retry timeout
+      $I = $conf['I'];# current answer
+    }
+    # }}}
+    # update {{{
+    switch ($A) {
+    case 2:
+    case 6:
+      # TIMED OUT or FAILED {{{
+      # check retry state
+      if ($H)
+      {
+        if ($func === 'retry')
+        {
+          # restart requirested
+          # message should be updated
+          $bot->user->changed = true;
+          # check time passed
+          $retry = $retry - (time() - $H);
+          if ($retry <= 0)
+          {
+            # unlock restart
+            $H = $retry = 0;
+          }
+        }
+        else {
+          $retry = 0;# dont show
+        }
+      }
+      if ($H) {break;}
+      # set to recreate item's message
+      $item['isReactivated'] = true;
+      # }}}
+      ### fallthrough..
+    case 0:
+      # STARTUP {{{
+      ### switch to the next stage
+      $A = 1;
+      $B = self::getTotalSize($item['timeout'])[0];
+      ### select first question
+      $C = 0;
+      $D = count($item['markup'][$C]);
+      $D = ($D === 1) ? 0 : rand(0, $D - 1);
+      ### mixup answers
+      $E = self::getMixedQA($item['markup'][$C][$D], $text);
+      $E = implode(',', $E);
+      ### initial time stage
+      $F = self::$STAGES;
+      $G = 0;
+      $H = 0;
+      $I = '';
+      $bot->taskAttach($item, $item['timeout']);
+      # }}}
+      break;
+    case 1:
+    case 3:
+      # OPERATE
+      switch ($func) {
+      case 'done':
+        # TIMED OUT {{{
+        $A = 2;
+        $B = 0;
+        $H = $retry ? time() : 0;# record when
+        $retry = 0;# dont show
+        break;
+        # }}}
+      case 'progress':
+        # {{{
+        # update indicator [total,stage,blink]
+        $B = intval($args[0]);
+        $F = intval($args[1]);
+        $G = intval($args[2]);
+        # check correct stage approval
+        if ($A === 3 && $G === 2)
+        {
+          # advance question group index
+          if (($C = $C + 1) < count($item['markup']))
+          {
+            ### recharge
+            $A = 1;
+            $D = count($item['markup'][$C]);
+            $D = ($D === 1) ? 0 : rand(0, $D - 1);
+            ### mixup answers
+            $E = self::getMixedQA($item['markup'][$C][$D], $text);
+            $E = implode(',', $E);
+          }
+          else
+          {
+            ### complete captcha
+            $A = 5;
+          }
+        }
+        break;
+        # }}}
+      default:
+        # ANSWER {{{
+        # check already
+        if ($A === 3) {break;}
+        # check correct
+        $a = $item['markup'][$C][$D].'a';
+        $b = false;# wrong
+        foreach (explode(',', $text[$a]) as $c)
+        {
+          if ($func === $a.$c) {
+            $b = true; break;
+          }
+        }
+        # set anser
+        $A = $b ? 3 : 4;
+        $H = $retry ? time() : 0;# charge retry
+        $I = $func;
+        $bot->logDebug('answer '.$I.($b?'+':'-'));
+        break;
+        # }}}
+      }
+      break;
+    case 4:
+      # INCORRECT {{{
+      if ($func === 'done')
+      {
+        $A = 6;
+        $B = 0;
+        $retry = 0;# dont show hint
+      }
+      # }}}
+      break;
+    case 5:
+      # COMPLETE {{{
+      if ($func === 'reset')
+      {
+        # reset and re-render
+        unset($conf['A']);
+        $item['isReactivated'] = true;
+        return self::render($bot, $item, '', null);
+      }
+      # }}}
+      break;
+    }
+    if (!$init ||
+        $A !== $conf['A'] ||
+        $B !== $conf['B'] ||
+        $C !== $conf['C'] ||
+        $D !== $conf['D'] ||
+        $E !== $conf['E'] ||
+        $F !== $conf['F'] ||
+        $G !== $conf['G'] ||
+        $H !== $conf['H'] ||
+        $I !== $conf['I'])
+    {
+      $conf['A'] = $A;
+      $conf['B'] = $B;
+      $conf['C'] = $C;
+      $conf['D'] = $D;
+      $conf['E'] = $E;
+      $conf['F'] = $F;
+      $conf['G'] = $G;
+      $conf['H'] = $H;
+      $conf['I'] = $I;
+      $bot->user->changed = true;
+    }
+    # }}}
+    # render {{{
+    switch ($A) {
+    case 1:
+    case 3:
+    case 4:
+      # question is being asked.. {{{
+      # determine text
+      $a = $item['markup'][$C][$D];
+      $a = trim($text[$a]);
+      # determine markup
+      $b = explode(',', $E);
+      $c = count($b);
+      $d = [];
+      if ($A === 1)
+      {
+        # all answer variants shown
+        $i = 0;
+        while ($i < $c)
+        {
+          $e = [];
+          $j = -1;
+          while (++$j < $item['rowLimit'] && $i < $c)
+          {
+            $e[] = '_'.$b[$i];
+            $i++;
+          }
+          $d[] = $e;
+        }
+      }
+      else
+      {
+        # show selected variant and blank others
+        $i = 0;
+        while ($i < $c)
+        {
+          $e = [];
+          $j = -1;
+          while (++$j < $item['rowLimit'] && $i < $c)
+          {
+            if ($b[$i] === $I) {
+              $e[] = ['text'=>$text[$b[$i]],'callback_data'=>'!'];
+            }
+            else {
+              $e[] = ' ';
+            }
+            $i++;
+          }
+          $d[] = $e;
+        }
+      }
+      $b = $d;
+      # }}}
+      break;
+    case 2:
+    case 6:
+      # failed states {{{
+      # replace question with last answer
+      $a = $I;
+      # custom retry button
+      # displayed with or without a hint
+      $b = $bot->tp->render($text['retry'], ['x'=>$retry]);
+      $c = '/'.$item['id'].'!retry';
+      $b = [['text'=>$b,'callback_data'=>$c]];
+      $b = [$b];
+      # }}}
+      break;
+    case 5:
+      $a = '';
+      $b = $item['markupComplete'];
+      break;
+    }
+    # get the template
+    if (!($c = $item['content']))
+    {
+      # default, add emojis
+      $c = $bot->tp->render(self::$TEMPLATE, BotApi::$EMOJI, '{: :}');
+    }
+    # set
+    $item['textContent'] = $bot->render_content($c, [
+      'question' => $a,
+      'A1'    => ($A === 1),
+      'A2'    => ($A === 2),
+      'A3'    => ($A === 3),
+      'A4'    => ($A === 4),
+      'A5'    => ($A === 5),
+      'A6'    => ($A === 6),
+      'time'  => $B,
+      't1'    => ($F == 1),
+      't2'    => ($F == 2),
+      't3'    => ($F >= 3),
+      'blink' => $G,
+      'retry' => $retry,
+    ]);
+    $item['markup'] = $b;
+    $item['title'] = '';
+    $a = array_key_exists('brand', $item)
+      ? $item['brand']
+      : str_replace(':', '-', $item['id']);
+    $item['titleId'] = ($A === 1 && $C === 0 && $item['intro'])
+      ? $a.'-0'
+      : $a.'-'.$A;
+    # }}}
+    return true;
+  }
+  # }}}
+  static function task($bot, &$item, $data) # {{{
+  {
+    # prepare
+    $step  = self::$STEP;
+    $blink = self::$BLINK;
+    $stage = 1 + self::$STAGES;
+    $total = self::getTotalSize($data);
+    $size  = $total[1];
+    $total = $total[0];
+    $A = 1;
+    # iterate
+    while (--$stage)
+    {
+      # make stage steps
+      $a = $step + $size;
+      while (($a -= $step) > 0)
+      {
+        # delay
+        $bot::delay($step - $blink);
+        # decrement
+        if (--$total === 0) {
+          break 2;
+        }
+        # update
+        $bot->taskRender($item, [$total,$stage,1], function(&$item) use ($bot) {
+          # make sure update is valid
+          return ($item['config']['A'] === 1);
+        });
+        # check stage changed
+        if (($A = $item['config']['A']) !== 1)
+        {
+          # delay
+          $bot::delay(self::$PAUSE);
+          # complete incorrect
+          if ($A !== 3) {
+            break 2;
+          }
+          # approve correct (with special blink)
+          if (!$bot->taskRender($item, [$total,$stage,2])) {
+            break 2;
+          }
+          # complete correct
+          if ($item['config']['A'] === 5) {
+            break 2;
+          }
+          $bot::delay($blink);
+        }
+        /***
+        if ($blink)
+        {
+          $bot::delay($blink);
+          $bot->taskRender($item, [$total,$stage,0]);
+        }
+        /***/
+      }
+    }
+    # complete
+    return [1];
   }
   # }}}
 }

@@ -1,9 +1,9 @@
 /arc/
+/bots/b2b
 /data/*
-!/data/.htaccess
 !/data/master
 /data/master/*
-!/data/master/opts.json.example
+!/data/master/o.json.example
 mustache.php
 *.vim
 *.swp

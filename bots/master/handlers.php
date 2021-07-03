@@ -1,5 +1,44 @@
 <?php
 namespace SM;
+class data_start_botlist {
+  static function attach($bot, &$item) # {{{
+  {
+    # prepare
+    $lang = $bot->user->lang;
+    $text = &$item['text'][$lang];
+    # get directory list
+    $a = $bot->datadir.'..'.DIRECTORY_SEPARATOR;
+    if (($b = @scandir($a, SCANDIR_SORT_DESCENDING)) === false)
+    {
+      $bot->logError("scandir($a) failed");
+      return false;
+    }
+    # refine
+    $c = [];
+    foreach ($b as $d)
+    {
+      if ($d[0] !== '.')
+      {
+        $c[] = [
+          'id'   => $d,
+          'name' => $bot->tp->render($text['name'], [
+            'up' => file_exists($bot->datadir.'o.lock'),
+            'id' => $d,
+          ]),
+        ];
+      }
+    }
+    # done
+    $item['data'] = &$c;
+    return true;
+  }
+  # }}}
+  static function detach($bot, &$item) # {{{
+  {
+    return true;
+  }
+  # }}}
+}
 class item_testmenu_tree_cycle_start_play {
   public static function render($bot, &$item) # {{{
   {
@@ -25,7 +64,7 @@ class item_testmenu_tree_cycle_start_play {
       $bread = $bot->itemBreadcrumb($item, $bot->user->lang);
       $img   = $bot->imageTitle('', $bread, null, '', 0);
       # open dice imagepack
-      $dices = $bot::$imgdir.'dice.png';
+      $dices = $bot->imgdir.'dice.png';
       if (($dices = imagecreatefrompng($dices)) === false)
       {
         $bot->log("imagecreatefromjpeg($dices) failed");
