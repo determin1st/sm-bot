@@ -2,85 +2,73 @@
 [
   'start' => # {{{
   [
-    'type'=> 'menu',
     'markup'=> [
-      ['botlist','newbot'],
+      ['bots'],
       [' '],
       ['_up'],
     ],
     'text'=> [
-      'botlist' => 'bots',
-      'newbot'  => 'new bot',
+      'bots' => 'bots',
     ],
     'items' => [
-      'botlist' => # {{{
+      'bots' => # {{{
       [
-        'type'   => 'list',
-        'config' => [
-          'rows'  => 8,
+        'type' => 'list',
+        'opts' => [
+          'rows'  => 4,
           'cols'  => 1,
-          'order' => 'name',
-          'desc'  => false,
-          'fixed' => true,
+          'order' => 'order',
+          'desc'  => true,
         ],
         'markup' => [
-          '.' => null,
-          '-' => null,
+          '.' => [['_prev','_add','_next'],['_up']],
         ],
         'text' => [
-          '@' => null,
-          '.' => null,
-          '-' => null,
+          'add' => 'add',
           'name' =>
-          '
-{{#up}}{:white_small_square:} {{/up}}{{id}}
-          ',
+          '{{bot}}{{#up}}{:zap:}{{|}}{:white_small_square:}{{/up}}{{name}}',
         ],
-      ],
-      # }}}
-      'newbot' => # {{{
-      [
-        'type'=> 'injector',
-        'path'=> 'testmenu',
+        'items' => [
+          'bot' => [
+            'markup'=> [['_kek'],[' '],['_up']],
+            'text'=> [
+              'kek' => 'kek test',
+            ],
+          ],
+        ],
       ],
       # }}}
     ],
   ],
   # }}}
-  'debug' => # {{{
+  'test' => # {{{
   [
-    'type'=> 'menu',
     'markup'=> [
-      ['_restartLoop'],
+      [' '],
       ['_up'],
     ],
-    'text'=> [ # {{{
-      '@'=> 'debug',
-      '_restartLoop'=> 'restart getUpdates',
-    ],
-    # }}}
     'items' => [
       'menu1' => # {{{
       [
-        'type' => 'injector',
+        'type' => 'inject',
         'path' => 'testmenu',
       ],
       # }}}
       'menu2' => # {{{
       [
-        'type' => 'opener',
+        'type' => 'open',
         'path' => 'testmenu',
       ],
       # }}}
       'form1' => # {{{
       [
-        'type' => 'injector',
+        'type' => 'inject',
         'path' => 'testform',
       ],
       # }}}
       'form2' => # {{{
       [
-        'type' => 'opener',
+        'type' => 'open',
         'path' => 'testform',
       ],
       # }}}
@@ -89,7 +77,6 @@
   # }}}
   'help'=> # {{{
   [
-    'type'=> 'menu',
     'markup'=> [['tree'],['_up']],
     'text'=> [
       '.'=>'
@@ -99,12 +86,10 @@
     'items'=> [
       'tree'=> # {{{
       [
-        'type' => 'menu',
         'markup' => [['nesting'],['cycle'],['_up']],
         'items' => [
           'nesting' => # {{{
           [
-            'type' => 'menu',
             'markup' => [['test'],['another'],['_up']],
             'text' => [
               'en' => [
@@ -116,7 +101,6 @@ This node has 2 items (separate branches). You can navigate in one or another, a
             'items' => [
               'test' => # {{{
               [
-                'type' => 'menu',
                 'markup' => [['deeper'], ['_up']],
                 'text' => [
                   'en' => ['@' => 'test'],
@@ -124,7 +108,6 @@ This node has 2 items (separate branches). You can navigate in one or another, a
                 'items' => [
                   'deeper' => # {{{
                   [
-                    'type' => 'menu',
                     'markup' => [['link'], ['_up']],
                     'text' => [
                       'en' => ['@' => 'deeper'],
@@ -132,7 +115,6 @@ This node has 2 items (separate branches). You can navigate in one or another, a
                     'items' => [
                       'link' => # {{{
                       [
-                        'type' => 'menu',
                         'markup' => [['_up']],
                         'text' => [
                           'en' => [
@@ -289,7 +271,6 @@ Fill the form and try to guess the number.
     ],
   ],
   # }}}
-  ### tests
   'alien' => # {{{
   [
     'type'=> 'captcha',
@@ -462,194 +443,6 @@ Are you bot?
         'q10a'  => '1',
         'q10a0' => 'yes',
         'q10a1' => 'no',
-        # }}}
-      ],
-    ],
-  ],
-  # }}}
-  'vim' => # {{{
-  [
-    'type'=>'captcha',
-    'brand'=>'aliengineer',# images
-    'timeout'=> 30,# seconds
-    'intro'=> 1,# special first question
-    'retry'=> 15,# seconds
-    'rowLimit'=> 3,# maximal number of answers in a row
-    'markup'=> [# questions
-      ['q0','q10'],
-      ['q9'],
-      ['q7','q8'],
-      ['q1','q2','q3'],
-    ],
-    'markupComplete'=>[['_reset','_up']],
-    'text' => [
-      'en' =>
-      [
-        '@' => 'Are you human?',
-        'retry'=> '{:arrow_right_hook:} retry{{#x}} in {{x}}{{/x}}',
-        'reset'=> 'restart',
-        'q0' => # {{{
-        '
-Are you human?
-        ',
-        'q0a'  => '0',
-        'q0a0' => 'yes',
-        'q0a1' => 'no',
-        # }}}
-        'q1' => # {{{
-        '
-To copy a line under the cursor in normal mode..
-        ',
-        'q1a'  => '0',
-        'q1a0' => 'yy',
-        'q1a1' => 'y$',
-        'q1a2' => 'yw',
-        'q1a3' => 'dd',
-        # }}}
-        'q2' => # {{{
-        '
-To copy from the cursor to the end of a line in normal mode..
-        ',
-        'q2a'  => '1',
-        'q2a0' => 'yy',
-        'q2a1' => 'y$',
-        'q2a2' => 'yw',
-        'q2a3' => 'dd',
-        # }}}
-        'q3' => # {{{
-        '
-How many modes in VIM?
-        ',
-        'q3a'  => '2',
-        'q3a0' => '2',
-        'q3a1' => '3',
-        'q3a2' => '6',
-        # }}}
-        'q4' => # {{{
-        '
-What is the optimal algorithm for non-cryptographic use?
-        ',
-        'q4a'  => '0',
-        'q4a0' => 'md4',
-        'q4a1' => 'md5',
-        'q4a2' => 'sha1',
-        'q4a2' => 'crc32',
-        'q4a2' => 'crc16',
-        # }}}
-        'q7' => # {{{
-        '
-To delete the whole line at the cursor in normal mode..
-        ',
-        'q7a'  => '0',
-        'q7a0' => 'dd',
-        'q7a1' => 'd$',
-        'q7a2' => 'x',
-        'q7a3' => 'D',
-        # }}}
-        'q8' => # {{{
-        '
-To delete the character under the cursor in normal mode..
-        ',
-        'q8a'  => '2',
-        'q8a0' => 'dd',
-        'q8a1' => 'd$',
-        'q8a2' => 'x',
-        'q8a3' => 'D',
-        # }}}
-        'q9' => # {{{
-        '
-To exit VIM..
-        ',
-        'q9a'  => '0',
-        'q9a0' => ':q',
-        'q9a1' => ';q',
-        'q9a2' => 'exit',
-        'q9a3' => 'q:',
-        'q9a4' => 'q;',
-        # }}}
-        'q10' => # {{{
-        '
-Are you bot?
-        ',
-        'q10a'  => '1',
-        'q10a0' => 'yes',
-        'q10a1' => 'no',
-        # }}}
-      ],
-    ],
-  ],
-  # }}}
-  'doom' => # {{{
-  [
-    'type'=> 'captcha',
-    'brand'=>'aliengineer',# images
-    'timeout'=> 30,# seconds
-    'intro'=> 1,# special first question
-    'retry'=> 15,# seconds
-    'rowLimit'=> 3,# maximal number of answers in a row
-    'markup'=> [# questions
-      ['q0'],
-      ['q1'],
-      ['q2'],
-      ['q3'],
-      ['q4'],
-    ],
-    'markupComplete'=>[['_reset','_up']],
-    'text' => [
-      'en' =>
-      [
-        '@' => 'Are you human?',# title (no image)
-        'retry'=> '{:arrow_right_hook:} retry{{#x}} in {{x}}{{/x}}',
-        'reset'=> 'restart',
-        'q0' => # {{{
-        '
-Что такое дум?
-        ',
-        'q0a'  => '1',
-        'q0a0' => 'судьба',
-        'q0a1' => 'игра',
-        'q0a2' => 'говно',
-        # }}}
-        'q1' => # {{{
-        '
-Сколько выстрелов в дедушкином обрезе?
-        ',
-        'q1a'  => '1',
-        'q1a0' => '1',
-        'q1a1' => '2',
-        'q1a2' => '9',
-        # }}}
-        'q2' => # {{{
-        '
-Как зовут игрока?
-        ',
-        'q2a'  => '0',
-        'q2a0' => 'думгай',
-        'q2a1' => 'думгей',
-        'q2a2' => 'квакер',
-        'q2a3' => 'думер',
-        # }}}
-        'q3' => # {{{
-        '
-Финальный босс в старых Doom..
-        ',
-        'q3a'  => '1',
-        'q3a0' => 'какадемон',
-        'q3a1' => 'кибердемон',
-        'q3a2' => 'жирныйдемон',
-        'q3a3' => 'паукомегамозг',
-        'q3a4' => 'мегажелемозг',
-        # }}}
-        'q4' => # {{{
-        '
-Финальный босс в новых Doom..
-        ',
-        'q4a'  => '3',
-        'q4a0' => 'какадемон',
-        'q4a1' => 'кибердемон',
-        'q4a2' => 'жирныйдемон',
-        'q4a3' => 'паукомегамозг',
-        'q4a4' => 'мегажелемозг',
         # }}}
       ],
     ],

@@ -8,10 +8,12 @@ IF "%~1"=="-FIXED_CTRL_C" (
    CALL <NUL %0 -FIXED_CTRL_C %*
    GOTO :EOF
 )
-:: CONFIGURATION
+:: prepare
 set PHP="E:\lab\www\php\php.exe"
+set BOT=master
+set TIMEOUT=120
+:: run
 :LOOP
-:: getUpdates <bot> <timeout>
-%PHP% -f "%CD%\index.php" -- getUpdates master 120
+%PHP% -f "%CD%\index.php" -- getUpdates %BOT% %TIMEOUT%
 if %ERRORLEVEL% EQU 0 goto LOOP
 exit
