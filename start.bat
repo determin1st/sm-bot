@@ -10,10 +10,10 @@ IF "%~1"=="-FIXED_CTRL_C" (
 )
 :: prepare
 set PHP="E:\lab\www\php\php.exe"
-set BOT=master
+set BOTID=master
 set TIMEOUT=120
 :: run
 :LOOP
-%PHP% -f "%CD%\index.php" -- getUpdates %BOT% %TIMEOUT%
+%PHP% -f "%CD%\index.php" -- loop %BOTID% %TIMEOUT%
 if %ERRORLEVEL% EQU 0 goto LOOP
 exit

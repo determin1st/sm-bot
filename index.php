@@ -9,8 +9,8 @@ if (array_key_exists('REQUEST_METHOD', $_SERVER))
 }
 elseif ($argc === 4)
 {
-  # CLI (getUpdates or task)
-  if (Bot::command(array_slice($argv, 1))) {
+  # CLI (loop/task)
+  if (Bot::start(array_slice($argv, 1))) {
     exit(0);# no problems
   }
 }
