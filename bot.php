@@ -14,7 +14,6 @@ abstract class StaticInit # {{{
   }
 }
 # }}}
-# BOT {{{
 class Bot extends StaticInit {
   # data {{{
   # syntax: /<item=id[:id[:id[..]]]>!<func> <args=[arg[,arg[..]]]>
@@ -358,6 +357,7 @@ class Bot extends StaticInit {
   {
     #$this->tasks = [];# abort
     $this->log($msg, 1);
+    $this->errors++;
   }
   function logException(object $e): void
   {
@@ -365,6 +365,7 @@ class Bot extends StaticInit {
     $a = $e->getMessage();
     $b = $e->getTraceAsString();
     $this->log("$a\n$b\n", 1);
+    $this->errors++;
   }
   function logWarn(string $msg): void {
     $this->log($msg, 2);
@@ -510,6 +511,7 @@ class Bot extends StaticInit {
       'id'        => $botid,
       'opts'      => $opts,
       'stdout'    => ($console ? fopen('php://stdout', 'w') : false),
+      'errors'    => 0,
       'isMaster'  => $isMaster,
       ###
       'homedir'   => $homedir,  # /
@@ -632,55 +634,45 @@ class Bot extends StaticInit {
       $this->logWarn($name.' has already been started');
       return false;
     }
-    # set graceful termination
+    # enforce graceful termination
     self::$IS_WIN && sapi_windows_set_ctrl_handler(function ($i) use ($lock) {
       @unlink($lock);
       exit(1);
     });
     # prepare
-    $offset = 0;
-    $fails  = 0;
-    $cycles = 0;
-    $jobs   = 0;
-    # operate
     $this->log("$name starting getUpdates loop..");
-    while ($fails < 3 && file_exists($lock))
+    $req = [
+      'offset'  => 0,
+      'timeout' => $timeout,
+    ];
+    # operate
+    while ($this->errors < 5 && file_exists($lock))
     {
-      # get updates (long polling)
-      $a = [
-        'offset'  => $offset,
-        'timeout' => $timeout,
-      ];
-      if (!($a = $this->api->send('getUpdates', $a)))
-      {
-        $fails++;
-        sleep(1);
-        continue;
+      # request updates (long polling)
+      if (!($a = $this->api->send('getUpdates', $req))) {
+        sleep(1); continue;
       }
-      $fails = 0;
-      # handle updates
-      foreach ($a->result as $b)
+      # reset error counter
+      $this->errors = 0;
+      # process updates
+      foreach ($a->result as $update)
       {
-        if (!$this->operate($b))
+        if (!$this->operate($update))
         {
-          # update api offset
+          # refresh api offset
           $this->api->send('getUpdates', [
-            'offset'  => $b->update_id + 1,
+            'offset'  => $update->update_id + 1,
             'timeout' => 0,
             'limit'   => 1,
           ]);
           # restart
           self::file_unlock($file);
+          $this->log("$name restart\n");
           return true;
         }
-        ++$jobs;
       }
-      $offset = $b->update_id + 1;
-      if (++$cycles > 100)
-      {
-        $this->log('100 cycles, '.$jobs.' updates');
-        $cycles = $jobs = 0;
-      }
+      # shift offset
+      $req['offset'] = $update->update_id + 1;
     }
     # terminate
     self::file_unlock($file);
@@ -688,18 +680,23 @@ class Bot extends StaticInit {
     return false;
   }
   # }}}
-  function operate(object $update): bool # {{{
+  function operate(object $u): bool # {{{
   {
-    # attach user
-    if (!($this->user = BotUser::init($this, $update))) {
-      return true;
+    # construct the request object
+    $req = null;
+    if (isset($u->callback_query)) {
+      #$req = BotRequestCallback::init($u->callback_query);
     }
-    # reply
-    $res = $this->user->reply();
-    #$a = BotResponse::init($this, $update);
-    # detach user
-    $this->user = null;
-    return $res;
+    elseif (isset($u->inline_query)) {
+      #$req = BotRequestQuery::init($u->inline_query);
+    }
+    elseif (isset($u->message)) {
+      $req = BotRequestInput::init($u->message);
+    }
+    # reply user request and complete
+    return ($req && ($res = BotUser::init($this, $req)))
+      ? $res->finit()
+      : true;
   }
   # }}}
   # user {{{
@@ -2138,7 +2135,7 @@ class Bot extends StaticInit {
     return "[{$x}m{$str}[0m";
   }
   # }}}
-  function setFileId(string $file, string $id) # {{{
+  function setFileId(string $file, string $id): void # {{{
   {
     # update current
     $this->fids[$file] = $id;
@@ -2159,8 +2156,6 @@ class Bot extends StaticInit {
       # release lock
       self::file_unlock($a);
     }
-    # always sunny
-    return true;
   }
   # }}}
   function getFileId(string $file) # {{{
@@ -2191,6 +2186,7 @@ class Bot extends StaticInit {
   # }}}
   # }}}
 }
+# HELPERS {{{
 class BotConfig extends StaticInit implements \JsonSerializable {
   # {{{
   static $DEFS = [
@@ -2355,8 +2351,6 @@ class BotFile extends \CURLFile {
   }
   # }}}
 }
-# }}}
-# ITEMS {{{
 class BotItems extends StaticInit {
   # {{{
   static function init(object $bot): ?self
@@ -2521,6 +2515,629 @@ class BotItem extends StaticInit implements \JsonSerializable {
   }
   # }}}
 }
+class B2B {
+  # {{{
+  private
+    $curl  = null,
+    $id    = 0,# operator id
+    $token = '';
+  private static
+    $url = 'https://int.apiforb2b.com/';
+  public
+    $error = '';
+  # factory
+  # {{{
+  private function __construct($curl, $id)
+  {
+    $this->curl = $curl;
+    $this->id   = $id;
+  }
+  public static function init($id)
+  {
+    # create curl instance
+    if (!($curl = curl_init())) {
+      return null;
+    }
+    # configure it
+    curl_setopt_array($curl, [
+      CURLOPT_RETURNTRANSFER => true, # result as a string
+      CURLOPT_FORBID_REUSE   => true, # close after response
+      #CURLOPT_POST           => true,
+      CURLOPT_CONNECTTIMEOUT => 120,
+      CURLOPT_TIMEOUT        => 120,
+      #CURLOPT_VERBOSE        => true,
+    ]);
+    # construct
+    return new B2B($curl, $id);
+  }
+  # }}}
+  # methods
+  public function getGameUrl($name) # {{{
+  {
+    return self::$url.'games/'.$name.
+      '?operator_id='.$this->id.
+      '&user_id=0'.
+      '&auth_token='.
+      '&currency=';
+  }
+  # }}}
+  public function getGames() # {{{
+  {
+    # fetch remote data {{{
+    # prepare
+    $a = self::$url.'frontendsrv/apihandler.api?'.
+      'cmd={"api":"ls-games-by-operator-id-get","operator_id":"'.$this->id.'"}';
+    curl_setopt_array($this->curl, [
+      CURLOPT_URL  => $a,
+      CURLOPT_POST => false,
+    ]);
+    # send
+    if (($a = curl_exec($this->curl)) === false)
+    {
+      $this->error = 'curl error #'.curl_errno($this->curl).': '.curl_error($this->curl);
+      return null;
+    }
+    # decode
+    if (($a = json_decode($a, true)) === null)
+    {
+      $this->error = 'json error #'.json_last_error().': '.json_last_error_msg();
+      return null;
+    }
+    # check
+    if (!$a['success'])
+    {
+      $this->error = print_r($a, true);
+      return null;
+    }
+    $a = $a['locator'];
+    # }}}
+    # refine {{{
+    $groups = [];
+    $games  = [];
+    foreach ($a['groups'] as $b)
+    {
+      # create group
+      $i0 = $b['gr_id'];
+      $groups[$i0] = [
+        'id'   => $i0,
+        'name' => $b['gr_title'],
+        'list' => [],
+      ];
+      # iterate group games
+      foreach ($b['games'] as $c)
+      {
+        # add identifier to group
+        $i1 = $c['gm_bk_id'];
+        $groups[$i0]['list'][] = $i1;
+        # create game
+        $games[$i1] = [
+          'id'   => $i1,
+          'name' => $c['gm_title'],
+          'url'  => $c['gm_url'],
+          'icon' => '',
+          'logo' => '',
+        ];
+        # search for proper icon and logo
+        foreach ($c['icons'] as $d)
+        {
+          if ($d['ic_w'] === 480 && $d['ic_h'] === 160) {
+            $games[$i1]['icon'] = $d['ic_name'];
+          }
+          elseif ($d['ic_w'] === 640 && $d['ic_h'] === 360) {
+            $games[$i1]['logo'] = $d['ic_name'];
+          }
+        }
+      }
+    }
+    # sort by name?
+    #sort($group_list, SORT_STRING);
+    #sort($game_list, SORT_STRING);
+    # }}}
+    return [
+      'id'     => uniqid(),
+      'groups' => $groups,
+      'games'  => $games,
+    ];
+  }
+  # }}}
+  public function getIconUrl($name) # {{{
+  {
+    return self::$url.'game/icons/'.$name;
+  }
+  # }}}
+  # }}}
+}
+# }}}
+# REQUEST/RESPONSE {{{
+class BotRequestInput extends StaticInit {
+  # {{{
+  static function init(object $msg): ?self
+  {
+    if (!isset($msg->from)) {
+      return null;
+    }
+    if (($text = isset($msg->text) ? $msg->text : '') &&
+        ($text[0] === '/'))
+    {
+      return BotRequestCommand::init($msg);
+    }
+    return new static([
+      'from' => $msg->from,
+      'chat' => $msg->chat,
+      'msg'  => $msg->message_id,
+      'text' => $text,
+    ]);
+  }
+  function reply(object $user)
+  {
+    /***
+    static $types = ['form'];
+    # prepare
+    $conf = &$this->user->config;
+    $lang = $this->user->lang;
+    $chat = $this->user->chat;
+    # check active roots
+    if (!array_key_exists('/', $conf) ||
+        !count($conf['/']))
+    {
+      return false;# NO ACTIVE ROOT
+    }
+    # determine active item's identifier
+    $a = $conf['/'][0];
+    if (!array_key_exists('_item', $conf[$a]) ||
+        !($a = $conf[$a]['_item']))
+    {
+      return false;# NO ACTIVE ITEM
+    }
+    # get item and check if it accepts input
+    if (!($item = $this->itemGet($a)) ||
+        !in_array($item['type'], $types))
+    {
+      return false;# INPUT IS NOT ACCEPTED
+    }
+    # render item with the given input
+    $res = '';
+    if (!($item = $this->itemAttach($item, $res, $text)) || $res)
+    {
+      # report problems
+      if ($res && is_string($res)) {
+        $this->logError($res);
+      }
+      return false;
+    }
+    # update message that receives input
+    $res = $item['root']['config']['_msg'];
+    $this->itemUpdate($res, $item);
+    # done
+    return false;
+    /***/
+  }
+  # }}}
+}
+class BotRequestCommand extends StaticInit {
+  # {{{
+  static function init(object $msg): self
+  {
+    return new static([
+      'from' => $msg->from,
+      'chat' => $msg->chat,
+      'msg'  => $msg->message_id,
+      'text' => $msg->text,
+    ]);
+  }
+  function reply(object $user)
+  {
+    # prepare
+    $bot  = $user->bot;
+    $conf = $user->config;
+    $text = $this->text;
+    $chat = $this->chat;
+    $lang = $user->lang;
+    # handle special command
+    switch ($text) {
+    case '/reset':
+      # {{{
+      # check allowed
+      if (!$user->isAdmin)
+      {
+        $this->log("access denied: $text");
+        return 1;
+      }
+      # check replied
+      if (!isset($this->msg->reply_to_message))
+      {
+        $this->log("$text: replied not found");
+        return 1;
+      }
+      # get message and item ids
+      $a = $this->msg->reply_to_message->message_id;
+      if (!($b = $conf->getMessageItemId($a)))
+      {
+        $this->log("$text: message $a is not rooted");
+        return 1;
+      }
+      $this->log("$text: $a => $b");
+      # get and remove item
+      ($item = $this->itemGet($b)) && $this->itemDetach($item, true);
+      # compose navigation command
+      $text = '/'.$b;
+      # }}}
+      break;
+    case '/restart':
+      # {{{
+      if ($this->user->is_admin)
+      {
+        $this->log("$text\n");
+        return 0;
+      }
+      return 1;
+      # }}}
+    }
+    # handle item command
+    if (!($a = $this->itemAttach($text, true)))
+    {
+      $a = [
+        'chat_id' => $chat->id,
+        'text'    => $this->messages[$lang][1].': '.$text,
+      ];
+      $this->logError('failed command: '.$text);
+      if (!$this->api->send('sendMessage', $a)) {
+        $this->logError($this->api->error);
+      }
+    }
+    elseif (~$a && !$this->itemSend()) {# send new item
+      $this->logError('failed to send item: '.$text);
+    }
+    return 1;
+  }
+  # }}}
+}
+class BotRequestCallback extends StaticInit {
+  # {{{
+  static function init($q)
+  {
+    if (!isset($q->from) || !isset($q->message)) {
+      return null;
+    }
+    if (isset($q->game_short_name)) {
+      #return BotRequestGame::init($q);
+      return null;
+    }
+    if (!isset($q->data) || $q->data[0] !== '/') {
+      #return BotRequestZap::init($q);
+      return null;
+    }
+    return new static([
+      'from'  => $q->from,
+      'chat'  => $q->message->chat,
+      'msg'   => $q->message->message_id,
+      'query' => $q->id,
+      'data'  => $q->data,
+    ]);
+  }
+  function finit($user)
+  {
+    $id = $this->getMessageItemId($msg);
+    $isRooted = !!$id;
+    # attach item
+    if (!($a = $this->itemAttach($text)))
+    {
+      # failed, item message should be removed/nullified
+      $isRooted && $this->itemDetach();
+      !$isRooted && $this->itemZap($msg);
+      return ['text'=>$this->messages[$lang][2],'show_alert'=>true];
+    }
+    elseif ($a === -1) {# nop
+      return [];
+    }
+    # get item and it's root configuration
+    $item = &$this->item;
+    $root = &$item['root']['config'];
+    $msg1 = isset($root['_msg']) ? $root['_msg'] : 0;
+    # determine if message is fresh
+    $isFresh = ($msg1 &&
+                ($a = time() - $root['_time']) >= 0 &&
+                ($a < self::MESSAGE_LIFETIME));
+    # determine if the item has re-activated input
+    if (!($isNew = $item['isNew']))
+    {
+      if ($root && $item['isInputAccepted'])
+      {
+        # make sure it's the first from the start
+        if (!array_key_exists('/', $userCfg) ||
+            $userCfg['/'][0] !== $item['root']['id'])
+        {
+          $isNew = true;
+        }
+      }
+    }
+  }
+  # }}}
+  function reply() # {{{
+  {
+    # reply {{{
+    if (!$isFresh || $isNew)
+    {
+      # recreate message
+      $res = $this->itemSend();
+    }
+    else
+    {
+      # update message
+      $res = $this->itemUpdate($msg, $item);
+    }
+    # nullify non-rooted message
+    if (!$isRooted)
+    {
+      $this->log('unrooted, zap '.$msg);
+      $this->itemZap($msg);
+    }
+    # success
+    if ($res) {
+      return [];
+    }
+    # failure
+    return [
+      'text' => $this->messages[$lang][2],
+      'show_alert' => true,
+    ];
+    # }}}
+    return [];
+    # check message
+    if (!isset($q->message) || !$q->message->message_id) {
+      return -1;
+    }
+    # operate
+    $answer = ['callback_query_id' => $q->id];
+    $result = isset($q->game_short_name)
+      ? $this->replyGameCallback($q)
+      : (isset($q->data)
+        ? $this->replyDataCallback($q)
+        : null);
+    # check
+    if ($a === null) {# no traction, ignore
+      return -1;
+    }
+    # complete
+    if (!$this->api->send('answerCallbackQuery', array_merge($answer, $result))) {
+      $this->logError($this->api->error);
+    }
+    return 1;
+  }
+  # }}}
+}
+class BotRequestGame extends StaticInit {
+  # {{{
+  static function init()
+  {
+    return new static([
+    ]);
+  }
+  function reply()
+  {
+    /***
+    if (isset($q->game_short_name) &&
+        ($a = $q->game_short_name))
+    {
+      $this->log('game callback: '.$a);
+      if ($a = $this->getGameUrl($a, $msg))
+      {
+        return [
+          'url' => $a,
+          'cache_time' => 0,
+        ];
+      }
+      else
+      {
+        return [
+          'text' => $this->messages[$lang][0],
+          'show_alert' => true,
+        ];
+      }
+    }
+    /***/
+  }
+  # }}}
+}
+class BotRequestQuery extends StaticInit {
+  # {{{
+  static function init(object $q): ?self
+  {
+    return null;
+    return new static([
+    ]);
+  }
+  function reply()
+  {
+    $this->log('inline query!!!');
+    /***
+    $out = (string)rand();
+    $results[] = [
+      "type"  => "article",
+      "id"    => $out,
+      "title" => $out,
+      "input_message_content" => [
+        "message_text"             => $out,
+        "disable_web_page_preview" => true
+      ],
+    ];
+    $client->answerInlineQuery($u->inline_query->id, $results, 1, false);
+    unset($results);
+    /***/
+  }
+  # }}}
+}
+# }}}
+# USER {{{
+class BotUser extends StaticInit {
+  # {{{
+  static function init(object $bot, object $request): ?self
+  {
+    # prepare
+    $from = $request->from;
+    $chat = $request->chat;
+    # determine name
+    if ($isGroup = ($chat && $chat->type !== 'private'))
+    {
+      $a = (isset($chat->title) ? $chat->title : $chat->id);
+      $b = (isset($chat->username) ? '@'.$chat->username : '');
+      $name = $a.$b.'/';
+    }
+    else {
+      $name = '';
+    }
+    $a = preg_replace('/[[:^print:]]/', '', trim($from->first_name));
+    $b = (isset($from->username) ? '@'.$from->username : '');
+    $name = $name.$a.$b;
+    # determine admin flag
+    # TODO: groups
+    $isAdmin = in_array($from->id, $bot->opts->admins);
+    # check masterbot access
+    if ($bot->isMaster && !$isAdmin)
+    {
+      $bot->logWarn("access denied: $name");
+      return null;
+    }
+    # determine language
+    if (!($lang = $bot->opts->forceLang) &&
+        (!isset($from->language_code) ||
+         !($lang = $from->language_code) ||
+         !isset($bot->messages[$lang])))
+    {
+      $lang = 'en';
+    }
+    # determine directory
+    $dir = $isGroup ? '_'.$chat->id : $from->id;
+    $dir = $bot->datadir.$dir.DIRECTORY_SEPARATOR;
+    if (!file_exists($dir) && !@mkdir($dir))
+    {
+      $bot->logError("failed to create directory: $dir");
+      return null;
+    }
+    # construct
+    $user = new static([
+      'bot'      => $bot,
+      'request'  => $request,
+      'id'       => $from->id,
+      'name'     => $name,
+      'isGroup'  => $isGroup,
+      'isAdmin'  => $isAdmin,
+      'lang'     => $lang,
+      'dir'      => $dir,
+      'config'   => null,
+      'changed'  => false,
+    ]);
+    # set configuration
+    if (!($user->config = BotUserConfig::init($user)))
+    {
+      $bot->logError("failed to attach user configuration: $name");
+      return null;
+    }
+    # attach and complete
+    return $bot->user = $u;
+  }
+  function finit(): void
+  {
+    # reply
+    $res = $this->request->reply();
+    # detach
+    $this->config->finit();
+    $this->bot->user = null;
+    # complete
+    return $res;
+  }
+  # }}}
+}
+class BotUserConfig extends StaticInit {
+  # {{{
+  static function init(object $user): ?self
+  {
+    # determine file path and aquire a forced lock
+    $file = $user->dir.'config.json';
+    if (!Bot::file_lock($file, true)) {
+      return null;
+    }
+    # get contents
+    if (!file_exists($file) ||
+        !($data = file_get_contents($file)) ||
+        !($data = json_decode($data, true)))
+    {
+      $data = [   # initial (empty)
+        '/' => [],# root list (displayed item messages)
+        '*' => [],# items [id=>config]
+      ];
+      $user->changed = true;
+    }
+    # create roots
+    foreach ($data['/'] as &$a) {
+      $item = BotItemMessage::init($a);
+    }
+    unset($a);
+    # construct
+    return new static([
+      'user'  => $user,
+      'file'  => $file,
+      'data'  => $data,
+    ]);
+  }
+  function finit(bool $unlock = true)
+  {
+    if ($this->user->changed)
+    {
+      file_put_contents($this->file, json_encode($this->data));
+      $this->user->changed = false;
+    }
+    $unlock && Bot::file_unlock($this->file);
+  }
+  # }}}
+  function getItemByMessageId($msgId) # {{{
+  {
+    foreach ($this->data['/'] as $msg)
+    {
+      if (isset($conf[$id]['_msg']) &&
+          $conf[$id]['_msg'] === $msg)
+      {
+        return $conf[$id]['_item'];
+      }
+    }
+    return '';
+  }
+  # }}}
+}
+class BotUserMessage extends StaticInit implements \JsonSerializable {
+  # {{{
+  static function init(object $user, array $o): self
+  {
+    return new static([
+      'msg'  => $o[0],# message identifiers
+      'hash' => $o[1],# message hashes
+      'time' => $o[2],# creation timestamp (seconds)
+      'item' => BotUserItem::init($user, $o[3]),# item
+      'from' => BotUserItem::init($user, $o[4]),# origin item (injector)
+    ]);
+  }
+  function jsonSerialize(): array {
+    return [$this->msg,$this->hash,$this->time,$this->item,$this->from];
+  }
+  # }}}
+}
+class BotUserItem extends StaticInit implements \JsonSerializable {
+  # {{{
+  static function init(object $user, ?string $id): ?self
+  {
+    # check
+    if (!$id) {
+      return null;
+    }
+    # ...
+  }
+  function jsonSerialize(): string {
+    return $this->id;
+  }
+  # }}}
+}
+# }}}
+# ITEMS {{{
 class BotItemImg {
 }
 class BotItemList {
@@ -4207,644 +4824,4 @@ class BotItemCaptcha {
   # }}}
 }
 # }}}
-# USER {{{
-class BotUser extends StaticInit {
-  # {{{
-  static function init(object $bot, object $u): ?self
-  {
-    # construct response
-    $resp = null;
-    if (isset($u->callback_query)) {
-      $resp = BotResponseCallback::init($u->callback_query);
-    }
-    elseif (isset($u->inline_query)) {
-      $resp = BotResponseQuery::init($u->inline_query);
-    }
-    elseif (isset($u->message)) {
-      $resp = BotResponseInput::init($u->message);
-    }
-    # check no traction
-    if ($resp === null)
-    {
-      $bot->logDebug($update);
-      return null;# ignore
-    }
-    # get response targets
-    $from = $resp->from;
-    $chat = $resp->chat;
-    # determine name
-    if ($isGroup = ($chat && $chat->type !== 'private'))
-    {
-      $a = (isset($chat->title) ? $chat->title : $chat->id);
-      $b = (isset($chat->username) ? '@'.$chat->username : '');
-      $name = $a.$b.'/';
-    }
-    else {
-      $name = '';
-    }
-    $a = preg_replace('/[[:^print:]]/', '', trim($from->first_name));
-    $b = (isset($from->username) ? '@'.$from->username : '');
-    $name = $name.$a.$b;
-    # determine admin flag
-    # TODO: groups
-    $isAdmin = in_array($from->id, $bot->opts['admins']);
-    # check masterbot access
-    if ($bot->isMaster && !$isAdmin)
-    {
-      $bot->logWarn("access denied: $name");
-      return null;
-    }
-    # determine language
-    if (!($lang = $bot->opts->forceLang) &&
-        (!isset($from->language_code) ||
-         !($lang = $from->language_code) ||
-         !isset($bot->messages[$lang])))
-    {
-      $lang = 'en';
-    }
-    # determine directory
-    $dir = $isGroup ? '_'.$chat->id : $from->id;
-    $dir = $bot->datadir.$dir.DIRECTORY_SEPARATOR;
-    if (!file_exists($dir) && !@mkdir($dir))
-    {
-      $bot->logError("failed to create directory: $dir");
-      return null;
-    }
-    # construct
-    $u = new static([
-      'bot'      => $bot,
-      'response' => $resp,
-      'chat'     => $chat,
-      'id'       => $from->id,
-      'name'     => $name,
-      'isBot'    => $from->is_bot,
-      'isGroup'  => $isGroup,
-      'isAdmin'  => $isAdmin,
-      'lang'     => $lang,
-      'dir'      => $dir,
-      'config'   => null,
-      'changed'  => false,
-    ]);
-    # create configuration
-    if (!($u->config = BotUserConfig::init($u)))
-    {
-      $bot->logError("failed to create configuration: $dir");
-      return null;
-    }
-    # done
-    return $u;
-  }
-  function finit()
-  {
-    $x = $this->response->finit($this);
-    $this->config->finit();
-    #$this->taskDetach();
-    return $x;
-  }
-  # }}}
-}
-class BotUserConfig extends StaticInit {
-  # initializer {{{
-  static function init(object $user)
-  {
-    # determine file path and aquire a forced lock
-    $file = $user->dir.'config.json';
-    if (!Bot::file_lock($file, true)) {
-      return null;
-    }
-    # get contents
-    if (!file_exists($file) ||
-        !($data = file_get_contents($file)) ||
-        !($data = json_decode($data, true)))
-    {
-      $data = [   # initial (empty)
-        '/' => [],# root list (displayed item messages)
-        '*' => [],# items [id=>config]
-      ];
-      $user->changed = true;
-    }
-    # create roots
-    foreach ($data['/'] as &$a) {
-      $item = BotItemMessage::init($a);
-    }
-    unset($a);
-    # construct
-    return new static([
-      'user'  => $user,
-      'file'  => $file,
-      'data'  => $data,
-    ]);
-  }
-  function finit(bool $unlock = true)
-  {
-    if ($this->user->changed)
-    {
-      file_put_contents($this->file, json_encode($this->data));
-      $this->user->changed = false;
-    }
-    $unlock && Bot::file_unlock($this->file);
-  }
-  # }}}
-  function getItemByMessageId($msgId) # {{{
-  {
-    foreach ($this->data['/'] as $msg)
-    {
-      if (isset($conf[$id]['_msg']) &&
-          $conf[$id]['_msg'] === $msg)
-      {
-        return $conf[$id]['_item'];
-      }
-    }
-    return '';
-  }
-  # }}}
-}
-class BotUserMessage extends StaticInit implements \JsonSerializable {
-  # {{{
-  static function init(object $user, array $o): self
-  {
-    return new static([
-      'msg'  => $o[0],# message identifiers
-      'hash' => $o[1],# message hashes
-      'time' => $o[2],# creation timestamp (seconds)
-      'item' => BotUserItem::init($user, $o[3]),# item
-      'from' => BotUserItem::init($user, $o[4]),# origin item (injector)
-    ]);
-  }
-  function jsonSerialize(): array {
-    return [$this->msg,$this->hash,$this->time,$this->item,$this->from];
-  }
-  # }}}
-}
-class BotUserItem extends StaticInit implements \JsonSerializable {
-  # {{{
-  static function init(object $user, ?string $id): ?self
-  {
-    # check
-    if (!$id) {
-      return null;
-    }
-    # ...
-  }
-  function jsonSerialize(): string {
-    return $this->id;
-  }
-  # }}}
-}
-# }}}
-# RESPONSE {{{
-class BotResponseCallback extends StaticInit {
-  # initializer {{{
-  static function init($q)
-  {
-    if (!isset($q->from) || !isset($q->message)) {
-      return null;
-    }
-    if (isset($q->game_short_name)) {
-      #return BotResponseCallbackGame::init($q);
-      return null;
-    }
-    if (!isset($q->data) || $q->data[0] !== '/') {
-      #return BotResponseZap::init($q);
-      return null;
-    }
-    return new static([
-      'from'  => $q->from,
-      'chat'  => $q->message->chat,
-      'msg'   => $q->message->message_id,
-      'query' => $q->id,
-      'data'  => $q->data,
-    ]);
-  }
-  function finit($user)
-  {
-    $id = $this->getMessageItemId($msg);
-    $isRooted = !!$id;
-    # attach item
-    if (!($a = $this->itemAttach($text)))
-    {
-      # failed, item message should be removed/nullified
-      $isRooted && $this->itemDetach();
-      !$isRooted && $this->itemZap($msg);
-      return ['text'=>$this->messages[$lang][2],'show_alert'=>true];
-    }
-    elseif ($a === -1) {# nop
-      return [];
-    }
-    # get item and it's root configuration
-    $item = &$this->item;
-    $root = &$item['root']['config'];
-    $msg1 = isset($root['_msg']) ? $root['_msg'] : 0;
-    # determine if message is fresh
-    $isFresh = ($msg1 &&
-                ($a = time() - $root['_time']) >= 0 &&
-                ($a < self::MESSAGE_LIFETIME));
-    # determine if the item has re-activated input
-    if (!($isNew = $item['isNew']))
-    {
-      if ($root && $item['isInputAccepted'])
-      {
-        # make sure it's the first from the start
-        if (!array_key_exists('/', $userCfg) ||
-            $userCfg['/'][0] !== $item['root']['id'])
-        {
-          $isNew = true;
-        }
-      }
-    }
-  }
-  # }}}
-  function send() # {{{
-  {
-    # reply {{{
-    if (!$isFresh || $isNew)
-    {
-      # recreate message
-      $res = $this->itemSend();
-    }
-    else
-    {
-      # update message
-      $res = $this->itemUpdate($msg, $item);
-    }
-    # nullify non-rooted message
-    if (!$isRooted)
-    {
-      $this->log('unrooted, zap '.$msg);
-      $this->itemZap($msg);
-    }
-    # success
-    if ($res) {
-      return [];
-    }
-    # failure
-    return [
-      'text' => $this->messages[$lang][2],
-      'show_alert' => true,
-    ];
-    # }}}
-    return [];
-    # check message
-    if (!isset($q->message) || !$q->message->message_id) {
-      return -1;
-    }
-    # operate
-    $answer = ['callback_query_id' => $q->id];
-    $result = isset($q->game_short_name)
-      ? $this->replyGameCallback($q)
-      : (isset($q->data)
-        ? $this->replyDataCallback($q)
-        : null);
-    # check
-    if ($a === null) {# no traction, ignore
-      return -1;
-    }
-    # complete
-    if (!$this->api->send('answerCallbackQuery', array_merge($answer, $result))) {
-      $this->logError($this->api->error);
-    }
-    return 1;
-  }
-  # }}}
-}
-class BotResponseCallbackGame extends StaticInit {
-  # initializer {{{
-  static function init($user)
-  {
-    /***
-    if (isset($q->game_short_name) &&
-        ($a = $q->game_short_name))
-    {
-      $this->log('game callback: '.$a);
-      if ($a = $this->getGameUrl($a, $msg))
-      {
-        return [
-          'url' => $a,
-          'cache_time' => 0,
-        ];
-      }
-      else
-      {
-        return [
-          'text' => $this->messages[$lang][0],
-          'show_alert' => true,
-        ];
-      }
-    }
-    /***/
-    return new static([
-    ]);
-  }
-  function finit()
-  {
-  }
-  # }}}
-}
-class BotResponseInput extends StaticInit {
-  # initializer {{{
-  static function init($msg)
-  {
-    if (!isset($msg->from)) {
-      return null;
-    }
-    if (($text = isset($msg->text) ? $msg->text : '') &&
-        ($text[0] === '/'))
-    {
-      return BotResponseInputCommand::init($msg);
-    }
-    return new static([
-      'from' => $msg->from,
-      'chat' => $msg->chat,
-      'msg'  => $msg->message_id,
-      'text' => $text,
-    ]);
-  }
-  function finit($user)
-  {
-    /***
-    static $types = ['form'];
-    # prepare
-    $conf = &$this->user->config;
-    $lang = $this->user->lang;
-    $chat = $this->user->chat;
-    # check active roots
-    if (!array_key_exists('/', $conf) ||
-        !count($conf['/']))
-    {
-      return false;# NO ACTIVE ROOT
-    }
-    # determine active item's identifier
-    $a = $conf['/'][0];
-    if (!array_key_exists('_item', $conf[$a]) ||
-        !($a = $conf[$a]['_item']))
-    {
-      return false;# NO ACTIVE ITEM
-    }
-    # get item and check if it accepts input
-    if (!($item = $this->itemGet($a)) ||
-        !in_array($item['type'], $types))
-    {
-      return false;# INPUT IS NOT ACCEPTED
-    }
-    # render item with the given input
-    $res = '';
-    if (!($item = $this->itemAttach($item, $res, $text)) || $res)
-    {
-      # report problems
-      if ($res && is_string($res)) {
-        $this->logError($res);
-      }
-      return false;
-    }
-    # update message that receives input
-    $res = $item['root']['config']['_msg'];
-    $this->itemUpdate($res, $item);
-    # done
-    return false;
-    /***/
-  }
-  # }}}
-}
-class BotResponseInputCommand extends StaticInit {
-  # {{{
-  static function init($msg)
-  {
-    return new static([
-      'from' => $msg->from,
-      'chat' => $msg->chat,
-      'msg'  => $msg->message_id,
-      'text' => $msg->text,
-    ]);
-  }
-  function finit($user)
-  {
-    # prepare
-    $bot  = $user->bot;
-    $conf = $user->config;
-    $text = $this->text;
-    $chat = $this->chat;
-    $lang = $user->lang;
-    # handle special command
-    switch ($text) {
-    case '/reset':
-      # {{{
-      # check allowed
-      if (!$user->isAdmin)
-      {
-        $this->log("access denied: $text");
-        return 1;
-      }
-      # check replied
-      if (!isset($this->msg->reply_to_message))
-      {
-        $this->log("$text: replied not found");
-        return 1;
-      }
-      # get message and item ids
-      $a = $this->msg->reply_to_message->message_id;
-      if (!($b = $conf->getMessageItemId($a)))
-      {
-        $this->log("$text: message $a is not rooted");
-        return 1;
-      }
-      $this->log("$text: $a => $b");
-      # get and remove item
-      ($item = $this->itemGet($b)) && $this->itemDetach($item, true);
-      # compose navigation command
-      $text = '/'.$b;
-      # }}}
-      break;
-    case '/restart':
-      # {{{
-      if ($this->user->is_admin)
-      {
-        $this->log("$text\n");
-        return 0;
-      }
-      return 1;
-      # }}}
-    }
-    # handle item command
-    if (!($a = $this->itemAttach($text, true)))
-    {
-      $a = [
-        'chat_id' => $chat->id,
-        'text'    => $this->messages[$lang][1].': '.$text,
-      ];
-      $this->logError('failed command: '.$text);
-      if (!$this->api->send('sendMessage', $a)) {
-        $this->logError($this->api->error);
-      }
-    }
-    elseif (~$a && !$this->itemSend()) {# send new item
-      $this->logError('failed to send item: '.$text);
-    }
-    return 1;
-  }
-  # }}}
-}
-class BotResponseQuery extends StaticInit {
-  # initializer {{{
-  static function init(object $q): ?self
-  {
-    return null;
-    return new static([
-    ]);
-  }
-  function finit()
-  {
-    $this->log('inline query!!!');
-    /***
-    $out = (string)rand();
-    $results[] = [
-      "type"  => "article",
-      "id"    => $out,
-      "title" => $out,
-      "input_message_content" => [
-        "message_text"             => $out,
-        "disable_web_page_preview" => true
-      ],
-    ];
-    $client->answerInlineQuery($u->inline_query->id, $results, 1, false);
-    unset($results);
-    /***/
-  }
-  # }}}
-}
-# }}}
-# {{{
-# }}}
-###
-class B2B {
-  # {{{
-  private
-    $curl  = null,
-    $id    = 0,# operator id
-    $token = '';
-  private static
-    $url = 'https://int.apiforb2b.com/';
-  public
-    $error = '';
-  # factory
-  # {{{
-  private function __construct($curl, $id)
-  {
-    $this->curl = $curl;
-    $this->id   = $id;
-  }
-  public static function init($id)
-  {
-    # create curl instance
-    if (!($curl = curl_init())) {
-      return null;
-    }
-    # configure it
-    curl_setopt_array($curl, [
-      CURLOPT_RETURNTRANSFER => true, # result as a string
-      CURLOPT_FORBID_REUSE   => true, # close after response
-      #CURLOPT_POST           => true,
-      CURLOPT_CONNECTTIMEOUT => 120,
-      CURLOPT_TIMEOUT        => 120,
-      #CURLOPT_VERBOSE        => true,
-    ]);
-    # construct
-    return new B2B($curl, $id);
-  }
-  # }}}
-  # methods
-  public function getGameUrl($name) # {{{
-  {
-    return self::$url.'games/'.$name.
-      '?operator_id='.$this->id.
-      '&user_id=0'.
-      '&auth_token='.
-      '&currency=';
-  }
-  # }}}
-  public function getGames() # {{{
-  {
-    # fetch remote data {{{
-    # prepare
-    $a = self::$url.'frontendsrv/apihandler.api?'.
-      'cmd={"api":"ls-games-by-operator-id-get","operator_id":"'.$this->id.'"}';
-    curl_setopt_array($this->curl, [
-      CURLOPT_URL  => $a,
-      CURLOPT_POST => false,
-    ]);
-    # send
-    if (($a = curl_exec($this->curl)) === false)
-    {
-      $this->error = 'curl error #'.curl_errno($this->curl).': '.curl_error($this->curl);
-      return null;
-    }
-    # decode
-    if (($a = json_decode($a, true)) === null)
-    {
-      $this->error = 'json error #'.json_last_error().': '.json_last_error_msg();
-      return null;
-    }
-    # check
-    if (!$a['success'])
-    {
-      $this->error = print_r($a, true);
-      return null;
-    }
-    $a = $a['locator'];
-    # }}}
-    # refine {{{
-    $groups = [];
-    $games  = [];
-    foreach ($a['groups'] as $b)
-    {
-      # create group
-      $i0 = $b['gr_id'];
-      $groups[$i0] = [
-        'id'   => $i0,
-        'name' => $b['gr_title'],
-        'list' => [],
-      ];
-      # iterate group games
-      foreach ($b['games'] as $c)
-      {
-        # add identifier to group
-        $i1 = $c['gm_bk_id'];
-        $groups[$i0]['list'][] = $i1;
-        # create game
-        $games[$i1] = [
-          'id'   => $i1,
-          'name' => $c['gm_title'],
-          'url'  => $c['gm_url'],
-          'icon' => '',
-          'logo' => '',
-        ];
-        # search for proper icon and logo
-        foreach ($c['icons'] as $d)
-        {
-          if ($d['ic_w'] === 480 && $d['ic_h'] === 160) {
-            $games[$i1]['icon'] = $d['ic_name'];
-          }
-          elseif ($d['ic_w'] === 640 && $d['ic_h'] === 360) {
-            $games[$i1]['logo'] = $d['ic_name'];
-          }
-        }
-      }
-    }
-    # sort by name?
-    #sort($group_list, SORT_STRING);
-    #sort($game_list, SORT_STRING);
-    # }}}
-    return [
-      'id'     => uniqid(),
-      'groups' => $groups,
-      'games'  => $games,
-    ];
-  }
-  # }}}
-  public function getIconUrl($name) # {{{
-  {
-    return self::$url.'game/icons/'.$name;
-  }
-  # }}}
-  # }}}
-}
 ?>
