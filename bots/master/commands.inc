@@ -48,30 +48,26 @@
       ['_up'],
     ],
     'items' => [
-      'menu1' => # {{{
+      'menu1' =>
       [
         'type' => 'inject',
         'path' => 'testmenu',
       ],
-      # }}}
-      'menu2' => # {{{
+      'menu2' =>
       [
         'type' => 'open',
         'path' => 'testmenu',
       ],
-      # }}}
-      'form1' => # {{{
+      'form1' =>
       [
         'type' => 'inject',
         'path' => 'testform',
       ],
-      # }}}
-      'form2' => # {{{
+      'form2' =>
       [
         'type' => 'open',
         'path' => 'testform',
       ],
-      # }}}
     ],
   ],
   # }}}
@@ -133,7 +129,6 @@ This node has 2 items (separate branches). You can navigate in one or another, a
               # }}}
               'another' => # {{{
               [
-                'type'   => 'menu',
                 'markup' => [['_go:testmenu:tree:nesting:test:deeper:link'],['_up']],
                 'text' => [
                   'en' => [
@@ -154,7 +149,6 @@ You may also type a node path as a command, the bot will try to remove this mess
           # }}}
           'cycle' => # {{{
           [
-            'type' => 'menu',
             'markup' => [['start'],['_up']],
             'text' => [
               '.' => '
@@ -164,12 +158,10 @@ Nodes below, don\'t have an upward button.
             'items' => [
               'start' =>
               [
-                'type' => 'menu',
                 'markup' => [['play']],
                 'items' => [
                   'play' =>
                   [
-                    'type' => 'menu',
                     'markup' => [['stop']],
                     'text' => ['.' => '
 This node has a custom handler. It throws 2 dices and shows their sum at each render. 
@@ -184,7 +176,6 @@ Current sum is <code>{{sum}}</code>. {{^luck}}Prize at <code>12</code>.{{/luck}}
                     'items' => [
                       'stop' =>
                       [
-                        'type' => 'menu',
                         'markup' => [['_go:testmenu:tree:cycle:start']],
                         'text' => ['.' => '
 Able to get out?
