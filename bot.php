@@ -14,8 +14,6 @@ abstract class StaticInit # {{{
 # }}}
 class Bot extends StaticInit {
   # data {{{
-  # command syntax: /<item>!<func> <args>
-  const COMMAND_EXP = '|^\/((\w+)([:/-](\w+)){0,8})(!(\w{1,})){0,1}( (.{1,})){0,1}$|';
   const MESSAGE_LIFETIME = 48*60*60;
   static
     $INIT    = true,
@@ -23,23 +21,24 @@ class Bot extends StaticInit {
     $ERROR   = '',
     $BUTTONS = [
       # {{{
-      'up'       => '{:eject_symbol:} {{text}}',
-      'close'    => '{:stop_button:} {{text}}',
-      'prev'     => '{:rewind:} {{x}}',
-      'next'     => '{{x}} {:fast_forward:}',
-      'first'    => '{:previous_track:} {{x}}',
-      'last'     => '{{x}} {:next_track:}',
-      'play'     => '{:arrow_forward:}',
+      'up'       => '{:eject_symbol:} {{.}}',
+      'close'    => '{:stop_button:} {{.}}',
+      'open'     => '{{.}} {:arrow_forward:}',
+      'play'     => '{:arrow_forward:} {{.}}',
+      'prev'     => '{:rewind:} {{.}}',
+      'next'     => '{{.}} {:fast_forward:}',
+      'first'    => '{:previous_track:} {{.}}',
+      'last'     => '{{.}} {:next_track:}',
+      'refresh'  => '{{.}} {:arrows_counterclockwise:}',
+      'reset'    => '{:arrows_counterclockwise:} {{.}}',
+      'retry'    => '{:arrow_right_hook:} {{.}}',
+      'ok'       => 'OK',
+      'add'      => '{{.}} {:new:}',
+      ###
+      'select0'  => '{{.}}',
+      'select1'  => '{:green_circle:} {{.}}',
       'fav_on'   => '{:star:}',
       'fav_off'  => '{:sparkles:}{:star:}{:sparkles:}',
-      'refresh'  => '{{x}} {:arrows_counterclockwise:}',
-      'reset'    => '{:arrows_counterclockwise:} {{x}}',
-      'retry'    => '{:arrow_right_hook:} {{x}}',
-      'ok'       => 'OK',
-      'select0'  => '{{text}}',
-      'select1'  => '{:green_circle:} {{text}}',
-      'go'       => '{:arrow_forward:} {{text}}',
-      'add'      => '{{x}} {:new:}',
       # }}}
     ],
     $MESSAGES = [
@@ -131,7 +130,7 @@ class Bot extends StaticInit {
         ',# }}}
         7 => 'string ({{max}})',
         8 => 'number [{{min}}..{{max}}]',
-        9 => '',
+        9 => 'play',
         10 => 'close',
         11 => '{:exclamation:} task failed to start',
         12 => 'complete',
@@ -232,7 +231,7 @@ class Bot extends StaticInit {
         ',# }}}
         7 => 'строка ({{max}})',
         8 => 'число [{{min}},{{max}}]',
-        9 => '',
+        9 => 'играть',
         10 => 'закрыть',
         11 => '{:exclamation:} не удалось запустить задачу',
         12 => 'завершить',
@@ -406,7 +405,9 @@ class Bot extends StaticInit {
       $c = substr($d, 2);
     }
     $d = $e->getTrace()[0];
-    $d = str_replace(__DIR__, '', $d['file']).'('.$d['line'].')';
+    $d = isset($d['file'])
+      ? str_replace(__DIR__, '', $d['file']).'('.$d['line'].')'
+      : '---';
     $this->log("\n  #0 $d\n  $b", 1, [$c,$a]);
     $this->errors++;
   }
@@ -451,8 +452,8 @@ class Bot extends StaticInit {
   # }}}
   static function file_get_json(string $file): array # {{{
   {
-    if (!file_exists($file) &&
-        !($data = file_get_contents($file)) &&
+    if (!file_exists($file) ||
+        !($data = file_get_contents($file)) ||
         !($data = json_decode($data, true)))
     {
       $data = [];
@@ -460,7 +461,7 @@ class Bot extends StaticInit {
     return $data;
   }
   # }}}
-  static function file_set_json(string $file, array $data): bool # {{{
+  static function file_set_json(string $file, ?array $data): bool # {{{
   {
     if ($data)
     {
@@ -575,6 +576,7 @@ class Bot extends StaticInit {
   }
   # }}}
   # }}}
+  # api {{{
   static function start(array $args): bool # {{{
   {
     # configure environment
@@ -596,8 +598,8 @@ class Bot extends StaticInit {
       if ($bot = self::init($args[1], true)) {
         return $bot->loop(intval($args[2]));
       }
-      else {
-        echo "\nERROR: ".self::$ERROR."\n";
+      elseif (self::$ERROR) {
+        echo "\nbot failed to initialize: ".self::$ERROR."\n";
       }
       break;
     case 'task':
@@ -650,6 +652,22 @@ class Bot extends StaticInit {
   # }}}
   static function init(string $botid, bool $console): ?self # {{{
   {
+    # prepare
+    # {{{
+    # initialize static props
+    if (self::$INIT)
+    {
+      if (!function_exists('curl_init'))
+      {
+        self::$ERROR = 'missing dependency: CURL';
+        return null;
+      }
+      self::$IS_WIN = (
+        defined('PHP_OS_FAMILY') &&
+        strncasecmp(PHP_OS_FAMILY, 'WIN', 3) === 0
+      );
+      self::$INIT = false;
+    }
     # check identifier
     $isMaster = ($botid === 'master');
     if (!$isMaster && (!ctype_digit($botid) || strlen($botid) > 14))
@@ -660,14 +678,17 @@ class Bot extends StaticInit {
     # determine directory paths
     $homedir = __DIR__.DIRECTORY_SEPARATOR;
     $incdir  = $homedir.'inc'.DIRECTORY_SEPARATOR;
-    $fontdir = $incdir.'font'.DIRECTORY_SEPARATOR;
     $datadir = $homedir.'data'.DIRECTORY_SEPARATOR.$botid.DIRECTORY_SEPARATOR;
+    $imgdir  = [];
     if (!file_exists($datadir))
     {
       self::$ERROR = "directory not found: $datadir";
       return null;
     }
-    # construct configuration
+    if (file_exists($a = $datadir.'img'.DIRECTORY_SEPARATOR)) {
+      $imgdir[] = $a;
+    }
+    # load configuration
     if (!($opts = BotConfig::init($datadir)))
     {
       self::$ERROR = "failed to load configuration: $datadir";
@@ -681,6 +702,9 @@ class Bot extends StaticInit {
       self::$ERROR = "directory not found: $botdir";
       return null;
     }
+    if (file_exists($a = $botdir.'img'.DIRECTORY_SEPARATOR)) {
+      $imgdir[] = $a;
+    }
     # load bot controllers
     if (file_exists($a = $botdir.'control.php')) {
       require_once $a;
@@ -692,26 +716,25 @@ class Bot extends StaticInit {
     }
     else
     {
-      self::$ERROR = "bot controller not found: $botdir";
+      self::$ERROR = "controller not found: $botdir";
       return null;
     }
-    # construct self
+    # }}}
+    # construct
     $bot = new static([
       'id'        => $botid,
       'opts'      => $opts,
       'stdout'    => ($console ? fopen('php://stdout', 'w') : false),
       'errors'    => 0,
       'isMaster'  => $isMaster,
-      ###
       'homedir'   => $homedir,  # /
       'incdir'    => $incdir,   # /inc/
-      'fontdir'   => $fontdir,  # /inc/font/
       'datadir'   => $datadir,  # /data/<botid>/
       'botdir'    => $botdir,   # /bots/<botid>/
+      'imgdir'    => $imgdir,   # [datadir|botdir]/img/
       'errorlog'  => $datadir.'ERROR.log',
       'accesslog' => $datadir.'ACCESS.log',
-      'fids'      => BotFileId::init($datadir.'FILE_ID.json'),
-      ###
+      'fids'      => BotFileId::init($datadir.'FILE_ID.json', $opts->useFileIds),
       'api'       => null,# BotApi
       'tp'        => null,# Mustache
       'messages'  => null,# [lang:[index:text]]
@@ -719,15 +742,20 @@ class Bot extends StaticInit {
       'items'     => null,# BotCommands
       'user'      => null,# BotUser
     ]);
-    # attach api (telegram)
+    # set telegram api {{{
     if (($bot->api = BotApi::init($bot)) === null)
     {
-      self::$ERROR = "failed to initialize api: $botid";
+      $bot->logError("failed to initialize api: $botid");
       return null;
     }
-    # attach template parser
-    # {{{
-    require_once $incdir.'mustache.php';
+    # }}}
+    # set template parser {{{
+    if (!file_exists($a = $incdir.'mustache.php'))
+    {
+      $bot->logError("file not found: $a");
+      return null;
+    }
+    require_once $a;
     $a = [
       'logger'  => (function(string $msg, int $level) use ($bot) {
         $bot->logMustache($msg, $level);
@@ -740,15 +768,14 @@ class Bot extends StaticInit {
     ];
     if (($bot->tp = Mustache::init($a)) === null)
     {
-      self::$ERROR = "failed to initialize template parser";
+      $bot->logError("failed to initialize mustache");
       return null;
     }
     # }}}
-    # attach messages
-    # {{{
+    # set messages {{{
     if (file_exists($a = $datadir.'messages.json'))
     {
-      # load precompiled
+      # precompiled
       $bot->messages = json_decode(file_get_contents($a), true);
     }
     else
@@ -769,8 +796,7 @@ class Bot extends StaticInit {
       $b && file_put_contents($a, $b);
     }
     # }}}
-    # attach button captions
-    # {{{
+    # set button captions {{{
     if (file_exists($a = $datadir.'buttons.json'))
     {
       # load precompiled
@@ -791,19 +817,32 @@ class Bot extends StaticInit {
       $b && file_put_contents($a, $b);
     }
     # }}}
-    # attach commands items
+    # set command items {{{
     if (($bot->items = BotCommands::init($bot)) === null) {
       return null;
     }
-    # initialize static props
-    if (self::$INIT)
+    # }}}
+    # set font file paths {{{
+    $a = 'font'.DIRECTORY_SEPARATOR;
+    foreach ($bot->opts->fonts as &$b)
     {
-      self::$INIT = false;
-      self::$IS_WIN = (
-        defined('PHP_OS_FAMILY') &&
-        strncasecmp(PHP_OS_FAMILY, 'WIN', 3) === 0
-      );
+      foreach ($b as &$c)
+      {
+        if (file_exists($d = "$datadir$a$c") ||
+            file_exists($d = "$botdir$a$c") ||
+            file_exists($d = "$incdir$a$c"))
+        {
+          $c = $d;
+        }
+        else
+        {
+          $bot->logError("font not found: $c");
+          return null;
+        }
+      }
     }
+    unset($b, $c);
+    # }}}
     # complete
     return $bot;
   }
@@ -812,7 +851,7 @@ class Bot extends StaticInit {
   {
     # show commands tree
     $name = self::str_fg_color('@'.$this->opts->name, 'cyan');
-    $this->log("$name\n".$this->items->dump(2, 'cyan'));
+    $this->log("$name start\n".$this->items->dump(2, 'cyan'));
     # acquire a lock
     if (!($lock = self::file_lock($file = $this->datadir.'o.json')))
     {
@@ -830,7 +869,8 @@ class Bot extends StaticInit {
     try
     {
       # prepare
-      $this->log("$name getUpdates($timeout) loop");
+      $this->log("$name loop($timeout)");
+      $res = 0;
       $req = [
         'offset'  => 0,
         'timeout' => $timeout,
@@ -847,42 +887,44 @@ class Bot extends StaticInit {
         # process updates
         foreach ($a->result as $update)
         {
-          if (!$this->operate($update))
+          if ($res = $this->operate($update))
           {
-            # refresh api offset
+            # save api offset
             $this->api->send('getUpdates', [
               'offset'  => $update->update_id + 1,
               'timeout' => 0,
               'limit'   => 1,
             ]);
-            # restart
-            self::file_unlock($file);
-            $this->log("$name restart\n");
-            return true;
+            break 2;
           }
+          # shift offset
+          $req['offset'] = $update->update_id + 1;
         }
-        # shift offset
-        $req['offset'] = $update->update_id + 1;
       }
     }
     catch (\Exception $e) {
       $this->logException($e);
     }
-    # terminate
+    # complete
     self::file_unlock($file);
-    $this->log("$name finished\n");
-    return false;
+    if (~$res)
+    {
+      $this->log("$name stop\n");
+      return false;
+    }
+    $this->log("$name restart\n");
+    return true;
   }
   # }}}
-  function operate(object $u): bool # {{{
+  function operate(object $u): int # {{{
   {
     # construct the request object
     $req = null;
     if (isset($u->callback_query)) {
-      #$req = BotRequestCallback::init($u->callback_query);
+      $req = BotRequestCallback::init($u->callback_query);
     }
     elseif (isset($u->inline_query)) {
-      #$req = BotRequestQuery::init($u->inline_query);
+      #$req = BotRequestInline::init($u->inline_query);
     }
     elseif (isset($u->message)) {
       $req = BotRequestInput::init($u->message);
@@ -890,255 +932,11 @@ class Bot extends StaticInit {
     # reply user request and complete
     return ($req && ($res = BotUser::init($this, $req)))
       ? $res->finit()
-      : true;
-  }
-  # }}}
-  ###
-  # item {{{
-  private function userUpdate($msg) # {{{
-  {
-    # prepare
-    $item = &$this->item;
-    $id0  = $item['root']['id'];
-    $conf = &$this->user->config;
-    $msg0 = isset($conf[$id0]['_msg']) ? $conf[$id0]['_msg'] : 0;
-    # check active roots
-    if (!isset($conf['/'])) {
-      $conf['/'] = [];# nothing was active
-    }
-    elseif (!$msg0)
-    {
-      # item wasn't active, but it could be injector,
-      # in this case it must be removed
-      foreach ($conf['/'] as $a)
-      {
-        if (isset($conf[$a]['_from']) &&
-            $conf[$a]['_from'] === $id0)
-        {
-          $this->itemDetach($this->commands[$a]);
-          break;
-        }
-      }
-    }
-    elseif ($msg !== $msg0)
-    {
-      # new message replaces current
-      $this->itemDetach($item);
-    }
-    # check item is root and
-    # update configuration
-    if ($id0 === $item['id'])
-    {
-      # item only
-      $conf[$id0] = $item['config'];
-    }
-    else
-    {
-      # item and root
-      $conf[$item['id']] = $item['config'];
-      $conf[$id0] = $item['root']['config'];
-    }
-    # message
-    $conf[$id0]['_msg']  = $msg;
-    $conf[$id0]['_item'] = $item['id'];
-    $conf[$id0]['_hash'] = $item['hash'];
-    if ($msg !== $msg0)
-    {
-      # for a new message,
-      # set its creation time
-      $conf[$id0]['_time'] = time();
-      # activate item's root
-      array_unshift($conf['/'], $id0);
-    }
-    # done
-    return $this->user->changed = true;
-  }
-  # }}}
-  function itemUpdate($msg, &$item, $reportHashFail = false) # {{{
-  {
-    # CUSTOM
-    if (($a = $item['typeHandler']) && method_exists($a, 'update')) {
-      return $a::update($this, $msg, $item);
-    }
-    # STANDARD
-    # prepare
-    $root = &$item['root']['config'];
-    $a = $item['titleId'];
-    $b = $item['textContent'];
-    $c = $item['inlineMarkup'];
-    $d = hash('md4', $b.$c);
-    # check message hash
-    if ($a.$d === ($e = $root['_hash']))
-    {
-      if ($reportHashFail) {
-        $this->logError('update skipped: '.$item['id']);
-      }
-      return -1;# positive
-    }
-    # determine which API function to use,
-    # image changes when title identifier changes
-    $func = strlen($e) - strlen($d);
-    $func = ($a !== substr($e, 0, $func));
-    # determine message parameters
-    if ($func)
-    {
-      # IMAGE and TEXT
-      # {{{
-      $file = $item['titleImage'];
-      $func = 'editMessageMedia';
-      if ($file instanceof BotFile) {
-        $e = 'attach://'.$file->postname;# attachment
-      }
-      else
-      {
-        $e = $file;# file_id
-        $file = null;# not attachment
-      }
-      $res = [
-        'type'       => 'photo',
-        'media'      => $e,
-        'caption'    => $b,
-        'parse_mode' => 'HTML',
-      ];
-      $res = [
-        'chat_id'    => $this->user->chat->id,
-        'message_id' => $msg,
-        'media'      => json_encode($res),
-      ];
-      # }}}
-    }
-    else
-    {
-      # TEXT
-      # {{{
-      $file = null;
-      $func = 'editMessageCaption';
-      $res  = [
-        'chat_id'    => $this->user->chat->id,
-        'message_id' => $msg,
-        'caption'    => $b,
-        'parse_mode' => 'HTML',
-      ];
-      # }}}
-    }
-    if ($c) {# add MARKUP
-      $res['reply_markup'] = $c;
-    }
-    # send
-    if (!($b = $this->api->send($func, $res, $file)) || $b === true)
-    {
-      $this->logError($func.'('.$item['id'].') failed: '.$this->api->error);
-      $this->logError($res);
-      return 0;
-    }
-    # set message hash
-    $item['hash'] = $a.$d;
-    # set file_id
-    if ($a && $file)
-    {
-      $c = end($b->result->photo);
-      $this->setFileId($a, $c->file_id);
-    }
-    # complete
-    return $this->userUpdate($b->result->message_id);
-  }
-  # }}}
-  function itemZap($msg) # {{{
-  {
-    # try simply delete
-    $a = $this->api->send('deleteMessage', [
-      'chat_id'    => $this->user->chat->id,
-      'message_id' => $msg,
-    ]);
-    if ($a)
-    {
-      $this->log("message $msg deleted");
-      return true;
-    }
-    # check result details
-    if (($a = $this->api->result) &&
-        isset($a->error_code) &&
-        $a->error_code === 400)
-    {
-      # message is too old for deletion,
-      # it should be "nulified": image/text/markup blanked,
-      # but the message type is unknown, so,
-      # try common
-      if ($this->imageZap($msg))
-      {
-        $this->log("message $msg nulified");
-        return true;
-      }
-      # eh..
-    }
-    return false;
-  }
-  # }}}
-  function itemDetach(&$item = null, $wipeConfig = false) # {{{
-  {
-    # prepare
-    if (($item === null) && !($item = &$this->item)) {
-      return true;
-    }
-    $conf = &$this->user->config;
-    $id1  = $item['id'];
-    $id0  = isset($item['root']) ? $item['root']['id'] : $id1;
-    # check root attached and active
-    if (!isset($conf[$id0]) || !($root = &$conf[$id0]) ||
-        !isset($root['_msg']) || !$root['_msg'])
-    {
-      return false;
-    }
-    # report
-    $this->log("detaching /$id0");
-    # telegram allows to delete only "fresh" messages
-    # check message timestamp to determine proper operation
-    if (($a = time() - $root['_time']) >= 0 &&
-        ($a < self::MESSAGE_LIFETIME))
-    {
-      # DELETE
-      # primary message
-      $a = [
-        'chat_id'    => $this->user->chat->id,
-        'message_id' => $root['_msg'],
-      ];
-      if (!$this->api->send('deleteMessage', $a)) {
-        $this->logError($this->api->error);
-      }
-      # item or type specific
-      if ((($a = $item['itemHandler']) && method_exists($a, 'delete')) ||
-          (($a = $item['typeHandler']) && method_exists($a, 'delete')))
-      {
-        $a::delete($this, $item);
-      }
-    }
-    else
-    {
-      # ZAP
-      # primary message
-      $a = $this->imageZap($msg);
-      # item or type specific
-      if ((($a = $item['itemHandler']) && method_exists($a, 'zap')) ||
-          (($a = $item['typeHandler']) && method_exists($a, 'zap')))
-      {
-        $a::zap($this, $item);
-      }
-    }
-    # deactivate item's root
-    if (isset($conf['/']) && ($a = array_search($id0, $conf['/'])) !== false) {
-      array_splice($conf['/'], $a, 1);
-    }
-    # reset message configuration
-    $root['_msg']  = $root['_time'] = 0;
-    $root['_item'] = $root['_hash'] = '';
-    if ($wipeConfig && isset($conf[$id1])) {
-      $conf[$id1] = [];
-    }
-    # complete
-    return $this->user->changed = true;
+      : 0;
   }
   # }}}
   # }}}
+  # TODO
   # task manager {{{
   private function userConfigAttach() # {{{
   {
@@ -1415,203 +1213,6 @@ class Bot extends StaticInit {
   }
   # }}}
   # }}}
-  # image {{{
-  public function imageTitle( # {{{
-    $text,          # header
-    $bread  = '',   # breadcrumb (tree path)
-    $color  = null, # [foreground,background] RGBs
-    $font   = '',   # font (full path to a file)
-    $asFile = 1     # result is BotFile (1=temporary, 2=persistent)
-  )
-  {
-    # prepare {{{
-    # get font and color
-    if (!$font) {
-      $font = $this->fontdir.$this->opts['fonts']['title'];
-    }
-    if (!$color) {
-      $color = $this->opts['colors'];
-    }
-    # create image (RGB color)
-    if (($img = @imagecreatetruecolor(640, 160)) === false)
-    {
-      $this->log('imagecreatetruecolor() failed');
-      return null;
-    }
-    # get colors
-    $fg = $color[0];
-    $bg = $color[1];
-    # allocate colors and fill the background
-    if ((($bg = imagecolorallocate($img, $bg[0], $bg[1], $bg[2])) === false) ||
-        (($fg = imagecolorallocate($img, $fg[0], $fg[1], $fg[2])) === false) ||
-        !imagefill($img, 0, 0, $bg))
-    {
-      $this->log('imagecolorallocate() failed');
-      imagedestroy($img);
-      return null;
-    }
-    # }}}
-    # draw HEADER {{{
-    if ($text)
-    {
-      # determine proper font size of a text,
-      # that should fit into x:140-500,y:0-160 area
-      # NOTE: font size points not pixels? (seems not!)
-      $size = 64;#72;
-      while ($size > 6)
-      {
-        # get the bounding box
-        if (!($a = imagettfbbox($size, 0, $font, $text)))
-        {
-          $this->log('imagettfbbox() failed');
-          imagedestroy($img);
-          return null;
-        }
-        # check it fits width and height
-        if ($a[2] - $a[0] <= 360 &&
-            $a[1] - $a[7] <= 160)
-        {
-          break;
-        }
-        # reduce and try again
-        $size -= 2;
-      }
-      # determine coordinates (center align)
-      $x = 140 + intval((360 - $a[2]) / 2);
-      #$y = 160 / 2 + intval(($a[1] - $a[7]) / 2) - 8;
-      $y = 160 / 2 + 24;
-      # apply
-      if (!imagettftext($img, $size, 0, $x, $y, $fg, $font, $text))
-      {
-        $this->log('imagettftext() failed');
-        imagedestroy($img);
-        return null;
-      }
-    }
-    # }}}
-    # draw BREADCRUMB {{{
-    if ($bread)
-    {
-      $x = 140;
-      $y = 32;
-      if (!imagettftext($img, 16, 0, $x, $y, $fg, $font, $bread))
-      {
-        $this->log('imagettftext() failed');
-        imagedestroy($img);
-        return null;
-      }
-    }
-    # }}}
-    return $asFile
-      ? $this->imageToFile($img, ($asFile === 1))
-      : $img;
-  }
-  # }}}
-  public function imageToFile($img, $temp = true) # {{{
-  {
-    # create temporary image file
-    if (!($file = tempnam(sys_get_temp_dir(), 'img')) ||
-        !imagejpeg($img, $file))
-    {
-      $this->log("imagejpeg($file) failed");
-      imagedestroy($img);
-      return null;
-    }
-    imagedestroy($img);
-    return new BotFile($file, $temp);
-  }
-  # }}}
-  private function imageZap($msg) # {{{
-  {
-    # get or create empty image
-    if (isset($this->fids['empty']))
-    {
-      $img = $this->fids['empty'];
-      $media = false;
-    }
-    else
-    {
-      $img = $this->createEmptyImage(0);
-      $media = 'attach://'.$img->postname;
-    }
-    # assemble parameters
-    $a = [
-      'chat_id'      => $this->user->chat->id,
-      'message_id'   => $msg,
-      'media'        => json_encode([
-        'type'       => 'photo',
-        'media'      => ($media ?: $img),
-        'caption'    => '',
-      ]),
-      'reply_markup' => '',
-    ];
-    # send
-    if ($media)
-    {
-      # with file attachment
-      $a = $this->api->send('editMessageMedia', $a, $img);
-    }
-    else
-    {
-      # with file id
-      $a = $this->api->send('editMessageMedia', $a);
-    }
-    # check the result
-    if (!$a || $a === true)
-    {
-      $this->log('editMessageMedia failed: '.$this->api->error);
-      return false;
-    }
-    # update file_id
-    if ($media)
-    {
-      $b = end($a->result->photo);
-      $this->setFileId('empty', $b->file_id);
-    }
-    # done
-    return true;
-  }
-  # }}}
-  private function createEmptyImage($variant) # {{{
-  {
-    # create image (RGB color)
-    if (($img = @imagecreatetruecolor(640, 160)) === false)
-    {
-      $this->log('imagecreatetruecolor() failed');
-      return null;
-    }
-    # get colors
-    $fg = $this->opts['colors'][0];
-    $bg = $this->opts['colors'][1];
-    # allocate colors and fill the background
-    if ((($bg = imagecolorallocate($img, $bg[0], $bg[1], $bg[2])) === false) ||
-        (($fg = imagecolorallocate($img, $fg[0], $fg[1], $fg[2])) === false) ||
-        !imagefill($img, 0, 0, $bg))
-    {
-      $this->log('imagecolorallocate() failed');
-      imagedestroy($img);
-      return null;
-    }
-    # DRAW VARIANT
-    if ($variant)
-    {
-      # TODO
-      # ...
-    }
-    # create temporary image file
-    if (!($file = tempnam(sys_get_temp_dir(), 'bot')) ||
-        !imagejpeg($img, $file))
-    {
-      $this->log('imagejpeg() failed');
-      imagedestroy($img);
-      return null;
-    }
-    # done
-    imagedestroy($img);
-    return new BotFile($file);
-  }
-  # }}}
-  # }}}
   function render_content($text, $data = []) # {{{
   {
     ### {{current}}, apply specific template trims
@@ -1627,7 +1228,7 @@ class Bot extends StaticInit {
   }
   # }}}
 }
-# HELPERS {{{
+# BASE {{{
 class BotConfig extends StaticInit implements \JsonSerializable {
   # {{{
   static $DEFS = [
@@ -1637,21 +1238,20 @@ class BotConfig extends StaticInit implements \JsonSerializable {
     'name'   => '',
     'admins' => [],
     'colors' => [
-      [240,248,255],# foreground (aliceblue)
-      [0,0,0],      # background (black)
+      'title' => [[240,248,255],[0,0,0]],
     ],
     'fonts' => [
-      'title'      => 'Cuprum-Bold.ttf',
-      'breadcrumb' => 'Bender-Italic.ttf',
+      'title' => ['Cuprum-Bold.ttf','Bender.ttf'],
     ],
-    'forceLang' => '',
-    'saveAccessLog' => false,
-    'saveErrorLog' => false,
-    'useFileIds' => true,
-    'replyFailedCommand' => false,
-    'gracefulCallbacks' => true,
-    'wipeUserInput' => true,
-    'debugTasks' => false,
+    'forceLang'            => '',
+    'saveAccessLog'        => false,
+    'saveErrorLog'         => false,
+    'useFileIds'           => false,
+    'showBreadcrumb'       => true,
+    'replyFailedCommand'   => false,
+    'replyIgnoredCallback' => true,
+    'wipeUserInput'        => true,
+    'debugTasks'           => false,
     'sfx' => true,
     # }}}
   ];
@@ -1725,8 +1325,8 @@ class BotCommands extends StaticInit {
       }
     }
     unset($e);
-    # store refined items
-    if (!$b)
+    # store refined items (not for master)
+    if (!$b && !$bot->isMaster)
     {
       $b = json_encode($c, JSON_UNESCAPED_UNICODE);
       $b && file_put_contents($a, $b);
@@ -1790,12 +1390,83 @@ class BotCommands extends StaticInit {
   }
   # }}}
 }
+class BotCommand extends StaticInit {
+  # {{{
+  # command syntax: /<item>!<func> <args>
+  const EXPR = '|^\/((\w+)([:/-](\w+)){0,8})(!(\w{1,})){0,1}( (.{1,})){0,1}$|';
+  const MAX_SIZE = 200;
+  static function parse(string $exp, bool $loose = true): ?self
+  {
+    # check correct size
+    if (($a = strlen($exp)) < 2 || $a > self::MAX_SIZE) {
+      return null;
+    }
+    # determine bot name (specified as postfix in groups)
+    $bot = (($a = strrpos($exp, '@')) !== false)
+      ? substr($exp, 0, $a)
+      : '';
+    # check
+    if ($loose && $exp[0] === '!')
+    {
+      # parse simplified expression
+      $item = '';
+      if ($a = strpos($exp, ' '))
+      {
+        $func = substr($exp, 1, $a);
+        $args = explode(',' substr($exp, $a + 1));
+      }
+      else
+      {
+        $func = substr($exp, 1);
+        $args = [];
+      }
+    }
+    else
+    {
+      # parse full-fledged command
+      $a = null;
+      if (!preg_match_all(self::EXPR, $exp, $a)) {
+        return null;
+      }
+      # extract
+      $item = $a[1][0];
+      $func = $a[6][0];
+      $args = strlen($a[8][0])
+        ? explode(',', $a[8][0])
+        : null;
+      # check deep link (tg://<BOT_NAME>?start=<item>)
+      if ($item === 'start' && !$func && $args)
+      {
+        $item = $args[0];
+        $args = null;
+      }
+      # remove separators [:],[-],[/]
+      if (strpos($item, ':')) {
+        $item = str_replace(':', '', $item);
+      }
+      elseif (strpos($item, '-')) {
+        $item = str_replace('-', '', $item);
+      }
+      elseif (strpos($item, '/')) {
+        $item = str_replace('/', '', $item);
+      }
+    }
+    # construct
+    return new static([
+      'id'   => $item,
+      'func' => $func,
+      'args' => $args,
+      'bot'  => $bot,
+    ]);
+  }
+  # }}}
+}
 class BotApi extends StaticInit {
   static function init(object $bot): ?self # {{{
   {
     static $URL = 'https://api.telegram.org/bot';
     # create curl instance
-    if (!function_exists('curl_init') || !($curl = curl_init())) {
+    if (!($curl = curl_init())) {
       return null;
     }
     # configure
@@ -1900,357 +1571,35 @@ class BotFile extends \CURLFile {
 }
 class BotFileId extends StaticInit {
   # {{{
-  static function init(string $file): ?self
+  static function init(string $file, bool $enabled): ?self
   {
     return new static([
-      'bot'  => $bot,
-      'file' => $file,
-      'data' => Bot::file_get_json($file),
+      'enabled' => $enabled,
+      'file'    => $file,
+      'data'    => Bot::file_get_json($file),
     ]);
   }
   function get(string $file): string
   {
-    return ($this->bot->opts->useFileId && isset($this->data[$file]))
+    return ($this->enabled && isset($this->data[$file]))
       ? $this->data[$file]
       : '';
   }
   function set(string $file, string $id): void
   {
     $this->data[$file] = $id;
-    if ($this->bot->opts->useFileId && Bot::file_lock($this->file))
+    if ($this->enabled && Bot::file_lock($this->file))
     {
       Bot::file_set_json($this->file, $this->data);
-      Bot::file_unlock($a);
+      Bot::file_unlock($this->file);
     }
-  }
-  # }}}
-}
-# }}}
-# REQUEST/RESPONSE {{{
-class BotRequestInput extends StaticInit {
-  static function init(object $msg): ?object # {{{
-  {
-    if (!isset($msg->from)) {
-      return null;
-    }
-    if (($text = isset($msg->text) ? $msg->text : '') &&
-        ($text[0] === '/'))
-    {
-      return BotRequestInputCommand::init($msg);
-    }
-    return new static([
-      'from' => $msg->from,
-      'chat' => $msg->chat,
-      'msg'  => $msg->message_id,
-      'text' => $text,
-    ]);
-  }
-  # }}}
-  function reply(object $user): bool # {{{
-  {
-    $user->bot->log('input');
-    return true;
-    /***
-    static $types = ['form'];
-    # prepare
-    $conf = &$this->user->config;
-    $lang = $this->user->lang;
-    $chat = $this->user->chat;
-    # check active roots
-    if (!array_key_exists('/', $conf) ||
-        !count($conf['/']))
-    {
-      return false;# NO ACTIVE ROOT
-    }
-    # determine active item's identifier
-    $a = $conf['/'][0];
-    if (!array_key_exists('_item', $conf[$a]) ||
-        !($a = $conf[$a]['_item']))
-    {
-      return false;# NO ACTIVE ITEM
-    }
-    # get item and check if it accepts input
-    if (!($item = $this->itemGet($a)) ||
-        !in_array($item['type'], $types))
-    {
-      return false;# INPUT IS NOT ACCEPTED
-    }
-    # render item with the given input
-    $res = '';
-    if (!($item = $this->itemAttach($item, $res, $text)) || $res)
-    {
-      # report problems
-      if ($res && is_string($res)) {
-        $this->logError($res);
-      }
-      return false;
-    }
-    # update message that receives input
-    $res = $item['root']['config']['_msg'];
-    $this->itemUpdate($res, $item);
-    # done
-    return false;
-    /***/
-  }
-  # }}}
-}
-class BotRequestInputCommand extends StaticInit {
-  static function init(object $msg): self # {{{
-  {
-    return new static([
-      'msg'  => $msg,
-      'from' => $msg->from,
-      'chat' => $msg->chat,
-    ]);
-  }
-  # }}}
-  function reply(object $user): bool # {{{
-  {
-    # prepare
-    $bot  = $user->bot;
-    $text = $this->msg->text;
-    /***
-    # handle special command
-    switch ($text) {
-    case '/reset':
-      # {{{
-      # check allowed
-      if (!$user->isAdmin)
-      {
-        $this->log("access denied: $text");
-        return 1;
-      }
-      # check replied
-      if (!isset($this->msg->reply_to_message))
-      {
-        $this->log("$text: replied not found");
-        return 1;
-      }
-      # get message and item ids
-      $a = $this->msg->reply_to_message->message_id;
-      if (!($b = $conf->getMessageItemId($a)))
-      {
-        $this->log("$text: message $a is not rooted");
-        return 1;
-      }
-      $this->log("$text: $a => $b");
-      # get and remove item
-      ($item = $this->itemGet($b)) && $this->itemDetach($item, true);
-      # compose navigation command
-      $text = '/'.$b;
-      # }}}
-      break;
-    case '/restart':
-      # {{{
-      if ($this->user->is_admin)
-      {
-        $this->log("$text\n");
-        return 0;
-      }
-      return 1;
-      # }}}
-    }
-    /***/
-    # handle item command
-    if (!($item = $user->command($text, true)) || !$item->send())
-    {
-      $bot->logError('command failed: '.$text);
-      $bot->opts->replyFailedCommand && $bot->api->send('sendMessage', [
-        'chat_id' => $this->chat->id,
-        'text'    => $user->messages[1].': '.$text,
-      ]);
-    }
-    # cleanup
-    if ($bot->opts->wipeUserInput && (!$item || !($item instanceof BotItemIgnore)))
-    {
-      $bot->api->send('deleteMessage', [
-        'chat_id'    => $this->chat->id,
-        'message_id' => $this->msg->message_id,
-      ]);
-    }
-    return true;
-  }
-  # }}}
-}
-class BotRequestCallback extends StaticInit {
-  # {{{
-  static function init($q)
-  {
-    if (!isset($q->from) || !isset($q->message)) {
-      return null;
-    }
-    if (isset($q->game_short_name)) {
-      #return BotRequestGame::init($q);
-      return null;
-    }
-    if (!isset($q->data) || $q->data[0] !== '/') {
-      #return BotRequestZap::init($q);
-      return null;
-    }
-    return new static([
-      'from'  => $q->from,
-      'chat'  => $q->message->chat,
-      'msg'   => $q->message->message_id,
-      'query' => $q->id,
-      'data'  => $q->data,
-    ]);
-  }
-  function finit($user)
-  {
-    $id = $this->getMessageItemId($msg);
-    $isRooted = !!$id;
-    # attach item
-    if (!($a = $this->itemAttach($text)))
-    {
-      # failed, item message should be removed/nullified
-      $isRooted && $this->itemDetach();
-      !$isRooted && $this->itemZap($msg);
-      return ['text'=>$this->messages[$lang][2],'show_alert'=>true];
-    }
-    elseif ($a === -1) {# nop
-      return [];
-    }
-    # get item and it's root configuration
-    $item = &$this->item;
-    $root = &$item['root']['config'];
-    $msg1 = isset($root['_msg']) ? $root['_msg'] : 0;
-    # determine if message is fresh
-    $isFresh = ($msg1 &&
-                ($a = time() - $root['_time']) >= 0 &&
-                ($a < self::MESSAGE_LIFETIME));
-    # determine if the item has re-activated input
-    if (!($isNew = $item['isNew']))
-    {
-      if ($root && $item['isInputAccepted'])
-      {
-        # make sure it's the first from the start
-        if (!array_key_exists('/', $userCfg) ||
-            $userCfg['/'][0] !== $item['root']['id'])
-        {
-          $isNew = true;
-        }
-      }
-    }
-  }
-  # }}}
-  function reply() # {{{
-  {
-    # reply {{{
-    if (!$isFresh || $isNew)
-    {
-      # recreate message
-      $res = $this->itemSend();
-    }
-    else
-    {
-      # update message
-      $res = $this->itemUpdate($msg, $item);
-    }
-    # nullify non-rooted message
-    if (!$isRooted)
-    {
-      $this->log('unrooted, zap '.$msg);
-      $this->itemZap($msg);
-    }
-    # success
-    if ($res) {
-      return [];
-    }
-    # failure
-    return [
-      'text' => $this->messages[$lang][2],
-      'show_alert' => true,
-    ];
-    # }}}
-    return [];
-    # check message
-    if (!isset($q->message) || !$q->message->message_id) {
-      return -1;
-    }
-    # operate
-    $answer = ['callback_query_id' => $q->id];
-    $result = isset($q->game_short_name)
-      ? $this->replyGameCallback($q)
-      : (isset($q->data)
-        ? $this->replyDataCallback($q)
-        : null);
-    # check
-    if ($a === null) {# no traction, ignore
-      return -1;
-    }
-    # complete
-    if (!$this->api->send('answerCallbackQuery', array_merge($answer, $result))) {
-      $this->logError($this->api->error);
-    }
-    return 1;
-  }
-  # }}}
-}
-class BotRequestGame extends StaticInit {
-  # {{{
-  static function init()
-  {
-    return new static([
-    ]);
-  }
-  function reply()
-  {
-    /***
-    if (isset($q->game_short_name) &&
-        ($a = $q->game_short_name))
-    {
-      $this->log('game callback: '.$a);
-      if ($a = $this->getGameUrl($a, $msg))
-      {
-        return [
-          'url' => $a,
-          'cache_time' => 0,
-        ];
-      }
-      else
-      {
-        return [
-          'text' => $this->messages[$lang][0],
-          'show_alert' => true,
-        ];
-      }
-    }
-    /***/
-  }
-  # }}}
-}
-class BotRequestQuery extends StaticInit {
-  # {{{
-  static function init(object $q): ?self
-  {
-    return null;
-    return new static([
-    ]);
-  }
-  function reply()
-  {
-    $this->log('inline query!!!');
-    /***
-    $out = (string)rand();
-    $results[] = [
-      "type"  => "article",
-      "id"    => $out,
-      "title" => $out,
-      "input_message_content" => [
-        "message_text"             => $out,
-        "disable_web_page_preview" => true
-      ],
-    ];
-    $client->answerInlineQuery($u->inline_query->id, $results, 1, false);
-    unset($results);
-    /***/
   }
   # }}}
 }
 # }}}
 # USER {{{
 class BotUser extends StaticInit {
-  # {{{
+  # initializer {{{
   static function init(object $bot, object $request): ?self
   {
     # prepare
@@ -2306,6 +1655,7 @@ class BotUser extends StaticInit {
       'messages' => &$bot->messages[$lang],
       'dir'      => $dir,
       'config'   => null,
+      'item'     => null,
       'changed'  => false,
     ]);
     # set configuration
@@ -2317,15 +1667,13 @@ class BotUser extends StaticInit {
     # attach and complete
     return $bot->user = $user;
   }
-  function finit(): bool
+  function finit(): int
   {
-    # reply
+    # reply and detach
     $res = $this->request->reply($this);
-    # detach
     $this->config->finit();
     $this->config = null;
     $this->bot->user = null;
-    # complete
     return $res;
   }
   function __destruct()
@@ -2340,80 +1688,41 @@ class BotUser extends StaticInit {
   # }}}
   function command(string $exp): ?object # {{{
   {
-    # prepare
-    $bot  = $this->bot;
-    $none = $this->isGroup
-      ? new BotItemIgnore()
-      : null;
-    # check correct size
-    if (!($a = strlen($exp)) || $a > 200)
+    # create command
+    if (!($cmd = BotCommand::parse($exp, false)))
     {
-      $bot->logWarn("incorrect expression size: $a");
-      return $none;
+      $this->bot->logWarn("incorrect command: $exp");
+      return $this->isGroup
+        ? new BotItemIgnore()
+        : null;
     }
-    # check correct group postfix (@botname)
-    if ($this->isGroup && ($a = strrpos($exp, '@')) !== false)
-    {
-      # check addressed to the bot
-      if (substr($exp, $a + 1) !== $bot->opts->name) {
-        return $none;
-      }
-      # correct
-      $exp = substr($exp, 0, $a);
+    elseif ($this->isGroup && $cmd->bot && $cmd->bot !== $this->bot->opts->name) {
+      return new BotItemIgnore();
     }
-    # parse
-    $a = null;
-    if (!preg_match_all($bot::COMMAND_EXP, $exp, $a))
-    {
-      $bot->logWarn("incorrect expression syntax: $exp");
-      return $none;
-    }
-    # extract
-    $id   = $a[1][0];
-    $func = $a[6][0];
-    $args = strlen($a[8][0])
-      ? explode(',', $a[8][0])
-      : null;
-    # check deep link invocation (tg://<BOT_NAME>?start=<item>)
-    if ($id === 'start' && !$func && $args)
-    {
-      $id   = $args[0];
-      $args = null;
-    }
-    # remove identifier separators [:],[-],[/]
-    if (strpos($id, ':')) {
-      $id = str_replace(':', '', $id);
-    }
-    elseif (strpos($id, '-')) {
-      $id = str_replace('-', '', $id);
-    }
-    elseif (strpos($id, '/')) {
-      $id = str_replace('/', '', $id);
-    }
-    # check item exists
-    if (!isset($bot->items->map[$id]))
-    {
-      $bot->logWarn("item not found: $exp");
-      return $none;
-    }
-    # report
-    $bot->log($exp);
-    # render and complete
-    return $this->render($bot->items->map[$id], $func, $args);
+    # complete
+    $this->bot->log($exp);
+    return $this->render($cmd);
   }
   # }}}
-  function render(object $item, string $func, ?array $args): ?object # {{{
+  function render(object $cmd): ?object # {{{
   {
-    # attach configuration
-    if (!isset($this->config['*'][$id = $item->id]))
+    # prepare
+    $bot  = $this->bot;
+    $map  = $bot->items->map;
+    $id   = $cmd->id;
+    $func = $cmd->func;
+    $args = $cmd->args;
+    # check item exists
+    if (!isset($map[$id]))
     {
-      $this->config['*'][$id] = [];
-      $this->changed = true;
+      $bot->logWarn("item not found: $exp");
+      return $this->isGroup ? new BotItemIgnore() : null;
     }
-    $item->config = &$this->config['*'][$id];
-    # handle common function
+    $item = $
+    # attach configuration
+    $item->config = $this->config->getItem($item);
+    $item->root = $this->config->getRoot($item);
     /***
-    # handle common function
     switch ($func) {
     case 'inject':
       # {{{
@@ -2495,8 +1804,8 @@ class BotUser extends StaticInit {
     /***/
     # attach language specific texts
     $s = &$item->struct;
-    if (isset($s['text'][$lang])) {
-      $item->text = &$s['text'][$lang];
+    if (isset($s['text'][$this->lang])) {
+      $item->text = &$s['text'][$this->lang];
     }
     else {
       $item->text = &$s['text']['en'];
@@ -2515,41 +1824,33 @@ class BotUser extends StaticInit {
     else {
       $file = '';
     }
-    # invoke handler
-    if (!$item->render($user, $func, $args)) {
+    # render item message
+    if (!($item->msg = $item->render($this, $func, $args))) {
       return null;
     }
     # detach data
-    if ($file && ($item->changed & 1))
+    if ($file && ($item->changed & 1) &&
+        !Bot::file_set_json($file, $item->data))
     {
-      if ($item->data)
-      {
-        if (!($a = json_encode($item->data, JSON_UNESCAPED_UNICODE)))
-        {
-          $this->bot->logWarn('json_encode('.$item->id.') failed');
-          return null;
-        }
-        file_put_contents($file, $a);
-      }
-      else {
-        @unlink($file);
-      }
+      $this->bot->logWarn("file_set_json($file) failed");
     }
     # complete
     return $item;
   }
   # }}}
-  function markup(object $item, array &$rows, ?array $ext = null): string # {{{
+  function markup(object $item, array &$rows, ?array &$ext = null): string # {{{
   {
     # prepare
+    static $NOP = ['text'=>' ','callback_data'=>'!'];
     $bot  = $this->bot;
-    $id   = $item->id;
+    $lang = $this->lang;
+    $map  = $bot->items->map;
     $mkup = [];
     # iterate array of arrays (rows)
     foreach ($rows as &$a)
     {
       $row = [];
-      foreach ($a as &$b)
+      foreach ($a as $b)
       {
         # check ready
         if (!is_string($b))
@@ -2564,118 +1865,127 @@ class BotUser extends StaticInit {
         # check nop
         if ($c === 1)
         {
-          $row[] = ['text'=>' ','callback_data'=>'!'];
+          $row[] = $NOP;
           continue;
         }
-        # check variant
-        $c = $b[0];
-        $b = substr($b, 1);
-        switch ($c) {
-        case '/':
-          # item navigation {{{
-          # determine goto caption
-          $c = isset($text[$b]) ? $text[$b] : $this->buttons['go'];
-          $d = '/'.substr($d, 3);
-          $c = $this->tp->render($c, [
-            'text' => str_replace(':', '/', $d)
-          ]);
-          # compose nav button
-          $row[] = ['text'=>$c,'callback_data'=>$d];
-          continue;
-          # }}}
-          break;
-        case '!':
-          # item callback {{{
-          # callback button _
-          # check goto command (navigation)
-          # determine default caption
-          $c = isset($text[$b])
-            ? $text[$b]
-            : (isset($this->buttons[$d])
-              ? $this->buttons[$d]
-              : (isset($text[$d])
-                ? $text[$d]
-                : $d));
-          # check common commands
-          if ($d === 'play')
+        # check operation scope
+        if ($b[0] !== '!') {
+          # OUTER {{{
+          # determine item id and function
+          if ($c = strpos($b, '!'))
           {
-            # play button (game message)
-            $row[] = ['text'=>$c,'callback_game'=>null];
-            continue;
-          }
-          elseif ($d === 'up')
-          {
-            # {{{
-            # determine caption variant
-            if ($item['parent'] ||
-                array_key_exists('_from', $item['config']))
-            {
-              # BREADCRUMB to the root
-              $e = $this->itemBreadcrumb($item, $lang, true);
-            }
-            else
-            {
-              # CLOSE button (message will be deleted)
-              $e = $this->messages[$lang][10];
-              $c = $this->buttons['close'];
-            }
-            $c = $this->tp->render($c, ['text'=>$e]);
-            # }}}
-          }
-          elseif (isset($this->buttons[$d]))
-          {
-            # {{{
-            if ($ext)
-            {
-              # do not render this element
-              if (!isset($ext[$d])) {
-                continue;
-              }
-              # render empty nop
-              if (!$ext[$d])
-              {
-                $row[] = ['text'=>' ','callback_data'=>'!'];
-                continue;
-              }
-              # render specified value
-              $c = $this->tp->render($c, ['x'=>$ext[$d]]);
-            }
-            else
-            {
-              # render without extras
-              $c = $this->tp->render($c, [
-                'x'=>(isset($text[$d]) ? $text[$d] : '')
-              ]);
-            }
-            # }}}
-          }
-          # complete creation
-          $d = '/'.$id.'!'.$d;
-          $row[] = ['text'=>$c,'callback_data'=>$d];
-          # }}}
-          break;
-        default:
-          # child item navigation {{{
-          if ($item['items'] && isset($item['items'][$b]))
-          {
-            # child goto
-            $c = isset($text[$b]) ? $text[$b] : $b;
-            $c = $this->tp->render($this->buttons['go'], ['text'=>$c]);
-            $d = '/'.$item['id'].':'.$b;
+            $d = substr($b, 0, $c);
+            $b = substr($b, $c);
           }
           else
           {
-            # NOP
-            $c = ' ';
-            $d = '!';
+            $d = $b;
+            $b = '';
           }
-          $row[] = ['text'=>$c,'callback_data'=>$d];
+          $d = ($d[0] === '/')
+            ? substr($d, 1)# exact
+            : $item->id.$d;# direct child
+          # check exists
+          if (!isset($map[$d])) {
+            continue;
+          }
+          # get caption template
+          $c = isset($item->text[$d])
+            ? $item->text[$d]
+            : $bot->buttons['open'];
+          # get caption
+          $e = $map[$d];
+          $e = isset($e->text[$lang]['@'])
+            ? $e->text[$lang]['@']
+            : $e->name;
+          # compose
+          $row[] = [
+            'text' => $bot->tp->render($c, $e),
+            'callback_data' => "/$d$b"
+          ];
+          continue;
           # }}}
-          break;
         }
+        # INNER {{{
+        # get function name
+        $d = ($d = strpos($b, ' '))
+          ? substr($b, 1, $d)
+          : substr($b, 1);
+        # get caption template
+        $c = isset($item->text["!$d"])
+          ? $item->text["!$d"]
+          : (isset($bot->buttons[$d])
+            ? $bot->buttons[$d]
+            : $d);
+        # check common
+        if ($d === 'play')
+        {
+          # {{{
+          $c = $bot->tp->render($c, (isset($item->text[$d])
+            ? $item->text[$d]
+            : $this->messages[9]
+          ));
+          $row[] = ['text'=>$c,'callback_game'=>null];
+          # }}}
+          continue;
+        }
+        if ($d === 'up')
+        {
+          # {{{
+          if ($e = $item->parent)
+          {
+            # upward navigation
+            $e = isset($e->text[$lang]['@'])
+              ? $e->text[$lang]['@']
+              : $e->name;
+          }
+          else
+          {
+            # closeup
+            $e = $this->messages[10];
+            $d = 'close';
+            $c = isset($item->text[$d])
+              ? $item->text[$d]
+              : $bot->buttons[$d];
+          }
+          $row[] = [
+            'text' => $bot->tp->render($c, $e),
+            'callback_data' => "!$d"
+          ];
+          # }}}
+          continue;
+        }
+        # check extras
+        # {{{
+        if ($ext && array_key_exists($d, $ext))
+        {
+          # check skip
+          if (($e = $ext[$d]) === null) {
+            continue;
+          }
+          # check empty/nop
+          if ($e === false)
+          {
+            $row[] = $NOP;
+            continue;
+          }
+        }
+        elseif (isset($item->text[$d])) {
+          $e = $item->text[$d];
+        }
+        else {
+          $e = '';
+        }
+        # }}}
+        # compose
+        $row[] = [
+          'text' => $bot->tp->render($c, $e),
+          'callback_data' => $b
+        ];
+        # }}}
       }
-      # add
-      count($row) && ($mkup[] = $row);
+      # accumulate
+      $row && ($mkup[] = $row);
     }
     # complete
     return $mkup
@@ -2683,94 +1993,587 @@ class BotUser extends StaticInit {
       : '';
   }
   # }}}
-  function breadcrumb(&$item, $lang = '', $short = false) # {{{
+  function send(object $item): bool # {{{
   {
-    # determine first crumb
-    $crumb = (!$item['parent'] && isset($item['config']['_from']))
-      ? $this->itemGet($item['config']['_from'])
-      : $item['parent'];
-    # assemble
-    $bread = '';
-    if ($short)
+    # create new root
+    $root = BotUserConfigRoot::init($this, $item);
+    # send rendered messages
+    $this->bot->log($item->id, 0, ['send']);
+    foreach ($item->msg as &$a)
     {
-      if ($crumb)
+      if (($root->msg[] = $item::send($this, $a)) === 0) {
+        return false;
+      }
+      $root->hash[] = hash('md4', json_encode($a));
+    }
+    # replace previous root
+    $item->root && $this->delete($item->root);
+    $this->config->setRoot($item->root = $root);
+    # complete
+    return true;
+  }
+  # }}}
+  function delete(object $root): bool # {{{
+  {
+    # prepare
+    $bot = $this->bot;
+    # telegram allows to delete only "fresh" messages, so,
+    # check the root is fresh
+    if (($a = time() - $root->time) >= 0 &&
+        ($a < Bot::MESSAGE_LIFETIME))
+    {
+      # delete
+      $b = $this->request->chat->id;
+      $bot->log($root->item->id, 0, ['delete']);
+      foreach ($root->msg as $a)
       {
-        $bread = ($lang && isset($crumb['text'][$lang]['@']))
-          ? $crumb['text'][$lang]['@']
-          : $crumb['name'];
+        if ($a && !$bot->api->send('deleteMessage', [
+          'chat_id'    => $b,
+          'message_id' => $a,
+        ]))
+        {
+          return false;
+        }
       }
     }
     else
     {
-      while ($crumb)
+      # zap
+      $bot->log($root->item->id, 0, ['zap']);
+      foreach ($root->msg as $b => $a)
       {
-        $a = ($lang && isset($crumb['text'][$lang]['@']))
-          ? $crumb['text'][$lang]['@']
-          : $crumb['name'];
-        $bread = '/'.$a.$bread;
-        $crumb = $crumb['parent'];
+        if ($a && !$root->item::zap($this, $a, $b)) {
+          return false;
+        }
       }
     }
-    return $bread;
+    # remove root
+    $this->config->unsetRoot($root);
+    # complete
+    return true;
+  }
+  # }}}
+  function zap(object $msg): bool # {{{
+  {
+    # prepare
+    $bot = $this->bot;
+    $id  = $msg->message_id;
+    $bot->log("message #$id", 0, ['zap']);
+    # first, try to delete non-rooted message
+    if ($bot->api->send('deleteMessage', [
+      'chat_id'    => $this->request->chat->id,
+      'message_id' => $id,
+    ]))
+    {
+      return true;
+    }
+    # message might be too old for deletion,
+    # determine its type and apply specific zap
+    if (isset($msg->photo)) {
+      return BotItemImg::zap($this, $id);
+    }
+    # fail
+    return false;
   }
   # }}}
 }
 class BotUserConfig extends StaticInit {
-  # {{{
+  # initializer {{{
   static function init(object $user): ?self
   {
     # aquire a forced lock
     if (!Bot::file_lock($file = $user->dir.'config.json', true)) {
       return null;
     }
-    # get contents
-    if (!file_exists($file) ||
-        !($data = file_get_contents($file)) ||
-        !($data = json_decode($data, true)))
-    {
-      $data = [   # initial (empty)
-        '/' => [],# roots [BotItemMessage,..]
-        '*' => [],# items [id=>config]
-      ];
-      $user->changed = true;
-    }
-    # create roots
-    foreach ($data['/'] as &$a) {
-      $item = BotItemMessage::init($a);
-    }
-    unset($a);
     # construct
-    return new static([
+    $conf = new static([
       'user'  => $user,
       'file'  => $file,
-      'data'  => $data,
+      'roots' => [],
+      'items' => [],
     ]);
+    # initialize
+    if ($data = Bot::file_get_json($file))
+    {
+      foreach ($data['/'] as &$v) {
+        $conf->roots[] = BotUserConfigRoot::init($user, $v);
+      }
+      foreach ($data['*'] as $k => &$v) {
+        $conf->items[$k] = BotUserConfigItem::init($user, $v);
+      }
+      unset($v);
+    }
+    else {
+      $user->changed = true;
+    }
+    # done
+    return $conf;
   }
   function finit(bool $unlock = true): void
   {
     if ($this->user->changed)
     {
-      file_put_contents($this->file, json_encode($this->data));
       $this->user->changed = false;
+      Bot::file_set_json($this->file, [
+        '/' => $this->roots,
+        '*' => $this->items,
+      ]);
     }
     $unlock && Bot::file_unlock($this->file);
   }
   # }}}
-}
-class BotUserMessage extends StaticInit implements \JsonSerializable {
-  # {{{
-  static function init(object $user, array $o): self
+  # api {{{
+  function getRoot(object $item): ?object
   {
+    while (($root = $item)->parent) {}
+    foreach ($this->roots as $a)
+    {
+      if ($a->root === $root) {
+        return $a;
+      }
+    }
+    return null;
+  }
+  function getMessageRoot(int $msg): ?object
+  {
+    foreach ($this->roots as $a)
+    {
+      if (($b = array_search($msg, $a->msg, true)) !== false) {
+        return $a;
+      }
+    }
+    return null;
+  }
+  function unsetRoot(object $root): void
+  {
+    if (($a = array_search($root, $this->roots, true)) !== false)
+    {
+      array_splice($this->roots, $a, 1);
+      $this->user->changed = true;
+    }
+  }
+  function setRoot(object $root): void
+  {
+    array_unshift($this->roots, $root);
+    $this->user->changed = true;
+  }
+  function getItem(object $item): object
+  {
+    # create item configuration when accessed
+    if (!isset($this->items[$k = $item->id]))
+    {
+      $this->items[$k] = BotUserConfigItem::init($this);
+      $this->user->changed = true;
+    }
+    return $this->items[$k];
+  }
+  function setItem(object $item, array $v): void
+  {
+    $this->items[$item->id] = BotUserConfigItem::init($this, $v);
+    $this->user->changed = true;
+  }
+  # }}}
+}
+class BotUserConfigRoot extends StaticInit implements \JsonSerializable {
+  # {{{
+  static function init(object $user, array|object $data): self
+  {
+    # prepare
+    $map = $user->bot->items->map;
+    if (is_array($data))
+    {
+      # loaded from config
+      $root = $map[$data[3]];
+      $item = (($a = $data[4]) && isset($map[$a]))
+        ? $map[$a]
+        : null;
+    }
+    else
+    {
+      # created from item
+      while (($root = $data)->parent) {}
+      $item = $data;
+      $data = [[],[],time()];
+    }
+    # construct
     return new static([
-      'msg'  => $o[0],# message identifiers
-      'hash' => $o[1],# message hashes
-      'time' => $o[2],# creation timestamp (seconds)
-      #'item' => BotUserItem::init($user, $o[3]),# item
-      #'from' => BotUserItem::init($user, $o[4]),# origin item (injector)
+      'user' => $user,
+      'msg'  => $data[0],# message identifiers
+      'hash' => $data[1],# message hashes
+      'time' => $data[2],# creation timestamp (seconds)
+      'root' => $root,# root item
+      'item' => $item,# current item
     ]);
   }
   function jsonSerialize(): array {
-    return [$this->msg,$this->hash,$this->time,$this->item,$this->from];
+    return [
+      $this->msg, $this->hash, $this->time,
+      $this->root->id,
+      $this->item->id
+    ];
+  }
+  # }}}
+}
+class BotUserConfigItem extends StaticInit implements \ArrayAccess, \JsonSerializable {
+  # {{{
+  static function init(object $user, ?array &$data = null): self
+  {
+    return new static([
+      'user' => $user,
+      'data' => ($data === null) ? [] : $data,
+    ]);
+  }
+  function offsetExists(mixed $k): bool {
+    return isset($this->data[$k]);
+  }
+  function offsetGet(mixed $k): mixed {
+    return isset($this->data[$k]) ? $this->data[$k] : null;
+  }
+  function offsetSet(mixed $k, mixed $v): void
+  {
+    # ...
+    #$this->user->changed = true;
+  }
+  function offsetUnset(mixed $k): void
+  {
+    unset($this->data[$k]);
+    $this->user->changed = true;
+  }
+  function jsonSerialize(): array {
+    return $this->data;
+  }
+  # }}}
+}
+# }}}
+# REQUEST/RESPONSE {{{
+class BotRequestInput extends StaticInit {
+  static function init(object $msg): ?object # {{{
+  {
+    if (!isset($msg->from)) {
+      return null;
+    }
+    if (isset($msg->text) && ($msg->text[0] === '/')) {
+      return BotRequestCommand::init($msg);
+    }
+    return new static([
+      'msg'  => $msg,
+      'from' => $msg->from,
+      'chat' => $msg->chat,
+    ]);
+  }
+  # }}}
+  function reply(object $user): int # {{{
+  {
+    # prepare
+    $bot = $user->bot;
+    /***
+    $text = $this->msg->text;
+    # check current (first) root accepts input
+    if (count($root = $user->config->roots) &&)
+    {
+      # handle input
+      if (!($item = $user->command($text, true)) ||
+          !$user->send($item))
+      {
+        $bot->logError('command failed: '.$text);
+        $bot->opts->replyFailedCommand && $bot->api->send('sendMessage', [
+          'chat_id' => $this->chat->id,
+          'text'    => $user->messages[1].': '.$text,
+        ]);
+      }
+    }
+    /***/
+    # cleanup
+    if ($bot->opts->wipeUserInput)
+    {
+      $bot->api->send('deleteMessage', [
+        'chat_id'    => $this->chat->id,
+        'message_id' => $this->msg->message_id,
+      ]);
+    }
+    return 0;
+  }
+  # }}}
+}
+class BotRequestCommand extends StaticInit {
+  static function init(object $msg): self # {{{
+  {
+    return new static([
+      'msg'  => $msg,
+      'from' => $msg->from,
+      'chat' => $msg->chat,
+      'cmd'  => BotCommand::parse($msg->text),
+    ]);
+  }
+  # }}}
+  function reply(object $user): int # {{{
+  {
+    # prepare
+    $bot = $user->bot;
+    $opt = $bot->opts;
+    $msg = $this->msg;
+    if (!($cmd = $this->cmd))
+    {
+      $bot->logWarn('incorrect command: '.$msg->text);
+      if (!$user->isGroup && $opt->wipeUserInput)
+      {
+        $bot->api->send('deleteMessage', [
+          'chat_id'    => $this->chat->id,
+          'message_id' => $msg->message_id,
+        ]);
+      }
+      return 0;
+    }
+    elseif ($cmd->bot && $this->isGroup &&
+            $cmd->bot !== $opt->name)
+    {
+      return 0;
+    }
+    # operate
+    $this->bot->log($msg->text);
+    $res = 0;
+    switch ($cmd->id) {
+    case 'restart':
+      $user->isAdmin && ($res = -1);
+      break;
+    case 'stop':
+      $user->isAdmin && ($res =  1);
+      break;
+    case 'reset':
+      /***
+      # {{{
+      # check allowed
+      if (!$user->isAdmin)
+      {
+        $this->log("access denied: $text");
+        return 1;
+      }
+      # check replied
+      if (!isset($this->msg->reply_to_message))
+      {
+        $this->log("$text: replied not found");
+        return 1;
+      }
+      # get message and item ids
+      $a = $this->msg->reply_to_message->message_id;
+      if (!($b = $conf->getMessageItemId($a)))
+      {
+        $this->log("$text: message $a is not rooted");
+        return 1;
+      }
+      $this->log("$text: $a => $b");
+      # get and remove item
+      ($item = $this->itemGet($b)) && $this->itemDetach($item, true);
+      # compose navigation command
+      $text = '/'.$b;
+      # }}}
+      /***/
+      break;
+    default:
+      # create command
+      $item = $this->render($cmd);
+      ###
+      ###
+      if (!($item = $user->command($text, true)) ||
+          !$user->send($item))
+      {
+        $bot->logError('command failed: '.$text);
+        $bot->opts->replyFailedCommand && $bot->api->send('sendMessage', [
+          'chat_id' => $this->chat->id,
+          'text'    => $user->messages[1].': '.$text,
+        ]);
+      }
+      break;
+    }
+    if ($opt->wipeUserInput && (!$item || !($item instanceof BotItemIgnore)))
+    {
+      $bot->api->send('deleteMessage', [
+        'chat_id'    => $this->chat->id,
+        'message_id' => $msg->message_id,
+      ]);
+    }
+    return $res;
+  }
+  # }}}
+}
+class BotRequestCallback extends StaticInit {
+  static function init(object $query): ?object # {{{
+  {
+    if (!isset($query->message)) {
+      return null;
+    }
+    if (isset($query->game_short_name)) {
+      return BotRequestGame::init($query);
+    }
+    if (!isset($query->data)) {
+      return null;
+    }
+    return new static([
+      'msg'   => $query->message,
+      'from'  => $query->from,
+      'chat'  => $query->message->chat,
+      'id'    => $query->id,
+      'data'  => $query->data,
+    ]);
+  }
+  # }}}
+  function reply(object $user): int # {{{
+  {
+    # prepare
+    static $FUNC = 'answerCallbackQuery';
+    $bot = $user->bot;
+    $res = ['callback_query_id' => $this->id];
+    if (!($root = $user->config->getMessageRoot($this->msg->message_id)))
+    {
+      $bot->api->send($FUNC, $res);
+      $user->zap($this->msg);
+      return 0;
+    }
+    # handle nop
+    if (($cmd = $this->data) === '!')
+    {
+      $bot->api->send($FUNC, $res);
+      return 0;
+    }
+    # ...
+    if ($cmd[0] === '!')
+    {
+    }
+    ###
+    $bot->log('aaaaaaaaa');
+    $bot->logDebug($root);
+    ###
+    # complete
+    return 0;
+    ###
+    ###
+    /***
+    $isRooted = !!$id;
+    # attach item
+    if (!($a = $this->itemAttach($text)))
+    {
+      # failed, item message should be removed/nullified
+      $isRooted && $this->itemDetach();
+      !$isRooted && $this->itemZap($msg);
+      return [
+        'text' => $this->messages[$lang][2],
+        'show_alert' => true
+      ];
+    }
+    elseif ($a === -1) {# nop
+      return [];
+    }
+    # get item and it's root configuration
+    $item = &$this->item;
+    $root = &$item['root']['config'];
+    $msg1 = isset($root['_msg']) ? $root['_msg'] : 0;
+    # determine if message is fresh
+    $isFresh = ($msg1 &&
+                ($a = time() - $root['_time']) >= 0 &&
+                ($a < self::MESSAGE_LIFETIME));
+    # determine if the item has re-activated input
+    if (!($isNew = $item['isNew']))
+    {
+      if ($root && $item['isInputAccepted'])
+      {
+        # make sure it's the first from the start
+        if (!array_key_exists('/', $userCfg) ||
+            $userCfg['/'][0] !== $item['root']['id'])
+        {
+          $isNew = true;
+        }
+      }
+    }
+    # reply
+    if (!$isFresh || $isNew)
+    {
+      # recreate message
+      $res = $this->itemSend();
+    }
+    else
+    {
+      # update message
+      $res = $this->itemUpdate($msg, $item);
+    }
+    # success
+    if ($res) {
+      return [];
+    }
+    # failure
+    return [
+      'text' => $this->messages[$lang][2],
+      'show_alert' => true,
+    ];
+    /***/
+  }
+  # }}}
+  function replyNop(object $api, int $id): void # {{{
+  {
+    $api->send('answerCallbackQuery', [
+      'callback_query_id' => $id
+    ]);
+  }
+  # }}}
+}
+class BotRequestGame extends StaticInit {
+  static function init(object $query): ?self # {{{
+  {
+    return new static([
+    ]);
+  }
+  # }}}
+  function reply(object $user): int # {{{
+  {
+    return 0;
+    /***
+    if (isset($q->game_short_name) &&
+        ($a = $q->game_short_name))
+    {
+      $this->log('game callback: '.$a);
+      if ($a = $this->getGameUrl($a, $msg))
+      {
+        return [
+          'url' => $a,
+          'cache_time' => 0,
+        ];
+      }
+      else
+      {
+        return [
+          'text' => $this->messages[$lang][0],
+          'show_alert' => true,
+        ];
+      }
+    }
+    /***/
+  }
+  # }}}
+}
+class BotRequestInline extends StaticInit {
+  static function init(object $query): ?self # {{{
+  {
+    return new static([
+    ]);
+  }
+  # }}}
+  function reply(object $user): int # {{{
+  {
+    $this->log('inline query!!!');
+    return 0;
+    /***
+    $out = (string)rand();
+    $results[] = [
+      "type"  => "article",
+      "id"    => $out,
+      "title" => $out,
+      "input_message_content" => [
+        "message_text"             => $out,
+        "disable_web_page_preview" => true
+      ],
+    ];
+    $client->answerInlineQuery($u->inline_query->id, $results, 1, false);
+    unset($results);
+    /***/
   }
   # }}}
 }
@@ -2778,7 +2581,7 @@ class BotUserMessage extends StaticInit implements \JsonSerializable {
 # ITEMS {{{
 abstract class BotItem extends StaticInit implements \JsonSerializable {
   # {{{
-  static $datatype = 0;
+  static $DATATYPE = 0, $ERROR = null;
   static function init(
     object  $bot,
     string  $name,
@@ -2796,13 +2599,21 @@ abstract class BotItem extends StaticInit implements \JsonSerializable {
     if (!$isRefined)
     {
       # initialize texts
-      # check empty or no primary language
+      # correct empty or absent primary language
       if (!isset($struct['text'])) {
         $struct['text'] = ['en'=>[]];
       }
       elseif (!isset($struct['text']['en'])) {
         $struct['text'] = ['en'=>$struct['text']];
       }
+      # correct absent languages (copy primary)
+      foreach ($bot->messages as $a => &$b)
+      {
+        if (!isset($struct['text'][$a])) {
+          $struct['text'][$a] = $struct['text']['en'];
+        }
+      }
+      unset($b);
       # render emojis and captions
       foreach ($struct['text'] as &$a)
       {
@@ -2819,7 +2630,7 @@ abstract class BotItem extends StaticInit implements \JsonSerializable {
       # initialize other props
       $struct[$a = 'datatype'] = isset($struct[$a])
         ? $struct[$a]
-        : self::$datatype;
+        : self::$DATATYPE;
       $struct[$a = 'handler'] = $b = isset($struct[$a])
         ? $struct[$a]
         : 0;
@@ -2837,13 +2648,14 @@ abstract class BotItem extends StaticInit implements \JsonSerializable {
       'id'      => $id,
       'name'    => $name,
       'struct'  => $struct,
-      'handler' => $struct['handler'] ? $type : '';
+      'handler' => ($struct['handler'] ? $type : ''),
       'items'   => null,
+      'root'    => null,
       'config'  => null,
       'text'    => null,
       'data'    => null,
-      'changed' => 0,# bitmask: 1=data,2=struct
       'msg'     => null,
+      'changed' => 0,# bitmask: 1=data,2=struct
     ]);
     # construct children
     if (isset($struct['items']))
@@ -2871,175 +2683,383 @@ abstract class BotItem extends StaticInit implements \JsonSerializable {
     return $this->struct;
   }
   # }}}
+  function breadcrumb(): string # {{{
+  {
+    $bread = '/'.$this->name;
+    while ($crumb = $this->parent) {
+      $bread = '/'.$crumb->name.$bread;
+    }
+    return $bread;
+  }
+  # }}}
 }
 class BotItemImg extends BotItem {
-  function render(object $user, string $func, ?array $args): bool # {{{
+  function render(object $user, string $func, ?array $args): ?array # {{{
   {
     # prepare
-    $s = &$this->struct;
-    # create message
-    if ($a = $this->handler)
+    $bot = $user->bot;
+    $o   = $bot->opts;
+    $s   = &$this->struct;
+    $msg = [];
+    # invoke handler
+    if (($a = $this->handler) &&
+        ($msg = $a($user, $this, $func, $args)) === null)
     {
-      # invoke handler
-      if (($msg = $a($user, $this, $func, $args)) === null)
+      $bot->logWarn("handler failed: $a");
+      return null;
+    }
+    # determine image
+    if (!($b = isset($msg[$a = 'imageId']))) {
+      $msg[$a] = $user->lang.'-'.$this->id;
+    }
+    while (!isset($msg[$c = 'image']))
+    {
+      # check cached
+      if ($d = $bot->fids->get($a = $msg[$a]))
       {
-        $user->bot->logWarn("handler failed: $a");
-        return false;
+        $msg[$c] = $d;
+        break;
+      }
+      # check file specified by handler
+      if ($b)
+      {
+        foreach ($bot->imgdir as &$d)
+        {
+          if (file_exists($e = "$d$a.jpg"))
+          {
+            $msg[$c] = new BotFile($e, false);
+            break 2;
+          }
+        }
+      }
+      # check title
+      if (isset($this->text['@']))
+      {
+        if (!($msg[$c] = self::title(
+          $this->text['@'],
+          $o->showBreadcrumb ? $this->breadcrumb() : '',
+          $o->colors[$a = 'title'],
+          $o->fonts[$a]
+        )))
+        {
+          $bot->logException(self::$ERROR);
+          return null;
+        }
+        break;
+      }
+      # check file
+      if (!$b)
+      {
+        foreach ($user->bot->imgdir as &$d)
+        {
+          if (file_exists($e = "$d$a.jpg") ||
+              file_exists($e = "$d$b.jpg"))
+          {
+            $msg[$c] = new BotFile($e, false);
+            break 2;
+          }
+        }
+      }
+      # use item name as title
+      if (!($msg[$c] = self::title(
+        $this->name,
+        $o->showBreadcrumb ? $this->breadcrumb() : '',
+        $o->colors[$a = 'title'],
+        $o->fonts[$a]
+      )))
+      {
+        $bot->logException(self::$ERROR);
+        return null;
+      }
+      break;
+    }
+    # determine content and inline markup
+    if (!isset($msg[$a = 'text'])) {
+      $msg[$a] = isset($this->text['.']) ? $this->text['.'] : '';
+    }
+    if (!isset($msg[$a = 'markup'])) {
+      $msg[$a] = isset($s[$a]) ? $user->markup($this, $s[$a]) : '';
+    }
+    # complete
+    return [$msg];
+  }
+  # }}}
+  static function title( # {{{
+    string  $header,
+    string  $bread,
+    array   $color, # [foreground<RGB>,background<RGB>]
+    array   $font,  # [header,breadcrumb]
+    int     $asFile = 1 # 0=<image>,1=BotFile(temporary),2=BotFile(persistent)
+  ):?object
+  {
+    static $MAX_FONTSIZE = 64;#72;
+    try
+    {
+      # prepare {{{
+      # create image
+      if (($img = @imagecreatetruecolor(640, 160)) === false) {
+        throw new \Exception('imagecreatetruecolor() failed');
+      }
+      # allocate colors
+      $fg = $color[0];
+      $bg = $color[1];
+      if (($fg = imagecolorallocate($img, $fg[0], $fg[1], $fg[2])) === false ||
+          ($bg = imagecolorallocate($img, $bg[0], $bg[1], $bg[2])) === false)
+      {
+        throw new \Exception('imagecolorallocate() failed');
+      }
+      # fill the background
+      if (!imagefill($img, 0, 0, $bg)) {
+        throw new \Exception('imagefill() failed');
+      }
+      # }}}
+      # draw header {{{
+      if ($header)
+      {
+        # header should fit into x:140-500,y:0-160 area, so
+        # determine optimal font size (in points not pixels? -seems not)
+        $size = $MAX_FONTSIZE;
+        while ($size > 6)
+        {
+          # determine bounding box
+          if (!($a = imageftbbox($size, 0, $font[0], $header))) {
+            throw new \Exception('imageftbbox() failed');
+          }
+          # check it fits width and height
+          if ($a[2] - $a[0] <= 360 &&
+              $a[1] - $a[7] <= 160)
+          {
+            break;
+          }
+          # reduce and retry
+          $size -= 2;
+        }
+        # determine start coordinates (center align)
+        $x = 140 + intval((360 - $a[2]) / 2);
+        #$y = 160 / 2 + intval(($a[1] - $a[7]) / 2) - 8;
+        $y = 160 / 2 + 24;
+        # draw
+        if (!imagefttext($img, $size, 0, $x, $y, $fg, $font[0], $header)) {
+          throw new \Exception('imagefttext() failed');
+        }
+      }
+      # }}}
+      # draw breadcrumb {{{
+      if ($bread)
+      {
+        $a = (count($font) > 1) ? $font[1] : $font[0];
+        $x = 140;
+        $y = 32;
+        if (!imagefttext($img, 16, 0, $x, $y, $fg, $a, $bread)) {
+          throw new \Exception('imagefttext() failed');
+        }
+      }
+      # }}}
+      # create file {{{
+      if ($asFile)
+      {
+        if (!($a = tempnam(sys_get_temp_dir(), 'img')) ||
+            !imagejpeg($img, $a))
+        {
+          throw new \Exception("imagejpeg($a) failed");
+        }
+        imagedestroy($img);
+        $img = new BotFile($a, ($asFile === 1));
+      }
+      # }}}
+    }
+    catch (\Exception $e)
+    {
+      self::$ERROR = $e;
+      if ($img)
+      {
+        imagedestroy($img);
+        $img = null;
       }
     }
-    else {
-      $msg = [];
-    }
-    # render message
-    if (!isset($msg[$a = 'text']))
+    return $img;
+  }
+  # }}}
+  static function titleDummy(object $bot): ?object # {{{
+  {
+    return self::title('', '', $bot->opts->colors['title'], []);
+  }
+  # }}}
+  static function send(object $user, array &$msg): int # {{{
+  {
+    # prepare
+    $bot = $user->bot;
+    $res = [
+      'chat_id' => $user->request->chat->id,
+      'photo'   => $msg['image'],
+      'disable_notification' => true,
+    ];
+    if ($a = $msg['text'])
     {
-      $msg[$a] = isset($this->text['.'])
-        ? $this->text['.']
-        : '';
+      $res['caption']    = $a;
+      $res['parse_mode'] = 'HTML';
     }
-    if (!isset($msg[$a = 'markup']))
-    {
-      $msg[$a] = isset($s[$a])
-        ? $user->markup($item, $s[$a])
-        : '';
+    if ($a = $msg['markup']) {
+      $res['reply_markup'] = $a;
     }
-    if (!isset($msg[$a = 'image']))
+    # send
+    if (!($res = $bot->api->send('sendPhoto', $res))) {
+      return 0;
+    }
+    # store file identifier
+    if ($msg['image'] instanceOf BotFile)
     {
-      # determine image identifier
-      $id = isset($msg['imageId']);
-      # image may be dynamic (generated) or static
-      # so first, check file_id cache
-      if ($a = $this->getFileId($item['titleId']))
-      {
-        # CACHED
-        $item['titleImage'] = $a;
+      $a = end($res->result->photo);
+      $bot->fids->set($msg['imageId'], $a->file_id);
+    }
+    # complete
+    return $res->result->message_id;
+  }
+  # }}}
+  static function zap(object $user, int $msg): bool # {{{
+  {
+    # prepare
+    static $FUNC = 'editMessageMedia';
+    static $FID  = __CLASS__.'::dummy';
+    $bot = $user->bot;
+    # create dummy image
+    if (0)
+    {
+      # TODO: dynamic
+    }
+    else
+    {
+      # static,
+      # check cached or generate otherwise
+      if ($img = $bot->fids->get($FID)) {
+        $file = '';
       }
-      elseif (!$item['title'])
-      {
-        # STATIC IMAGE? (no text specified)
-        # determine base image paths
-        $b = 'img'.DIRECTORY_SEPARATOR;
-        $c = $b.$item['titleId'].'.jpg';# more specific first
-        $d = $b.$name.'.jpg';# less specific last
-        $a = $this->botdir;
-        $b = $this->incdir;
-        # determine single source
-        $a = (file_exists($a.$c)
-          ? $a.$c : (file_exists($a.$d)
-            ? $a.$d : (file_exists($b.$c)
-              ? $b.$c : (file_exists($b.$d)
-                ? $b.$d : ''))));
-        # check found
-        if ($a)
-        {
-          # static image file
-          $this->logDebug("image request: $a");
-          $item['titleImage'] = new BotFile($a, false);
-        }
-        else
-        {
-          # use item's name and raw breadcrumb (no language)
-          $a = $this->itemBreadcrumb($item);
-          $item['titleImage'] = $this->imageTitle($item['name'], $a);
-        }
+      elseif ($img = self::titleDummy($bot)) {
+        $file = 'attach://'.$img->postname;
       }
       else
       {
-        # SPECIFIED TEXT
-        # generate nice header with language specific breadcrumbs
-        $a = $this->itemBreadcrumb($item, $lang);
-        $item['titleImage'] = $this->imageTitle($item['title'], $a);
+        self::$ERROR && $bot->logException(self::$ERROR);
+        return false;
       }
     }
-    /***
-    # check new item is injected
-    $item['isNew'] = $isNew;
-    if ($isNew && ($func !== 'up') && isset($item['root']['config']['_from']))
-    {
-      unset($item['root']['config']['_from']);
-      $this->user->changed = true;
+    # compose request parameters
+    $a = [
+      'chat_id'    => $user->request->chat->id,
+      'message_id' => $msg,
+      'media'      => json_encode([
+        'type'     => 'photo',
+        'media'    => ($file ?: $img),
+        'caption'  => '',
+      ]),
+      'reply_markup' => '',
+    ];
+    # update
+    $a = $file
+      ? $bot->api->send($FUNC, $a, $img)
+      : $bot->api->send($FUNC, $a);
+    # check
+    if (!$a || $a === true) {
+      return false;
     }
-    /***/
-    ###
-    ###
-    $item['root'] = &$root;
-    $item['hash'] = '';
-    $item['data'] = null;
-    $item['dataChanged'] = false;
-    $item['isTitleCached'] = true;
-    $item['isInputAccepted'] = false;
-    $item['titleId'] = $name.'_'.$lang;
-    $item['title'] = isset($text['@']) ? $text['@'] : '';
-    $item['content'] = isset($text['.']) ? $text['.'] : '';
-    ###
-    $item['titleImage'] = null;   # file_id or BotFile
-    $item['textContent'] = null;  # message text
-    $item['inlineMarkup'] = null; # null=skip, []=zap, [buttons]=otherwise
-    ###
-    /***
-    # check new item is injected
-    $item['isNew'] = $isNew;
-    if ($isNew && ($func !== 'up') && isset($item['root']['config']['_from']))
+    # store file identifier
+    if ($file)
     {
-      unset($item['root']['config']['_from']);
-      $this->user->changed = true;
+      $b = end($a->result->photo);
+      $bot->fids->set($FID, $b->file_id);
     }
-    /***/
-    ###
+    # done
     return true;
   }
   # }}}
-  function send() # {{{
+  ### TODO
+  function itemUpdate($msg, &$item, $reportHashFail = false) # {{{
   {
-    # prepare
-    if ($item === null && !($item = &$this->item)) {
-      return 0;
-    }
     # CUSTOM
-    if (($a = $item['typeHandler']) && method_exists($a, 'send')) {
-      return $a::send($this, $item);
+    if (($a = $item['typeHandler']) && method_exists($a, 'update')) {
+      return $a::update($this, $msg, $item);
     }
     # STANDARD
-    # check title specified
-    if (!$item['titleImage'])
-    {
-      $this->logError('no titleImage specified');
-      return 0;
-    }
-    # assemble parameters
+    # prepare
+    $root = &$item['root']['config'];
     $a = $item['titleId'];
     $b = $item['textContent'];
     $c = $item['inlineMarkup'];
-    $q = [
-      'chat_id' => $this->user->chat->id,
-      'photo'   => $item['titleImage'],
-      'disable_notification' => true,
-    ];
-    if ($b)
+    $d = hash('md4', $b.$c);
+    # check message hash
+    if ($a.$d === ($e = $root['_hash']))
     {
-      $q['caption']    = $b;
-      $q['parse_mode'] = 'HTML';
+      if ($reportHashFail) {
+        $this->logError('update skipped: '.$item['id']);
+      }
+      return -1;# positive
     }
-    if ($c) {
-      $q['reply_markup'] = $c;
+    # determine which API function to use,
+    # image changes when title identifier changes
+    $func = strlen($e) - strlen($d);
+    $func = ($a !== substr($e, 0, $func));
+    # determine message parameters
+    if ($func)
+    {
+      # IMAGE and TEXT
+      # {{{
+      $file = $item['titleImage'];
+      $func = 'editMessageMedia';
+      if ($file instanceof BotFile) {
+        $e = 'attach://'.$file->postname;# attachment
+      }
+      else
+      {
+        $e = $file;# file_id
+        $file = null;# not attachment
+      }
+      $res = [
+        'type'       => 'photo',
+        'media'      => $e,
+        'caption'    => $b,
+        'parse_mode' => 'HTML',
+      ];
+      $res = [
+        'chat_id'    => $this->user->chat->id,
+        'message_id' => $msg,
+        'media'      => json_encode($res),
+      ];
+      # }}}
+    }
+    else
+    {
+      # TEXT
+      # {{{
+      $file = null;
+      $func = 'editMessageCaption';
+      $res  = [
+        'chat_id'    => $this->user->chat->id,
+        'message_id' => $msg,
+        'caption'    => $b,
+        'parse_mode' => 'HTML',
+      ];
+      # }}}
+    }
+    if ($c) {# add MARKUP
+      $res['reply_markup'] = $c;
     }
     # send
-    if (!($d = $this->api->send('sendPhoto', $q)))
+    if (!($b = $this->api->send($func, $res, $file)) || $b === true)
     {
-      $this->logError('sendPhoto('.$item['id'].') failed: '.$this->api->error);
-      $this->logError($q);
+      $this->logError($func.'('.$item['id'].') failed: '.$this->api->error);
+      $this->logError($res);
       return 0;
     }
     # set message hash
-    $item['hash'] = $a.hash('md4', $b.$c);
+    $item['hash'] = $a.$d;
     # set file_id
-    if ($a && ($item['titleImage'] instanceOf BotFile))
+    if ($a && $file)
     {
-      $b = end($d->result->photo);
-      $this->setFileId($a, $b->file_id);
+      $c = end($b->result->photo);
+      $this->setFileId($a, $c->file_id);
     }
     # complete
-    return $this->userUpdate($d->result->message_id);
+    return $this->userUpdate($b->result->message_id);
   }
   # }}}
 }
@@ -3251,7 +3271,7 @@ class BotItemTxt extends BotItem {
   # }}}
 }
 class BotItemList extends BotItem {
-  static $datatype = 1;
+  static $DATATYPE = 1;
   # data {{{
   static public $template = [
     'en' => # {{{
@@ -3479,7 +3499,7 @@ page <b>{{page}}</b> of {{page_count}} ({{item_count}})
   # }}}
 }
 class BotItemForm extends BotItem {
-  static $datatype = 1;
+  static $DATATYPE = 1;
   static function render($bot, &$item, $func, $args) # {{{
   {
     # prepare {{{
