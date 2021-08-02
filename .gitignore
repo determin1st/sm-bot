@@ -3,7 +3,7 @@
 /data/*
 !/data/master
 /data/master/*
-!/data/master/o.json.example
+!/data/master/config.example
 mustache.php
 *.vim
 *.swp

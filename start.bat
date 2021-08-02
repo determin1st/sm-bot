@@ -8,12 +8,9 @@ IF "%~1"=="-FIXED_CTRL_C" (
    CALL <NUL %0 -FIXED_CTRL_C %*
    GOTO :EOF
 )
-:: prepare
+echo "Press CTRL+c to make master /stop"
 set PHP="E:\lab\www\php\php.exe"
-set BOTID=master
-set TIMEOUT=120
-:: run
 :LOOP
-%PHP% -f "%CD%\index.php" -- loop %BOTID% %TIMEOUT%
+%PHP% -f "%CD%\start.php"
 if %ERRORLEVEL% EQU 0 goto LOOP
 exit

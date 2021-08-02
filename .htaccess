@@ -1,8 +1,8 @@
 AddDefaultCharset utf-8
-DirectoryIndex index.php
+DirectoryIndex start.php
 
 RewriteEngine On
-RewriteCond "%{REQUEST_URI}" "!^(/|/index\.php)$"
+RewriteCond "%{REQUEST_URI}" "!^(/|/start\.php)$"
 RewriteCond "%{REQUEST_URI}" "\.[^\.]+$"
 RewriteRule ".*" "-" [F,L]
 

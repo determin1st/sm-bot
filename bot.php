@@ -1,24 +1,19 @@
 <?php
 #declare(strict_types=1);
-# TODO: list of lists
-# TODO: language switch form
-# TODO: form input bob
-# TODO: parallel
 namespace SM;
-abstract class StaticInit # {{{
+abstract class StasisConstruct # {{{
 {
   protected function __construct(array $o) {
     foreach ($o as $k => $v) {$this->$k = $v;}
   }
 }
 # }}}
-class Bot extends StaticInit # {{{
+class Bot extends StasisConstruct # {{{
 {
-  # data {{{
+  const POLLING_TIMEOUT  = 120;
   const MESSAGE_LIFETIME = 48*60*60;
   static
-    $INIT    = true,
-    $IS_WIN  = true,
+    $WINOS = true,
     $BUTTONS = [
       # {{{
       'up'       => '{:eject_symbol:} {{.}}',
@@ -306,138 +301,8 @@ class Bot extends StaticInit # {{{
       'zap'              => "\xE2\x9A\xA1",
       # }}}
     ];
-  # }}}
-  # helpers {{{
-  static function file_lock(string $file, bool $force = false) # {{{
-  {
-    # prepare
-    $id    = uniqid();
-    $count = 80;
-    $lock  = $file.'.lock';
-    # wait until lock released or count exhausted
-    while (file_exists($lock) && --$count) {
-      usleep(100000);# 100ms
-    }
-    # check exhausted
-    if (!$count)
-    {
-      # check not forced or apply force (remove lockfile)
-      if (!$force || !@unlink($lock)) {
-        return '';
-      }
-      # clear cache
-      clearstatcache(true, $lock);
-    }
-    # set new lock and
-    # make sure no collisions
-    if (!file_put_contents($lock, $id) ||
-        !file_exists($lock) ||
-        file_get_contents($lock) !== $id)
-    {
-      return '';
-    }
-    return $lock;
-  }
-  # }}}
-  static function file_unlock(string $file) # {{{
-  {
-    return (file_exists($lock = $file.'.lock'))
-      ? @unlink($lock) : false;
-  }
-  # }}}
-  static function file_get_json(string $file): array # {{{
-  {
-    if (!file_exists($file) ||
-        !($data = file_get_contents($file)) ||
-        !($data = json_decode($data, true)))
-    {
-      $data = [];
-    }
-    return $data;
-  }
-  # }}}
-  static function file_set_json(string $file, ?array $data): bool # {{{
-  {
-    if ($data)
-    {
-      if (($data = json_encode($data, JSON_UNESCAPED_UNICODE)) === false) {
-        return false;
-      }
-      if (file_exists($file) && (file_get_contents($file) === $data)) {
-        return true;
-      }
-      if (file_put_contents($file, $data) === false) {
-        return false;
-      }
-    }
-    elseif (file_exists($file)) {
-      @unlink($file);
-    }
-    return true;
-  }
-  # }}}
-  static function async_execute(string $command) # {{{
-  {
-    if (self::$IS_WIN)
-    {
-      # this will not work,
-      # kept for history of stdin/out redirection to NUL,
-      # which would signal of no output and
-      # make function return instantly (no wait)
-      #system($task.' 1>NUL 2>&1');
-      ###
-      # this trick will not work,
-      # seem that it relies on CPU speed,
-      # using START command neither works
-      #pclose(popen($task, 'r'));
-      ###
-      # this will start the START command,
-      # WARNING: without the START command, it will go sync!
-      # which will start the PHP CLI command (NOWAIT),
-      # which will start the bot task handler,
-      # which will return "TASK STARTED" here
-      $command = 'START "" /B '.$command.' 2>&1';
-      if (!($a = popen($command, 'r')) ||
-          !($b = fgets($a)))
-      {
-        $this->logError("async_execute($command) failed");
-        return false;
-      }
-      ###
-      # pclose() will terminate START before
-      # it actually start anything, so the task
-      # response is obtained before (by reading),
-      # which resolves timing problem (i guess)
-      #sleep(5); # NO NEED!
-      pclose($a);
-      # just check that process belongs here
-      if (strncmp('TASK STARTED', $b, 12) !== 0)
-      {
-        $this->logError("async_execute($command) incorrect response");
-        return false;
-      }
-    }
-    else
-    {
-      # TODO: test nix* variant
-      shell_exec('/usr/bin/nohup '.$command.' >/dev/null 2>&1 &');
-    }
-    # done
-    return true;
-  }
-  # }}}
-  static function delay(float|int $sec): void # {{{
-  {
-    # determine base and remainder
-    $a = intval($sec);
-    $b = intval(100000 * ($sec - $a));
-    # sleep
-    if ($a) {sleep($a);}
-    if ($b) {usleep($b);}
-  }
-  # }}}
-  # }}}
-  static function start(array $args): bool # {{{
+  ###
+  static function start(string $id = 'master'): int # {{{
   {
     # configure environment
     ini_set('html_errors', 0);
@@ -451,279 +316,21 @@ class Bot extends StaticInit # {{{
       }
       return false;
     });
-    # operate
-    switch ($args[0]) {
-    case 'loop':
-      # create instance and enter getUpdates loop
-      if ($bot = self::init($args[1])) {
-        return $bot->loop(intval($args[2]));
-      }
-      break;
-    case 'task':
-      /***
-      # output startup signal,
-      # any other output to STDOUT/STDERR will terminate process
-      echo "TASK STARTED\n";
-      # load task plan
-      if (!file_exists($args[1]) ||
-          !($plan = file_get_contents($args[1])) ||
-          !($plan = json_decode($plan, true)) ||
-          !is_array($plan) ||
-          !array_key_exists('id', $plan) ||
-          !($plan['id'] === $args[2]))
-      {
-        break;
-      }
-      # create instance
-      if (($b = self::init($plan['bot'], true)) === null) {
-        break;
-      }
-      # register task unlocker
-      register_shutdown_function(function($file) {
-        if (file_exists($file)) {
-          unlink($file);
-        }
-      }, $args[1]);
-      # operate
-      try
-      {
-        # attach bot's user
-        $b->user = (object)$plan['user'];
-        $b->user->chat = (object)$b->user->chat;
-        # execute
-        if (!$b->taskWork($plan)) {
-          throw new \Exception($args[0].' failed #'.$plan['id'].': '.$plan['item']);
-        }
-        $b->taskDetach();# enable continuation
-      }
-      catch (\Exception $e) {
-        $b->logException($e);# recorded
-      }
-      /***/
-      break;
+    self::$WINOS = (defined('PHP_OS_FAMILY') && strncasecmp(PHP_OS_FAMILY, 'WIN', 3) === 0);
+    # create bot instance
+    if (!($bot = self::construct($id))) {
+      return 1;
     }
-    # complete
-    restore_error_handler();
-    return false;# avoid infinte loop
-  }
-  # }}}
-  static function init(string $botid): ?self # {{{
-  {
-    # prepare
-    # {{{
-    # create logger
-    $log = new BotLog($botid);
-    if ($isMaster = ($botid === 'master')) {
-      $log->target->stdout = fopen('php://stdout', 'w');
-    }
-    else
-    {
-      # TODO: attach to the master's console
-    }
-    # check identifier
-    if (!$isMaster && (!ctype_digit($botid) || strlen($botid) > 14))
-    {
-      $log->error('incorrect bot identifier');
-      return null;
-    }
-    # initialize static props
-    if (self::$INIT)
-    {
-      self::$IS_WIN = (
-        defined('PHP_OS_FAMILY') &&
-        strncasecmp(PHP_OS_FAMILY, 'WIN', 3) === 0
-      );
-      self::$INIT = false;
-    }
-    # determine directory paths
-    $homedir = __DIR__.DIRECTORY_SEPARATOR;
-    $incdir  = $homedir.'inc'.DIRECTORY_SEPARATOR;
-    $datadir = $homedir.'data'.DIRECTORY_SEPARATOR.$botid.DIRECTORY_SEPARATOR;
-    $imgdir  = [];
-    if (!file_exists($datadir))
-    {
-      $log->error("directory not found: $datadir");
-      return null;
-    }
-    if (file_exists($a = $datadir.'img'.DIRECTORY_SEPARATOR)) {
-      $imgdir[] = $a;
-    }
-    # load configuration
-    if (!($opts = BotConfig::init($datadir)))
-    {
-      $log->error("failed to load configuration: $datadir");
-      return null;
-    }
-    # set logfiles
-    if ($opts->saveAccessLog) {
-      $log->target->files[0] = $datadir.'ACCESS.log';
-    }
-    if ($opts->saveErrorLog) {
-      $log->target->files[1] = $datadir.'ERROR.log';
-    }
-    # determine bot directory
-    $botdir = $isMaster ? $botid : $opts->bot;
-    $botdir = $homedir.'bots'.DIRECTORY_SEPARATOR.$botdir.DIRECTORY_SEPARATOR;
-    if (!file_exists($botdir))
-    {
-      $log->error("directory not found: $botdir");
-      return null;
-    }
-    if (file_exists($a = $botdir.'img'.DIRECTORY_SEPARATOR)) {
-      $imgdir[] = $a;
-    }
-    # load bot controllers
-    if (file_exists($a = $botdir.'control.php')) {
-      require_once $a;
-    }
-    elseif (file_exists($a = $botdir.'control.js'))
-    {
-      # TODO: wrap NODE.js
-      return null;
-    }
-    else
-    {
-      $log->error("controller not found: $botdir");
-      return null;
-    }
-    # }}}
-    # construct
-    $bot = new static([
-      'id'        => $botid,
-      'log'       => $log,
-      'opts'      => $opts,
-      'errors'    => 0,
-      'isMaster'  => $isMaster,
-      'homedir'   => $homedir,  # /
-      'incdir'    => $incdir,   # /inc/
-      'datadir'   => $datadir,  # /data/<botid>/
-      'botdir'    => $botdir,   # /bots/<botid>/
-      'imgdir'    => $imgdir,   # [datadir|botdir]/img/
-      'fids'      => BotFileId::init($datadir.'FILE_ID.json', $opts->useFileIds),
-      'api'       => null,# BotApi
-      'tp'        => null,# Mustache
-      'messages'  => null,# [lang:[index:text]]
-      'buttons'   => null,# [button:caption]
-      'items'     => null,# BotCommands
-    ]);
-    # set telegram api {{{
-    if (($bot->api = BotApi::init($bot)) === null)
-    {
-      $log->error("failed to initialize api: $botid");
-      return null;
-    }
-    # }}}
-    # set template parser {{{
-    if (!file_exists($a = $incdir.'mustache.php'))
-    {
-      $bot->logError("file not found: $a");
-      return null;
-    }
-    require_once $a;
-    $a = [
-      'logger'  => (function(string $msg, int $level) use ($bot) {
-        $bot->logMustache($msg, $level);
-      }),
-      'helpers' => [
-        'BR'    => "\n",
-        'NBSP'  => "\xC2\xA0",# non-breakable space
-        'END'   => "\xC2\xAD",# SOFT HYPHEN U+00AD
-      ],
-    ];
-    if (($bot->tp = Mustache::init($a)) === null)
-    {
-      $bot->logError("failed to initialize mustache");
-      return null;
-    }
-    # }}}
-    # set messages {{{
-    if (file_exists($a = $datadir.'messages.json'))
-    {
-      # precompiled
-      $bot->messages = json_decode(file_get_contents($a), true);
-    }
-    else
-    {
-      # merge and render
-      $bot->messages = file_exists($b = $botdir.'messages.inc')
-        ? array_merge(self::$MESSAGES, (require $b))
-        : self::$MESSAGES;
-      foreach ($bot->messages as &$c)
-      {
-        foreach ($c as &$d) {
-          $d = $bot->tp->render($d, '{: :}', self::$EMOJI);
-        }
-      }
-      unset($c, $d);
-      # store
-      $b = json_encode($bot->messages, JSON_UNESCAPED_UNICODE);
-      $b && file_put_contents($a, $b);
-    }
-    # }}}
-    # set button captions {{{
-    if (file_exists($a = $datadir.'buttons.json'))
-    {
-      # load precompiled
-      $bot->buttons = json_decode(file_get_contents($a), true);
-    }
-    else
-    {
-      # merge and render
-      $bot->buttons = file_exists($b = $botdir.'buttons.inc')
-        ? array_merge(self::$BUTTONS, (require $b))
-        : self::$BUTTONS;
-      foreach ($bot->buttons as &$c) {
-        $c = $bot->tp->render($c, '{: :}', self::$EMOJI);
-      }
-      unset($c);
-      # store
-      $b = json_encode($bot->buttons, JSON_UNESCAPED_UNICODE);
-      $b && file_put_contents($a, $b);
-    }
-    # }}}
-    # set command items {{{
-    if (($bot->items = BotCommands::init($bot)) === null) {
-      return null;
-    }
-    # }}}
-    # set font file paths {{{
-    $a = 'font'.DIRECTORY_SEPARATOR;
-    foreach ($bot->opts->fonts as &$b)
-    {
-      foreach ($b as &$c)
-      {
-        if (file_exists($d = "$datadir$a$c") ||
-            file_exists($d = "$botdir$a$c") ||
-            file_exists($d = "$incdir$a$c"))
-        {
-          $c = $d;
-        }
-        else
-        {
-          $bot->logError("font not found: $c");
-          return null;
-        }
-      }
-    }
-    unset($b, $c);
-    # }}}
-    # complete
-    return $bot;
-  }
-  # }}}
-  function loop(int $timeout): bool # {{{
-  {
+    return 1;
     # show commands tree
-    $name = self::str_fg_color('@'.$this->opts->name, 'cyan');
+    $name = self::str_fg_color('@'.$this->cfg->name, 'cyan');
     $this->log("$name start\n".$this->items->dump(2, 'cyan'));
-    # acquire a lock
-    if (!($lock = self::file_lock($file = $this->datadir.'o.json')))
-    {
-      $this->logWarn($name.' has already been started');
-      return false;
-    }
+    ###
+    ###
+    ###
+    ###
     # enforce graceful termination
-    self::$IS_WIN && sapi_windows_set_ctrl_handler(function ($i) use ($lock) {
+    self::$WINOS && sapi_windows_set_ctrl_handler(function ($i) use ($lock) {
       @unlink($lock);
       exit(1);
     });
@@ -770,14 +377,138 @@ class Bot extends StaticInit # {{{
       $this->logException($e);
     }
     # complete
-    self::file_unlock($file);
+    BotFiles::unlock($file);
+    restore_error_handler();
     if (~$res)
     {
       $this->log("$name stop\n");
-      return false;
+      return 0;
     }
     $this->log("$name restart\n");
-    return true;
+    return 1;
+  }
+  # }}}
+  static function construct(string $id): ?self # {{{
+  {
+    # prepare
+    $log = BotLog::construct($id);
+    if (!($dir = BotDirs::construct($id, $log)) ||
+        !($cfg = BotConfig::construct($dir, $log)))
+    {
+      return null;
+    }
+    # construct
+    $bot = new static([
+      'id'       => $id,
+      'log'      => $log,
+      'dir'      => $dir,
+      'cfg'      => $cfg,
+      'file'     => null,
+      'api'      => null,
+      'tp'       => null,
+      'items'    => null,
+      'messages' => null,# [lang:[index:text]]
+      'buttons'  => null,# [button:caption]
+      'errors'   => 0,
+    ]);
+    # initialize
+    if (!$dir->init($bot) ||
+        !$log->init($bot) ||
+        !$cfg->init($bot))
+    {
+      return null;
+    }
+    require_once $dir->inc.'mustache.php';
+    require_once $dir->bot.'control.php';
+    ###
+    if (!($bot->file = BotFiles::construct($bot))
+        !($bot->api  = BotApi::construct($bot))
+    )
+    {
+      return null;
+    }
+    ###
+    ###
+    ###
+    {
+      $log->error("failed to initialize api: $id");
+      return null;
+    }
+    # template parser {{{
+    if (!file_exists($a = $incdir.'mustache.php'))
+    {
+      $bot->logError("file not found: $a");
+      return null;
+    }
+    require_once $a;
+    $a = [
+      'logger'  => (function(string $msg, int $level) use ($bot) {
+        $bot->logMustache($msg, $level);
+      }),
+      'helpers' => [
+        'BR'    => "\n",
+        'NBSP'  => "\xC2\xA0",# non-breakable space
+        'END'   => "\xC2\xAD",# SOFT HYPHEN U+00AD
+      ],
+    ];
+    if (($bot->tp = Mustache::init($a)) === null)
+    {
+      $bot->logError("failed to initialize mustache");
+      return null;
+    }
+    # }}}
+    # messages {{{
+    if (file_exists($a = $datadir.'messages.json'))
+    {
+      # precompiled
+      $bot->messages = json_decode(file_get_contents($a), true);
+    }
+    else
+    {
+      # merge and render
+      $bot->messages = file_exists($b = $botdir.'messages.inc')
+        ? array_merge(self::$MESSAGES, (require $b))
+        : self::$MESSAGES;
+      foreach ($bot->messages as &$c)
+      {
+        foreach ($c as &$d) {
+          $d = $bot->tp->render($d, '{: :}', self::$EMOJI);
+        }
+      }
+      unset($c, $d);
+      # store
+      $b = json_encode($bot->messages, JSON_UNESCAPED_UNICODE);
+      $b && file_put_contents($a, $b);
+    }
+    # }}}
+    # button captions {{{
+    if (file_exists($a = $datadir.'buttons.json'))
+    {
+      # load precompiled
+      $bot->buttons = json_decode(file_get_contents($a), true);
+    }
+    else
+    {
+      # merge and render
+      $bot->buttons = file_exists($b = $botdir.'buttons.inc')
+        ? array_merge(self::$BUTTONS, (require $b))
+        : self::$BUTTONS;
+      foreach ($bot->buttons as &$c) {
+        $c = $bot->tp->render($c, '{: :}', self::$EMOJI);
+      }
+      unset($c);
+      # store
+      $b = json_encode($bot->buttons, JSON_UNESCAPED_UNICODE);
+      $b && file_put_contents($a, $b);
+    }
+    # }}}
+    # command items {{{
+    if (($bot->items = BotItems::init($bot)) === null) {
+      return null;
+    }
+    # }}}
+    # complete
+    return $bot;
   }
   # }}}
   function update(object $u): int # {{{
@@ -803,313 +534,36 @@ class Bot extends StaticInit # {{{
     return ($u = BotUser::init($this, $r)) ? $u->finit() : 0;
   }
   # }}}
-  # TODO
-  # task manager {{{
-  private function userConfigAttach() # {{{
+  function stop(): void # {{{
   {
-    # determine filename (depends on chat)
-    $file = $this->user->dir.'config';
-    $chat = $this->user->chat;
-    if ($chat->type !== 'private') {
-      $file = $file.strval($chat->id);
-    }
-    $file = $file.'.json';
-    # aquire a forced lock
-    if (!self::file_lock($file, true))
-    {
-      $this->logError("forced lock failed: $file");
-      return false;
-    }
-    # read, decode contents and
-    # set user's configuration
-    $this->user->config = file_exists($file)
-      ? json_decode(file_get_contents($file), true)
-      : [];
-    # done
-    $this->user->file = $file;
-    $this->user->changed = false;
-    return true;
-  }
-  # }}}
-  private function userConfigDetach($nowrite = false) # {{{
-  {
-    if ($file = $this->user->file)
-    {
-      # write changes
-      if (!$nowrite && $this->user->changed) {
-        file_put_contents($file, json_encode($this->user->config));
-      }
-      # release lock
-      self::file_unlock($file);
-    }
-    return true;
-  }
-  # }}}
-  public function taskAttach( # {{{
-    &$item,       # object (standard) or string (custom)
-    $data = null, # task data
-    $tick = false # enables progress ticks
-  ) {
-    ###
-    if ($item)
-    {
-      # compose php interpreter command
-      $task = __DIR__.DIRECTORY_SEPARATOR.'index.php';
-      $task = '"'.PHP_BINARY.'" -f "'.$task.'" -- ';
-      # check type
-      if (is_string($item))
-      {
-        # unmanaged, custom operation
-        $this->log("custom task: $item");
-        $this->tasks[] = [0, $task.$item];
-      }
-      else
-      {
-        # standard
-        # determine task plan file
-        $file = 'task_'.$item['path'].'.json';
-        $file = $this->user->dir.$file;
-        if ($this->opts['debugtask'])
-        {
-          $plan = -1;
-          $this->log('debug task: '.$item['id']);
-        }
-        else
-        {
-          $plan = uniqid();
-          $this->log("task: $file");
-        }
-        # determine process arguments
-        $args = ' "'.$file.'" '.$plan;
-        # add worker
-        $this->tasks[] = [$plan, $task.'task'.$args, $file, $item['id'], $data];
-        # add ticker
-        if ($tick) {
-          $this->tasks[] = [$plan, $task.'progress'.$args, $file, $item['id'], $data];
-        }
-      }
-    }
-    return true;
-  }
-  # }}}
-  public function taskDetach() # {{{
-  {
-    # copy and reset
-    $tasks = $this->tasks;
-    $debugtask = $this->opts['debugtask'];
-    $this->tasks = [];
-    # spawn all tasks one by one
-    foreach ($tasks as $task)
-    {
-      # create task plan
-      $file = $task[2];
-      $plan = [
-        'id'   => $task[0],
-        'bot'  => $this->id,
-        'item' => $task[3],
-        'data' => $task[4],
-        'user' => $this->user,
-      ];
-      # run
-      if ($debugtask)
-      {
-        # sync
-        $this->log('===');
-        if (!$this->taskWork($plan)) {break;}
-        $this->log('===');
-      }
-      else
-      {
-        # async
-        # create plan file
-        if (!file_put_contents($file, json_encode($plan)))
-        {
-          $this->logError("file_put_contents($file) failed");
-          break;
-        }
-        # launch
-        if (!self::async_execute($task[1])) {
-          break;
-        }
-      }
-    }
-    # update user configuration (in debug mode)
-    if ($debugtask) {
-      $this->userConfigDetach();
-    }
-    # done
-    return true;
-  }
-  # }}}
-  private function taskWork($plan) # {{{
-  {
-    # measure time
-    $time = microtime(true);
-    # possess item
-    if (!($item = $this->itemGet($plan['item'])))
-    {
-      $this->logError('item not found: '.$plan['item']);
-      return false;# unlikely
-    }
-    # possess handler
-    if (!($a = $item['typeHandler']))
-    {
-      $this->logError('handler not found: '.$plan['item']);
-      return false;# no handler
-    }
-    # execute
-    if (!($res = $a::task($this, $item, $plan['data'])) ||
-        !is_array($res) || !count($res))
-    {
-      $res = [0];
-    }
-    # measure time spent and delay completion
-    $a = 300000;# 300ms
-    if (($b = microtime(true) - $time) > 0 && $b < $a) {
-      usleep($a - $b);
-    }
-    # complete
-    return $this->taskUpdate(
-      $item, 'done',
-      $res, $this->opts['debugtask'],
-      null
-    );
-  }
-  # }}}
-  private function taskProgress($plan, $file) # TODO {{{
-  {
-    /***
-    static
-      $tickSize = 500000;# 500ms
-      $maxTicks = 2*7200;# x500ms, 7200=1h
-    ###
-    # determine item handler
-    $item = null;
-    $a = '\\'.__NAMESPACE__.'\\item_';
-    $a = $a.str_replace(':', '_', $plan['item']);
-    if (!class_exists($a, false)) {
-      return false;
-    }
-    # start ticks loop
-    $b = method_exists($a, 'tick');
-    $c = 0;# counter
-    $d = 0;# default result
-    while (file_exists($file) && $c < $maxTicks)
-    {
-      # suspend
-      usleep($tickSize);
-      if (!file_exists($file)) {
-        break;
-      }
-      # tick
-      if ($b)
-      {
-        # custom
-        $e = $a::tick($this, $item, $c, $d);
-      }
-      else
-      {
-        # default
-        $e = ($c % 2) ? 1 : 0;
-      }
-      ++$c;
-      # update when changed
-      if ($d !== $e)
-      {
-        $this->taskRender($item, [$e]);
-        $d = $e;
-      }
-    }
-    # done
-    return true;
-    /***/
-  }
-  # }}}
-  public function taskRender(&$item, $args, $callback = null) # {{{
-  {
-    return $this->taskUpdate(
-      $item, 'progress',
-      $args, $this->opts['debugtask'],
-      $callback
-    );
-  }
-  # }}}
-  private function taskUpdate(&$item, $func, $args, $debug, $callback) # {{{
-  {
-    # before any task update is made to the user's view,
-    # configuration must be locked (except the debug case)
-    if (!$debug && !$this->userConfigAttach()) {
-      return false;
-    }
-    try
-    {
-      # attach task item
-      $a = $args ? ' '.implode(',', $args) : '';
-      $a = '/'.$item['id'].'!'.$func.$a;
-      if (!($b = $this->itemAttach($a))) {
-        throw new \Exception("failed to attach: $a");
-      }
-      elseif ($b === -1) {
-        throw new \Exception('', -1);
-      }
-      $item = $this->item;
-      # check displayed
-      # the _item parameter is untrusted..
-      $c = $this->user->config;
-      $b = $item['root']['id'];
-      if (array_key_exists($b, $c) &&
-          array_key_exists('_msg', $c[$b]) &&
-          $c[$b]['_msg'] &&
-          $c[$b]['_item'] === $item['id'])
-      {
-        # callback and update
-        if (!$callback || $callback($item)) {
-          $this->itemUpdate($c[$b]['_msg'], $item, ($func !== 'done'));
-        }
-      }
-    }
-    catch (\Exception $e) {
-      ~$e->getCode() && $this->logException($e);
-    }
-    # release user configuration lock
-    if (!$debug) {
-      $this->userConfigDetach();
-    }
-    # complete
-    return $item;
-  }
-  # }}}
-  # }}}
-  function render_content($text, $data = []) # {{{
-  {
-    ### {{current}}, apply specific template trims
-    $data['BR']  = "\n";
-    $data['END'] = "\xC2\xAD";# SOFT HYPHEN U+00AD
-    $data['NBSP'] = "\xC2\xA0";# non-breakable space
-    $text = $this->tp->render(preg_replace('/\n\s*/m', '', $text), $data);
-    $text = str_replace("\r", '', $text);
-    ### {[base]}
-    return $this->tp->render($text, [
-      'user' => $this->user,
-    ], '{[ ]}');
   }
   # }}}
 }
 # }}}
-# base
 class BotLog # {{{
 {
-  # contructor {{{
-  function __construct(string $name, ?self $parent = null)
+  # contructor/initializer {{{
+  private function __construct(
+    public string $name,
+    public ?self  $parent,
+    public object $cfg
+  ) {}
+  static function construct(string $name): self {
+    return new self($name, null, new BotLogConfig());
+  }
+  function init(object $bot): bool
   {
-    $this->name   = $name;
-    $this->parent = $parent;
-    $this->target = $parent
-      ? $parent->target
-      : new BotLogTarget();
+    # set logfiles
+    if ($bot->cfg->saveAccessLog) {
+      $this->cfg->files[0] = $bot->dir->data.'ACCESS.log';
+    }
+    if ($bot->cfg->saveErrorLog) {
+      $this->cfg->files[1] = $bot->dir->data.'ERROR.log';
+    }
+    return true;
   }
   function new(string $name): self {
-    return new self($name, $this);
+    return new self($name, $this, $this->cfg);
   }
   # }}}
   static function str_bg_color(string $str, string $name, int $strong=0): string # {{{
@@ -1149,7 +603,7 @@ class BotLog # {{{
   function log(string $msg, int $level = 0, int $sep = 0): void # {{{
   {
     # prepare
-    $t = $this->target;
+    $t = $this->cfg;
     $s = $t->sep[$level];
     $c = $t->color[$level];
     # file output
@@ -1160,7 +614,7 @@ class BotLog # {{{
       #file_put_contents($f, $a.$b.$msg."\n", FILE_APPEND);
     }
     # standard output
-    if ($t->stdout)
+    if (($level === 1 && ($f = STDERR)) || ($f = STDOUT))
     {
       # compose names chain
       $s = self::str_fg_color($s, $c, 1);
@@ -1172,7 +626,7 @@ class BotLog # {{{
         $p = $p->parent;
       }
       # compose root, message, line break and output
-      fwrite($t->stdout,
+      fwrite($f,
         self::str_fg_color($t->rootPrefix, $t->rootColor, 1).
         self::str_fg_color($p->name, $t->rootColor, 0).
         " $s $x$msg\n"
@@ -1180,10 +634,10 @@ class BotLog # {{{
     }
     /***
     # sfx {{{
-    if (self::$IS_WIN && $this->opts['sfx'] && !self::$IS_TASK)
+    if (self::$WINOS && $this->cfg['sfx'] && !self::$IS_TASK)
     {
       # play sound through batch-file
-      $m = $this->incdir.'sfx';
+      $m = $this->dir->inc.'sfx';
       $m = 'START "" /D "'.$m.'" /B play.bat info.wav';
       if ($m = popen($m, 'r'))
       {
@@ -1200,7 +654,7 @@ class BotLog # {{{
     $this->log(var_export($var, true), 0);
   }
   # }}}
-  # api
+  ###
   function info(string $msg, int $sep = 0): void # {{{
   {
     $this->log($msg, 0, $sep);
@@ -1264,28 +718,83 @@ class BotLog # {{{
   # }}}
   function logCycle(): void # {{{
   {
-    if ($this->stdout) {
-      fwrite($this->stdout, self::str_fg_color('>', 'cyan', 0));
+    if (STDOUT) {
+      fwrite(STDOUT, self::str_fg_color('>', 'cyan', 0));
     }
   }
   # }}}
 }
-class BotLogTarget
+class BotLogConfig
 {
   function __construct(
-    public object $bot    = null,
-    public int    $stdout = 0,# handle
-    public array  $files  = ['',''],# level[!1,1]
+    public array  $files  = ['',''],# level:[!1,1]
     public array  $sep    = ['>','<'],# in,out
-    public array  $level  = ['green','red','yellow'],
+    public array  $level  = ['green','red','yellow'],# info,error,warn
     public string $rootColor  = 'cyan',
     public string $rootPrefix = '@',
   ) {}
 }
 # }}}
-class BotConfig extends StaticInit implements \JsonSerializable # {{{
+class BotDirs extends StasisConstruct # {{{
 {
-  static $DEFS = [# {{{
+  static function construct(string $id, object $log): ?self
+  {
+    # determine base paths
+    $home = __DIR__.DIRECTORY_SEPARATOR;
+    $inc  = $home.'inc'.DIRECTORY_SEPARATOR;
+    $data = $home.'data'.DIRECTORY_SEPARATOR.$id.DIRECTORY_SEPARATOR;
+    # check
+    if (!file_exists($inc))
+    {
+      $log->error("directory not found: $inc");
+      return null;
+    }
+    if (!file_exists($data))
+    {
+      $log->error("directory not found: $data");
+      return null;
+    }
+    # image and font directories must be prioritized
+    $img  = [];
+    $font = [];
+    file_exists($a = $data.'img'.DIRECTORY_SEPARATOR) && ($img[] = $a);
+    file_exists($a = $data.'font'.DIRECTORY_SEPARATOR) && ($font[] = $a);
+    # construct
+    return new static([
+      'home' => $home,
+      'inc'  => $inc,
+      'data' => $data,
+      'img'  => $img,
+      'font' => $font,
+      'bot'  => '',
+    ]);
+  }
+  function init(object $bot): bool
+  {
+    # set bot directory
+    $dir = $this->home.'bots'.DIRECTORY_SEPARATOR.$bot->cfg->bot.DIRECTORY_SEPARATOR;
+    if (!file_exists($dir))
+    {
+      $bot->log->error("directory not found: $dir");
+      return false;
+    }
+    $this->bot = $dir;
+    # add image directory
+    file_exists($a = $dir.'img'.DIRECTORY_SEPARATOR) && ($this->img[] = $a);
+    # add font directories
+    $a = 'font'.DIRECTORY_SEPARATOR;
+    file_exists($b = $dir.$a) && ($this->font[] = $b);
+    file_exists($b = $this->inc.$a) && ($this->font[] = $b);
+    # done
+    return true;
+  }
+}
+# }}}
+class BotConfig extends StasisConstruct # {{{
+{
+  static $FILE = 'config.json';
+  static $DEFS = [
+    # {{{
     'bot'    => '',
     'token'  => '',
     'name'   => '',
@@ -1305,41 +814,155 @@ class BotConfig extends StaticInit implements \JsonSerializable # {{{
     'replyIgnoredCallback' => true,
     'wipeUserInput'        => true,
     'debugTasks'           => false,
+    # }}}
   ];
-  # }}}
-  static function init(string $dir): ?self # {{{
+  static function construct(object $dir, object $log): ?self
   {
-    # read and decode json file
-    if (!file_exists($file = $dir.'o.json') ||
-        !($opts = file_get_contents($file)) ||
-        !($opts = json_decode($opts, true)) ||
-        !is_array($opts))
+    # check configuration file exists
+    if (!file_exists($file = $dir->data.self::$FILE))
     {
+      $log->error("file not found: $file");
       return null;
     }
-    # check required
-    if (!isset($opts[$k = 'bot'])   || !$opts[$k] ||
-        !isset($opts[$k = 'token']) || !$opts[$k] ||
-        !isset($opts[$k = 'name'])  || !$opts[$k])
+    # load and check data
+    if (!($o = BotFiles::get_json($file))   ||
+        !isset($o[$k = 'bot'])   || !$o[$k] ||
+        !isset($o[$k = 'token']) || !$o[$k] ||
+        !isset($o[$k = 'name'])  || !$o[$k])
     {
+      $log->error("incorrect file: $file");
       return null;
     }
     # construct
-    return new static(array_merge(self::$DEFS, $opts));
+    $o = new static(array_merge(self::$DEFS, $o));
+    $o->file = $file;
+    return $o;
+  }
+  public string $file;
+  function init(object $bot): bool
+  {
+    if (!BotFiles::lock($file = $this->file))
+    {
+      $bot->log->error("failed to lock: $file");
+      return false;
+    }
+    return true;
+  }
+  function finit(): void
+  {
+    BotFiles::unlock($this->file);
+  }
+}
+# }}}
+class BotFiles extends StasisConstruct # {{{
+{
+  static $ID_FILE='fids.json'
+  static function construct($bot): self # {{{
+  {
+    # get file identifiers map
+    $map = ($file = $bot->cfg->useFileIds ? $bot->dir->data.$ID_FILE : '')
+      ? self::get_json($file)
+      : null;
+    # construct
+    return new static([
+      'dir'    => $bot->dir,
+      'log'    => $bot->log->new('file'),
+      'idFile' => $file,
+      'idMap'  => $map,
+    ]);
   }
   # }}}
-  function jsonSerialize(): array # {{{
+  function getId(string $file): string # {{{
   {
-    $o = [];
-    foreach (self::$DEFS as $k => &$v) {
-      $o[$k] = $this->$k;
+    return ($this->idMap && isset($this->idMap[$file]))
+      ? $this->idMap[$file]
+      : '';
+  }
+  # }}}
+  function setId(string $file, string $id): void # {{{
+  {
+    if ($this->idMap)
+    {
+      $this->idMap[$file] = $id;
+      if (self::lock($this->idFile))
+      {
+        self::set_json($this->idFile, $this->idMap);
+        self::unlock($this->idFile);
+      }
     }
-    return $o;
+  }
+  # }}}
+  static function lock(string $file, bool $force = false): string # {{{
+  {
+    # prepare
+    $id    = time();
+    $count = 50;
+    $lock  = "$file.lock";
+    # wait until lock released or count exhausted
+    while (file_exists($lock) && --$count) {
+      usleep(100000);# 100ms
+    }
+    # check exhausted
+    if (!$count)
+    {
+      # check not forced or apply force (remove lockfile)
+      if (!$force || !@unlink($lock)) {
+        return '';
+      }
+      # clear cache
+      clearstatcache(true, $lock);
+    }
+    # set new lock and
+    # make sure no collisions
+    if (!file_put_contents($lock, $id) ||
+        !file_exists($lock) ||
+        file_get_contents($lock) !== $id)
+    {
+      return '';
+    }
+    return $lock;
+  }
+  # }}}
+  static function unlock(string $file) # {{{
+  {
+    return (file_exists($lock = "$file.lock"))
+      ? @unlink($lock) : false;
+  }
+  # }}}
+  static function get_json(string $file): array # {{{
+  {
+    if (!file_exists($file) ||
+        !($data = file_get_contents($file)) ||
+        !($data = json_decode($data, true)))
+    {
+      $data = [];
+    }
+    return $data;
+  }
+  # }}}
+  static function set_json(string $file, ?array $data): bool # {{{
+  {
+    if ($data)
+    {
+      if (($data = json_encode($data, JSON_UNESCAPED_UNICODE)) === false) {
+        return false;
+      }
+      if (file_exists($file) && (file_get_contents($file) === $data)) {
+        return true;
+      }
+      if (file_put_contents($file, $data) === false) {
+        return false;
+      }
+    }
+    elseif (file_exists($file)) {
+      @unlink($file);
+    }
+    return true;
   }
   # }}}
 }
 # }}}
-class BotApi extends StaticInit # {{{
+class BotApi extends StasisConstruct # {{{
 {
   static function init(object $bot): ?self # {{{
   {
@@ -1364,7 +987,7 @@ class BotApi extends StaticInit # {{{
       'bot'    => $bot,
       'log'    => $bot->log->new('api'),
       'curl'   => $curl,
-      'url'    => $URL.$bot->opts->token,
+      'url'    => $URL.$bot->cfg->token,
       'result' => null,
     ]);
   }
@@ -1444,215 +1067,9 @@ class BotApiFile extends \CURLFile
   # }}}
 }
 # }}}
-class BotCommands extends StaticInit # {{{
-{
-  # {{{
-  static function init(object $bot): ?self
-  {
-    # check
-    if ($b = file_exists($a = $bot->datadir.'commands.json'))
-    {
-      # load precompiled
-      if (!($c = file_get_contents($a)) ||
-          !($c = json_decode($c, true)))
-      {
-        $bot->logError("failed to load: $a");
-        return null;
-      }
-    }
-    else
-    {
-      # merge
-      $c = require $bot->botdir.'commands.inc';
-      if (file_exists($d = $bot->datadir.'commands.inc')) {
-        $c = array_merge($c, (require $d));
-      }
-    }
-    # construct root items
-    $base = '\\'.__NAMESPACE__.'\\BotItem';
-    foreach ($c as $d => &$e)
-    {
-      $type = $base.(isset($e['type']) ? ucfirst($e['type']) : 'Img');
-      if (!$b && !class_exists($type, false))
-      {
-        $bot->logError("class $type not found");
-        return null;
-      }
-      if (($e = $type::init($bot, $d, $e, null, $b)) === null)
-      {
-        $bot->logError("failed to construct $type::$d");
-        return null;
-      }
-    }
-    unset($e);
-    # store refined items (not for master)
-    if (!$b && !$bot->isMaster)
-    {
-      $b = json_encode($c, JSON_UNESCAPED_UNICODE);
-      $b && file_put_contents($a, $b);
-    }
-    # construct
-    return new static([
-      'tree' => $c,
-      'map'  => self::createMap($c),
-    ]);
-  }
-  static function createMap(array &$tree): array
-  {
-    $map = [];
-    foreach ($tree as $a)
-    {
-      $map[$a->id] = $a;
-      if ($a->items)
-      {
-        foreach (self::createMap($a->items) as $b) {
-          $map[$b->id] = $b;
-        }
-      }
-    }
-    return $map;
-  }
-  # }}}
-  function dump( # {{{
-    int    $pad   = 0,
-    string $color = 'cyan',
-    ?array &$tree = null,
-    array  &$indent = []
-  ):string
-  {
-    # prepare
-    !$tree && ($tree = $this->tree);
-    $x = '';
-    $i = 0;
-    $j = count($tree);
-    # compose tree items
-    foreach ($tree as &$a)
-    {
-      # compose indent
-      $pad && ($x .= str_repeat(' ', $pad));
-      foreach ($indent as $b) {
-        $x .= $b ? Bot::str_fg_color('│ ', $color) : '  ';
-      }
-      # compose item line
-      $b  = (++$i === $j);
-      $c  = Bot::str_fg_color(($b ? '└─' : '├─'), $color);
-      $x .= $c.$a->name."\n";
-      # recurse
-      if ($a->items)
-      {
-        $indent[] = !$b;
-        $x .= $this->dump($pad, $color, $a->items, $indent);
-        array_pop($indent);
-      }
-    }
-    # done
-    return $x;
-  }
-  # }}}
-}
-class BotCommand extends StaticInit
-{
-  # {{{
-  # command syntax: /<item>!<func> <args>
-  const EXPR = '|^\/((\w+)([:/-](\w+)){0,8})(!(\w{1,})){0,1}( (.{1,})){0,1}$|';
-  const MAX_SIZE = 200;
-  static function parse(string $exp, bool $loose = true): ?self
-  {
-    # check correct size
-    if (($a = strlen($exp)) < 2 || $a > self::MAX_SIZE) {
-      return null;
-    }
-    # determine bot name (specified as postfix in groups)
-    $bot = (($a = strrpos($exp, '@')) !== false)
-      ? substr($exp, 0, $a)
-      : '';
-    # check
-    if ($loose && $exp[0] === '!')
-    {
-      # parse simplified expression
-      $item = '';
-      if ($a = strpos($exp, ' '))
-      {
-        $func = substr($exp, 1, $a);
-        $args = explode(',', substr($exp, $a + 1));
-      }
-      else
-      {
-        $func = substr($exp, 1);
-        $args = [];
-      }
-    }
-    else
-    {
-      # parse full-fledged command
-      $a = null;
-      if (!preg_match_all(self::EXPR, $exp, $a)) {
-        return null;
-      }
-      # extract
-      $item = $a[1][0];
-      $func = $a[6][0];
-      $args = strlen($a[8][0])
-        ? explode(',', $a[8][0])
-        : null;
-      # check deep link (tg://<BOT_NAME>?start=<item>)
-      if ($item === 'start' && !$func && $args)
-      {
-        $item = $args[0];
-        $args = null;
-      }
-      # remove separators [:],[-],[/]
-      if (strpos($item, ':')) {
-        $item = str_replace(':', '', $item);
-      }
-      elseif (strpos($item, '-')) {
-        $item = str_replace('-', '', $item);
-      }
-      elseif (strpos($item, '/')) {
-        $item = str_replace('/', '', $item);
-      }
-    }
-    # construct
-    return new static([
-      'id'   => $item,
-      'func' => $func,
-      'args' => $args,
-      'bot'  => $bot,
-    ]);
-  }
-  # }}}
-}
-# }}}
-class BotFileId extends StaticInit # {{{
-{
-  static function init(string $file, bool $enabled): ?self
-  {
-    return new static([
-      'enabled' => $enabled,
-      'file'    => $file,
-      'data'    => Bot::file_get_json($file),
-    ]);
-  }
-  function get(string $file): string
-  {
-    return ($this->enabled && isset($this->data[$file]))
-      ? $this->data[$file]
-      : '';
-  }
-  function set(string $file, string $id): void
-  {
-    $this->data[$file] = $id;
-    if ($this->enabled && Bot::file_lock($this->file))
-    {
-      Bot::file_set_json($this->file, $this->data);
-      Bot::file_unlock($this->file);
-    }
-  }
-}
-# }}}
-# update
+###
 # {{{
-class BotRequestInput extends StaticInit
+class BotRequestInput extends StasisConstruct
 {
   static function init(object $msg): ?object # {{{
   {
@@ -1683,7 +1100,7 @@ class BotRequestInput extends StaticInit
           !$user->send($item))
       {
         $bot->logError('command failed: '.$text);
-        $bot->opts->replyFailedCommand && $bot->api->send('sendMessage', [
+        $bot->cfg->replyFailedCommand && $bot->api->send('sendMessage', [
           'chat_id' => $this->chat->id,
           'text'    => $user->messages[1].': '.$text,
         ]);
@@ -1691,7 +1108,7 @@ class BotRequestInput extends StaticInit
     }
     /***/
     # cleanup
-    if ($bot->opts->wipeUserInput)
+    if ($bot->cfg->wipeUserInput)
     {
       $bot->api->send('deleteMessage', [
         'chat_id'    => $this->chat->id,
@@ -1703,7 +1120,7 @@ class BotRequestInput extends StaticInit
   # }}}
   function wipe(object $user): void # {{{
   {
-    if ($user->bot->opts->wipeUserInput)
+    if ($user->bot->cfg->wipeUserInput)
     {
       $user->bot->api->send('deleteMessage', [
         'chat_id'    => $this->chat->id,
@@ -1729,7 +1146,7 @@ class BotRequestCommand extends BotRequestInput
   {
     # prepare
     $bot  = $user->bot;
-    $opt  = $bot->opts;
+    $opt  = $bot->cfg;
     $msg  = $this->msg;
     $item = null;
     $res  = 0;
@@ -1794,7 +1211,7 @@ class BotRequestCommand extends BotRequestInput
   }
   # }}}
 }
-class BotRequestCallback extends StaticInit
+class BotRequestCallback extends StasisConstruct
 {
   static function init(object $query): ?object # {{{
   {
@@ -1914,7 +1331,7 @@ class BotRequestCallback extends StaticInit
   }
   # }}}
 }
-class BotRequestGame extends StaticInit
+class BotRequestGame extends StasisConstruct
 {
   static function init(object $query): ?self # {{{
   {
@@ -1949,7 +1366,7 @@ class BotRequestGame extends StaticInit
   }
   # }}}
 }
-class BotRequestInline extends StaticInit
+class BotRequestInline extends StasisConstruct
 {
   static function init(object $query): ?self # {{{
   {
@@ -1979,7 +1396,7 @@ class BotRequestInline extends StaticInit
   # }}}
 }
 # }}}
-class BotUser extends StaticInit # {{{
+class BotUser extends StasisConstruct # {{{
 {
   # {{{
   static function init(object $bot, object $u): ?self
@@ -2019,15 +1436,15 @@ class BotUser extends StaticInit # {{{
     $name = $name.$a.$b;
     # determine admin flag
     # TODO: groups
-    $isAdmin = in_array($from->id, $bot->opts->admins);
+    $isAdmin = in_array($from->id, $bot->cfg->admins);
     # check masterbot access
-    if ($bot->isMaster && !$isAdmin)
+    if (!$isAdmin && $bot->id === 'master')
     {
       $bot->logWarn("access denied: $name");
       return null;
     }
     # determine language
-    if (!($lang = $bot->opts->forceLang) &&
+    if (!($lang = $bot->cfg->forceLang) &&
         (!isset($from->language_code) ||
          !($lang = $from->language_code) ||
          !isset($bot->messages[$lang])))
@@ -2036,7 +1453,7 @@ class BotUser extends StaticInit # {{{
     }
     # determine directory
     $dir = $isGroup ? '_'.$chat->id : $from->id;
-    $dir = $bot->datadir.$dir.DIRECTORY_SEPARATOR;
+    $dir = $bot->dir->data.$dir.DIRECTORY_SEPARATOR;
     if (!file_exists($dir) && !@mkdir($dir))
     {
       $bot->logError("failed to create directory: $dir");
@@ -2080,7 +1497,7 @@ class BotUser extends StaticInit # {{{
     # guard against exceptions
     if ($this->config)
     {
-      Bot::file_unlock($this->config->file);
+      BotFiles::unlock($this->config->file);
       $this->config = null;
     }
   }
@@ -2197,7 +1614,7 @@ class BotUser extends StaticInit # {{{
       $file = $item->id.'.json';
       $file = $s['datatype'] === 1
         ? $this->dir.$file
-        : $bot->datadir.$file;
+        : $bot->dir->data.$file;
       if (file_exists($file) && ($a = file_get_contents($file))) {
         $item->data = json_decode($a, true);
       }
@@ -2459,13 +1876,13 @@ class BotUser extends StaticInit # {{{
   }
   # }}}
 }
-class BotUserConfig extends StaticInit
+class BotUserConfig extends StasisConstruct
 {
   # initializer {{{
   static function init(object $user): ?self
   {
     # aquire a forced lock
-    if (!Bot::file_lock($file = $user->dir.'config.json', true)) {
+    if (!BotFiles::lock($file = $user->dir.'config.json', true)) {
       return null;
     }
     # construct
@@ -2501,7 +1918,7 @@ class BotUserConfig extends StaticInit
         '*' => $this->items,
       ]);
     }
-    $unlock && Bot::file_unlock($this->file);
+    $unlock && BotFiles::unlock($this->file);
   }
   # }}}
   # api {{{
@@ -2556,7 +1973,7 @@ class BotUserConfig extends StaticInit
   }
   # }}}
 }
-class BotUserConfigRoot extends StaticInit implements \JsonSerializable {
+class BotUserConfigRoot extends StasisConstruct implements \JsonSerializable {
   # {{{
   static function init(object $user, array|object $data): self
   {
@@ -2596,7 +2013,7 @@ class BotUserConfigRoot extends StaticInit implements \JsonSerializable {
   }
   # }}}
 }
-class BotUserConfigItem extends StaticInit implements \ArrayAccess, \JsonSerializable {
+class BotUserConfigItem extends StasisConstruct implements \ArrayAccess, \JsonSerializable {
   # {{{
   static function init(object $user, ?array &$data = null): self
   {
@@ -2627,8 +2044,182 @@ class BotUserConfigItem extends StaticInit implements \ArrayAccess, \JsonSeriali
   # }}}
 }
 # }}}
-# items
-abstract class BotItem extends StaticInit implements \JsonSerializable # {{{
+###
+class BotItems extends StasisConstruct # {{{
+{
+  static function init(object $bot): ?self # {{{
+  {
+    static $FILE1='commands.json', $FILE2='commands.inc';
+    # check
+    if ($b = file_exists($a = $bot->dir->data.$FILE1))
+    {
+      # load precompiled
+      if (!($c = file_get_contents($a)) ||
+          !($c = json_decode($c, true)))
+      {
+        $bot->log->error("failed to load: $a");
+        return null;
+      }
+    }
+    else
+    {
+      # merge
+      $c = require $bot->dir->bot.$FILE2;
+      if (file_exists($d = $bot->dir->data.$FILE2)) {
+        $c = array_merge($c, (require $d));
+      }
+    }
+    # construct roots
+    $base = '\\'.__NAMESPACE__.'\\BotItem';
+    foreach ($c as $d => &$e)
+    {
+      $type = $base.(isset($e['type']) ? ucfirst($e['type']) : 'Img');
+      if (!$b && !class_exists($type, false))
+      {
+        $bot->log->error("class $type not found");
+        return null;
+      }
+      if (($e = $type::init($bot, $d, $e, null, $b)) === null)
+      {
+        $bot->log->error("failed to construct $type::$d");
+        return null;
+      }
+    }
+    unset($e);
+    # construct
+    return new static([
+      'tree' => $c,
+      'map'  => self::createMap($c),
+    ]);
+  }
+  # }}}
+  static function createMap(array &$tree): array # {{{
+  {
+    $map = [];
+    foreach ($tree as $a)
+    {
+      $map[$a->id] = $a;
+      if ($a->items)
+      {
+        foreach (self::createMap($a->items) as $b) {
+          $map[$b->id] = $b;
+        }
+      }
+    }
+    return $map;
+  }
+  # }}}
+  function dump( # {{{
+    int    $pad   = 0,
+    string $color = 'cyan',
+    ?array &$tree = null,
+    array  &$indent = []
+  ):string
+  {
+    # prepare
+    !$tree && ($tree = $this->tree);
+    $x = '';
+    $i = 0;
+    $j = count($tree);
+    # compose tree items
+    foreach ($tree as &$a)
+    {
+      # compose indent
+      $pad && ($x .= str_repeat(' ', $pad));
+      foreach ($indent as $b) {
+        $x .= $b ? Bot::str_fg_color('│ ', $color) : '  ';
+      }
+      # compose item line
+      $b  = (++$i === $j);
+      $c  = Bot::str_fg_color(($b ? '└─' : '├─'), $color);
+      $x .= $c.$a->name."\n";
+      # recurse
+      if ($a->items)
+      {
+        $indent[] = !$b;
+        $x .= $this->dump($pad, $color, $a->items, $indent);
+        array_pop($indent);
+      }
+    }
+    # done
+    return $x;
+  }
+  # }}}
+}
+class BotCommand extends StasisConstruct
+{
+  # {{{
+  # command syntax: /<item>!<func> <args>
+  const EXPR = '|^\/((\w+)([:/-](\w+)){0,8})(!(\w{1,})){0,1}( (.{1,})){0,1}$|';
+  const MAX_SIZE = 200;
+  static function parse(string $exp, bool $loose = true): ?self
+  {
+    # check correct size
+    if (($a = strlen($exp)) < 2 || $a > self::MAX_SIZE) {
+      return null;
+    }
+    # determine bot name (specified as postfix in groups)
+    $bot = (($a = strrpos($exp, '@')) !== false)
+      ? substr($exp, 0, $a)
+      : '';
+    # check
+    if ($loose && $exp[0] === '!')
+    {
+      # parse simplified expression
+      $item = '';
+      if ($a = strpos($exp, ' '))
+      {
+        $func = substr($exp, 1, $a);
+        $args = explode(',', substr($exp, $a + 1));
+      }
+      else
+      {
+        $func = substr($exp, 1);
+        $args = [];
+      }
+    }
+    else
+    {
+      # parse full-fledged command
+      $a = null;
+      if (!preg_match_all(self::EXPR, $exp, $a)) {
+        return null;
+      }
+      # extract
+      $item = $a[1][0];
+      $func = $a[6][0];
+      $args = strlen($a[8][0])
+        ? explode(',', $a[8][0])
+        : null;
+      # check deep link (tg://<BOT_NAME>?start=<item>)
+      if ($item === 'start' && !$func && $args)
+      {
+        $item = $args[0];
+        $args = null;
+      }
+      # remove separators [:],[-],[/]
+      if (strpos($item, ':')) {
+        $item = str_replace(':', '', $item);
+      }
+      elseif (strpos($item, '-')) {
+        $item = str_replace('-', '', $item);
+      }
+      elseif (strpos($item, '/')) {
+        $item = str_replace('/', '', $item);
+      }
+    }
+    # construct
+    return new static([
+      'id'   => $item,
+      'func' => $func,
+      'args' => $args,
+      'bot'  => $bot,
+    ]);
+  }
+  # }}}
+}
+# }}}
+abstract class BotItem extends StasisConstruct implements \JsonSerializable # {{{
 {
   # {{{
   static $DATATYPE = 0, $ERROR = null;
@@ -2750,7 +2341,7 @@ class BotItemImg extends BotItem # {{{
   {
     # prepare
     $bot = $user->bot;
-    $o   = $bot->opts;
+    $o   = $bot->cfg;
     $s   = &$this->struct;
     $msg = [];
     # invoke handler
@@ -2767,7 +2358,7 @@ class BotItemImg extends BotItem # {{{
     while (!isset($msg[$c = 'image']))
     {
       # check cached
-      if ($d = $bot->fids->get($a = $msg[$a]))
+      if ($d = $bot->file->getId($a = $msg[$a]))
       {
         $msg[$c] = $d;
         break;
@@ -2775,7 +2366,7 @@ class BotItemImg extends BotItem # {{{
       # check file specified by handler
       if ($b)
       {
-        foreach ($bot->imgdir as &$d)
+        foreach ($bot->dir->img as &$d)
         {
           if (file_exists($e = "$d$a.jpg"))
           {
@@ -2802,7 +2393,7 @@ class BotItemImg extends BotItem # {{{
       # check file
       if (!$b)
       {
-        foreach ($user->bot->imgdir as &$d)
+        foreach ($user->bot->dir->img as &$d)
         {
           if (file_exists($e = "$d$a.jpg") ||
               file_exists($e = "$d$b.jpg"))
@@ -2934,7 +2525,7 @@ class BotItemImg extends BotItem # {{{
   # }}}
   static function titleDummy(object $bot): ?object # {{{
   {
-    return self::title('', '', $bot->opts->colors['title'], []);
+    return self::title('', '', $bot->cfg->colors['title'], []);
   }
   # }}}
   static function send(object $user, array &$msg): int # {{{
@@ -2962,7 +2553,7 @@ class BotItemImg extends BotItem # {{{
     if ($msg['image'] instanceOf BotApiFile)
     {
       $a = end($res->result->photo);
-      $bot->fids->set($msg['imageId'], $a->file_id);
+      $bot->file->setId($msg['imageId'], $a->file_id);
     }
     # complete
     return $res->result->message_id;
@@ -2983,7 +2574,7 @@ class BotItemImg extends BotItem # {{{
     {
       # static,
       # check cached or generate otherwise
-      if ($img = $bot->fids->get($FID)) {
+      if ($img = $bot->file->getId($FID)) {
         $file = '';
       }
       elseif ($img = self::titleDummy($bot)) {
@@ -3018,7 +2609,7 @@ class BotItemImg extends BotItem # {{{
     if ($file)
     {
       $b = end($a->result->photo);
-      $bot->fids->set($FID, $b->file_id);
+      $bot->file->setId($FID, $b->file_id);
     }
     # done
     return true;
@@ -3165,7 +2756,7 @@ class BotItemTxt extends BotItem # {{{
       # load from file
       $file = $item['type'].'_'.$name.'.json';
       $file = $item['isPublicData']
-        ? $this->datadir.$file
+        ? $this->dir->data.$file
         : $this->user->dir.$file;
       if (file_exists($file) && ($a = file_get_contents($file))) {
         $item['data'] = json_decode($a, true);
@@ -3214,8 +2805,8 @@ class BotItemTxt extends BotItem # {{{
         $b = 'img'.DIRECTORY_SEPARATOR;
         $c = $b.$item['titleId'].'.jpg';# more specific first
         $d = $b.$name.'.jpg';# less specific last
-        $a = $this->botdir;
-        $b = $this->incdir;
+        $a = $this->dir->bot;
+        $b = $this->dir->inc;
         # determine single source
         $a = (file_exists($a.$c)
           ? $a.$c : (file_exists($a.$d)
@@ -4676,6 +4267,7 @@ class BotItemCaptcha extends BotItem # {{{
 }
 # }}}
 /***
+  # TODO
 # handle navigational item {{{
 if (($a = $item['type']) === 'open' || $a === 'inject')
 {
@@ -4692,5 +4284,399 @@ if (($a = $item['type']) === 'open' || $a === 'inject')
     : $this->itemRender($item, $a, $b);
 }
 # }}}
+# start task {{{
+      /***
+      # output startup signal,
+      # any other output to STDOUT/STDERR will terminate process
+      echo "TASK STARTED\n";
+      # load task plan
+      if (!file_exists($args[1]) ||
+          !($plan = file_get_contents($args[1])) ||
+          !($plan = json_decode($plan, true)) ||
+          !is_array($plan) ||
+          !array_key_exists('id', $plan) ||
+          !($plan['id'] === $args[2]))
+      {
+        break;
+      }
+      # create instance
+      if (($b = self::init($plan['bot'], true)) === null) {
+        break;
+      }
+      # register task unlocker
+      register_shutdown_function(function($file) {
+        if (file_exists($file)) {
+          unlink($file);
+        }
+      }, $args[1]);
+      # operate
+      try
+      {
+        # attach bot's user
+        $b->user = (object)$plan['user'];
+        $b->user->chat = (object)$b->user->chat;
+        # execute
+        if (!$b->taskWork($plan)) {
+          throw new \Exception($args[0].' failed #'.$plan['id'].': '.$plan['item']);
+        }
+        $b->taskDetach();# enable continuation
+      }
+      catch (\Exception $e) {
+        $b->logException($e);# recorded
+      }
+# }}}
+  # task manager {{{
+  private function userConfigAttach() # {{{
+  {
+    # determine filename (depends on chat)
+    $file = $this->user->dir.'config';
+    $chat = $this->user->chat;
+    if ($chat->type !== 'private') {
+      $file = $file.strval($chat->id);
+    }
+    $file = $file.'.json';
+    # aquire a forced lock
+    if (!self::file_lock($file, true))
+    {
+      $this->logError("forced lock failed: $file");
+      return false;
+    }
+    # read, decode contents and
+    # set user's configuration
+    $this->user->config = file_exists($file)
+      ? json_decode(file_get_contents($file), true)
+      : [];
+    # done
+    $this->user->file = $file;
+    $this->user->changed = false;
+    return true;
+  }
+  # }}}
+  private function userConfigDetach($nowrite = false) # {{{
+  {
+    if ($file = $this->user->file)
+    {
+      # write changes
+      if (!$nowrite && $this->user->changed) {
+        file_put_contents($file, json_encode($this->user->config));
+      }
+      # release lock
+      self::file_unlock($file);
+    }
+    return true;
+  }
+  # }}}
+  public function taskAttach( # {{{
+    &$item,       # object (standard) or string (custom)
+    $data = null, # task data
+    $tick = false # enables progress ticks
+  ) {
+    ###
+    if ($item)
+    {
+      # compose php interpreter command
+      $task = __DIR__.DIRECTORY_SEPARATOR.'index.php';
+      $task = '"'.PHP_BINARY.'" -f "'.$task.'" -- ';
+      # check type
+      if (is_string($item))
+      {
+        # unmanaged, custom operation
+        $this->log("custom task: $item");
+        $this->tasks[] = [0, $task.$item];
+      }
+      else
+      {
+        # standard
+        # determine task plan file
+        $file = 'task_'.$item['path'].'.json';
+        $file = $this->user->dir.$file;
+        if ($this->cfg['debugtask'])
+        {
+          $plan = -1;
+          $this->log('debug task: '.$item['id']);
+        }
+        else
+        {
+          $plan = uniqid();
+          $this->log("task: $file");
+        }
+        # determine process arguments
+        $args = ' "'.$file.'" '.$plan;
+        # add worker
+        $this->tasks[] = [$plan, $task.'task'.$args, $file, $item['id'], $data];
+        # add ticker
+        if ($tick) {
+          $this->tasks[] = [$plan, $task.'progress'.$args, $file, $item['id'], $data];
+        }
+      }
+    }
+    return true;
+  }
+  # }}}
+  public function taskDetach() # {{{
+  {
+    # copy and reset
+    $tasks = $this->tasks;
+    $debugtask = $this->cfg['debugtask'];
+    $this->tasks = [];
+    # spawn all tasks one by one
+    foreach ($tasks as $task)
+    {
+      # create task plan
+      $file = $task[2];
+      $plan = [
+        'id'   => $task[0],
+        'bot'  => $this->id,
+        'item' => $task[3],
+        'data' => $task[4],
+        'user' => $this->user,
+      ];
+      # run
+      if ($debugtask)
+      {
+        # sync
+        $this->log('===');
+        if (!$this->taskWork($plan)) {break;}
+        $this->log('===');
+      }
+      else
+      {
+        # async
+        # create plan file
+        if (!file_put_contents($file, json_encode($plan)))
+        {
+          $this->logError("file_put_contents($file) failed");
+          break;
+        }
+        # launch
+        if (!self::async_execute($task[1])) {
+          break;
+        }
+      }
+    }
+    # update user configuration (in debug mode)
+    if ($debugtask) {
+      $this->userConfigDetach();
+    }
+    # done
+    return true;
+  }
+  # }}}
+  private function taskWork($plan) # {{{
+  {
+    # measure time
+    $time = microtime(true);
+    # possess item
+    if (!($item = $this->itemGet($plan['item'])))
+    {
+      $this->logError('item not found: '.$plan['item']);
+      return false;# unlikely
+    }
+    # possess handler
+    if (!($a = $item['typeHandler']))
+    {
+      $this->logError('handler not found: '.$plan['item']);
+      return false;# no handler
+    }
+    # execute
+    if (!($res = $a::task($this, $item, $plan['data'])) ||
+        !is_array($res) || !count($res))
+    {
+      $res = [0];
+    }
+    # measure time spent and delay completion
+    $a = 300000;# 300ms
+    if (($b = microtime(true) - $time) > 0 && $b < $a) {
+      usleep($a - $b);
+    }
+    # complete
+    return $this->taskUpdate(
+      $item, 'done',
+      $res, $this->cfg['debugtask'],
+      null
+    );
+  }
+  # }}}
+  private function taskProgress($plan, $file) # TODO {{{
+  {
+    static
+      $tickSize = 500000;# 500ms
+      $maxTicks = 2*7200;# x500ms, 7200=1h
+    ###
+    # determine item handler
+    $item = null;
+    $a = '\\'.__NAMESPACE__.'\\item_';
+    $a = $a.str_replace(':', '_', $plan['item']);
+    if (!class_exists($a, false)) {
+      return false;
+    }
+    # start ticks loop
+    $b = method_exists($a, 'tick');
+    $c = 0;# counter
+    $d = 0;# default result
+    while (file_exists($file) && $c < $maxTicks)
+    {
+      # suspend
+      usleep($tickSize);
+      if (!file_exists($file)) {
+        break;
+      }
+      # tick
+      if ($b)
+      {
+        # custom
+        $e = $a::tick($this, $item, $c, $d);
+      }
+      else
+      {
+        # default
+        $e = ($c % 2) ? 1 : 0;
+      }
+      ++$c;
+      # update when changed
+      if ($d !== $e)
+      {
+        $this->taskRender($item, [$e]);
+        $d = $e;
+      }
+    }
+    # done
+    return true;
+  }
+  # }}}
+  public function taskRender(&$item, $args, $callback = null) # {{{
+  {
+    return $this->taskUpdate(
+      $item, 'progress',
+      $args, $this->cfg['debugtask'],
+      $callback
+    );
+  }
+  # }}}
+  private function taskUpdate(&$item, $func, $args, $debug, $callback) # {{{
+  {
+    # before any task update is made to the user's view,
+    # configuration must be locked (except the debug case)
+    if (!$debug && !$this->userConfigAttach()) {
+      return false;
+    }
+    try
+    {
+      # attach task item
+      $a = $args ? ' '.implode(',', $args) : '';
+      $a = '/'.$item['id'].'!'.$func.$a;
+      if (!($b = $this->itemAttach($a))) {
+        throw new \Exception("failed to attach: $a");
+      }
+      elseif ($b === -1) {
+        throw new \Exception('', -1);
+      }
+      $item = $this->item;
+      # check displayed
+      # the _item parameter is untrusted..
+      $c = $this->user->config;
+      $b = $item['root']['id'];
+      if (array_key_exists($b, $c) &&
+          array_key_exists('_msg', $c[$b]) &&
+          $c[$b]['_msg'] &&
+          $c[$b]['_item'] === $item['id'])
+      {
+        # callback and update
+        if (!$callback || $callback($item)) {
+          $this->itemUpdate($c[$b]['_msg'], $item, ($func !== 'done'));
+        }
+      }
+    }
+    catch (\Exception $e) {
+      ~$e->getCode() && $this->logException($e);
+    }
+    # release user configuration lock
+    if (!$debug) {
+      $this->userConfigDetach();
+    }
+    # complete
+    return $item;
+  }
+  # }}}
+  # }}}
+  function render_content($text, $data = []) # {{{
+  {
+    ### {{current}}, apply specific template trims
+    $data['BR']  = "\n";
+    $data['END'] = "\xC2\xAD";# SOFT HYPHEN U+00AD
+    $data['NBSP'] = "\xC2\xA0";# non-breakable space
+    $text = $this->tp->render(preg_replace('/\n\s*/m', '', $text), $data);
+    $text = str_replace("\r", '', $text);
+    ### {[base]}
+    return $this->tp->render($text, [
+      'user' => $this->user,
+    ], '{[ ]}');
+  }
+  # }}}
+  ###
+  static function async_execute(string $command) # {{{
+  {
+    if (self::$WINOS)
+    {
+      # this will not work,
+      # kept for history of stdin/out redirection to NUL,
+      # which would signal of no output and
+      # make function return instantly (no wait)
+      #system($task.' 1>NUL 2>&1');
+      ###
+      # this trick will not work,
+      # seem that it relies on CPU speed,
+      # using START command neither works
+      #pclose(popen($task, 'r'));
+      ###
+      # this will start the START command,
+      # WARNING: without the START command, it will go sync!
+      # which will start the PHP CLI command (NOWAIT),
+      # which will start the bot task handler,
+      # which will return "TASK STARTED" here
+      $command = 'START "" /B '.$command.' 2>&1';
+      if (!($a = popen($command, 'r')) ||
+          !($b = fgets($a)))
+      {
+        $this->logError("async_execute($command) failed");
+        return false;
+      }
+      ###
+      # pclose() will terminate START before
+      # it actually start anything, so the task
+      # response is obtained before (by reading),
+      # which resolves timing problem (i guess)
+      #sleep(5); # NO NEED!
+      pclose($a);
+      # just check that process belongs here
+      if (strncmp('TASK STARTED', $b, 12) !== 0)
+      {
+        $this->logError("async_execute($command) incorrect response");
+        return false;
+      }
+    }
+    else
+    {
+      # TODO: test nix* variant
+      shell_exec('/usr/bin/nohup '.$command.' >/dev/null 2>&1 &');
+    }
+    # done
+    return true;
+  }
+  # }}}
+  static function delay(float|int $sec): void # {{{
+  {
+    # determine base and remainder
+    $a = intval($sec);
+    $b = intval(100000 * ($sec - $a));
+    # sleep
+    if ($a) {sleep($a);}
+    if ($b) {usleep($b);}
+  }
+  # }}}
 /***/
+# TODO: list of lists
+# TODO: language switch form
+# TODO: form input bob
+# TODO: parallel
 ?>

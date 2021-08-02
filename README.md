@@ -11,4 +11,9 @@ prototype <https://github.com/MattyDev01/GoogleBot>
   {/* inline markup */},
 ]
 ```
+[//]: # (fold start{{{)
+
+content
+
+[//]: # (}}})
 
