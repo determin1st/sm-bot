@@ -12,335 +12,44 @@ class Bot extends StasisConstruct # {{{
 {
   const POLLING_TIMEOUT  = 120;
   const MESSAGE_LIFETIME = 48*60*60;
-  static
-    $WINOS = true,
-    $BUTTONS = [
-      # {{{
-      'up'       => '{:eject_symbol:} {{.}}',
-      'close'    => '{:stop_button:} {{.}}',
-      'open'     => '{{.}} {:arrow_forward:}',
-      'play'     => '{:arrow_forward:} {{.}}',
-      'prev'     => '{:rewind:} {{.}}',
-      'next'     => '{{.}} {:fast_forward:}',
-      'first'    => '{:previous_track:} {{.}}',
-      'last'     => '{{.}} {:next_track:}',
-      'refresh'  => '{{.}} {:arrows_counterclockwise:}',
-      'reset'    => '{:arrows_counterclockwise:} {{.}}',
-      'retry'    => '{:arrow_right_hook:} {{.}}',
-      'ok'       => 'OK',
-      'add'      => '{{.}} {:new:}',
-      ###
-      'select0'  => '{{.}}',
-      'select1'  => '{:green_circle:} {{.}}',
-      'fav_on'   => '{:star:}',
-      'fav_off'  => '{:sparkles:}{:star:}{:sparkles:}',
-      # }}}
-    ],
-    $MESSAGES = [
-      'en' => [# {{{
-        0 => '{:no_entry_sign:} game not available',
-        1 => '{:exclamation:} command failed',
-        2 => '{:exclamation:} operation failed',
-        3 => '{:exclamation:} not found',
-        4 => 'add',
-        5 => 'empty',
-        6 => # FORM template {{{
-        '
-{{#desc}}
-  <i>Description:</i>{{br}}
-  {{desc}}{{br}}
-  {{br}}
-{{/desc}}
-<i>Parameters:</i>{{br}}
-{{#fields}}
-  {{#s0}}
-    {{#before}}
-      {{#valueLen}}
-        {:green_circle:} {{name}}: {{value}}
-      {{/valueLen}}
-      {{^valueLen}}
-        {{#required}}{:yellow_circle:} {{/required}}
-        {{^required}}{:green_circle:} {{/required}}
-        {{name}} -
-      {{/valueLen}}
-    {{/before}}
-    {{#current}}
-      {:white_small_square:} <b>{{name}}: </b>
-      {{#valueLen}}<code>&lt;</code>{{value}}<code>&gt;</code>{{/valueLen}}
-      {{^valueLen}}<code>&lt;{{hint}}&gt;</code>{{/valueLen}}
-    {{/current}}
-    {{#after}}
-      {:black_small_square:} {{name}}
-      {{#valueLen}}: {{value}}{{/valueLen}}
-    {{/after}}
-    {{br}}
-  {{/s0}}
-  {{#s1}}
-    {:green_circle:} {{name}}
-    {{#valueLen}}: <b>{{value}}</b>{{/valueLen}}
-    {{^valueLen}} -{{/valueLen}}
-    {{br}}
-  {{/s1}}
-  {{#s2}}
-    {{#required}}
-      {{#valueLen}}{:green_circle:} {{/valueLen}}
-      {{^valueLen}}{:yellow_circle:} {{/valueLen}}
-    {{/required}}
-    {{^required}}
-      {:green_circle:} 
-    {{/required}}
-    {{#valueLen}}{{name}}: {{value}}{{/valueLen}}
-    {{^valueLen}}{{name}} -{{/valueLen}}
-    {{br}}
-  {{/s2}}
-  {{#s3s4s5}}
-    {{#valueLen}}
-      {:green_circle:} {{name}}: <b>{{value}}</b>
-      {{br}}
-    {{/valueLen}}
-  {{/s3s4s5}}
-{{/fields}}
-{{br}}
-{{^s0}}
-  <i>Status:</i>{{br}}
-{{/s0}}
-{{#s1}}
-  {:blue_circle:} confirm operation
-{{/s1}}
-{{#s2}}
-  {:yellow_circle:} missing required parameter
-{{/s2}}
-{{#s3}}
-  {{^info.0}}{:blue_circle:} {{/info.0}}
-  {{#info.0}}{:purple_circle:} {{/info.0}}
-  processing{{#info.0}}..{{/info.0}}
-{{/s3}}
-{{#s4}}
-  {:red_circle:} <b>failure</b>{{#info.1}}: {{info.1}}{{/info.1}}
-{{/s4}}
-{{#s5}}
-  {:green_circle:} <b>complete</b>{{#info.1}}: {{info.1}}{{/info.1}}
-{{/s5}}
-{{br}}
-        ',# }}}
-        7 => 'string ({{max}})',
-        8 => 'number [{{min}}..{{max}}]',
-        9 => 'play',
-        10 => 'close',
-        11 => '{:exclamation:} task failed to start',
-        12 => 'complete',
-        13 => 'select option',
-        14 => 'refresh',
-        15 => 'reset',
-        16 => 'previous',
-        17 => 'next',
-        18 => 'repeat',
-        19 => '',
-      ],
-      # }}}
-      'ru' => [# {{{
-        0 => '{:no_entry_sign:} игра не доступна',
-        1 => '{:exclamation:} неверная комманда',
-        2 => '{:exclamation:} сбой операции',
-        3 => '{:exclamation:} не найдено',
-        4 => 'добавить',
-        5 => 'пусто',
-        6 => # FORM template {{{
-        '
-{{#desc}}
-  <i>Описание:</i>{{br}}
-  {{desc}}{{br}}
-  {{br}}
-{{/desc}}
-<i>Параметры:</i>{{br}}
-{{#fields}}
-  {{#s0}}
-    {{#before}}
-      {{#valueLen}}
-        {:green_circle:} {{name}}: {{value}}
-      {{/valueLen}}
-      {{^valueLen}}
-        {{#required}}{:yellow_circle:} {{/required}}
-        {{^required}}{:green_circle:} {{/required}}
-        {{name}} -
-      {{/valueLen}}
-    {{/before}}
-    {{#current}}
-      {:white_small_square:} <b>{{name}}: </b>
-      {{#valueLen}}<code>&lt;</code>{{value}}<code>&gt;</code>{{/valueLen}}
-      {{^valueLen}}<code>&lt;{{hint}}&gt;</code>{{/valueLen}}
-    {{/current}}
-    {{#after}}
-      {:black_small_square:} {{name}}
-      {{#valueLen}}: {{value}}{{/valueLen}}
-    {{/after}}
-    {{br}}
-  {{/s0}}
-  {{#s1}}
-    {:green_circle:} {{name}}
-    {{#valueLen}}: <b>{{value}}</b>{{/valueLen}}
-    {{^valueLen}} -{{/valueLen}}
-    {{br}}
-  {{/s1}}
-  {{#s2}}
-    {{#required}}
-      {{#valueLen}}{:green_circle:} {{/valueLen}}
-      {{^valueLen}}{:yellow_circle:} {{/valueLen}}
-    {{/required}}
-    {{^required}}
-      {:green_circle:} 
-    {{/required}}
-    {{#valueLen}}{{name}}: {{value}}{{/valueLen}}
-    {{^valueLen}}{{name}} -{{/valueLen}}
-    {{br}}
-  {{/s2}}
-  {{#s3s4s5}}
-    {{#valueLen}}
-      {:green_circle:} {{name}}: <b>{{value}}</b>
-      {{br}}
-    {{/valueLen}}
-  {{/s3s4s5}}
-{{/fields}}
-{{br}}
-{{^s0}}
-  <i>Статус:</i>{{br}}
-{{/s0}}
-{{#s1}}
-  {:blue_circle:} подтвердите действие
-{{/s1}}
-{{#s2}}
-  {:yellow_circle:} не задан обязательный параметр
-{{/s2}}
-{{#s3}}
-  {{^info.0}}{:blue_circle:} {{/info.0}}
-  {{#info.0}}{:purple_circle:} {{/info.0}}
-  обработка{{#info.0}}..{{/info.0}}
-{{/s3}}
-{{#s4}}
-  {:red_circle:} <b>ошибка</b>{{#info.1}}: {{info.1}}{{/info.1}}
-{{/s4}}
-{{#s5}}
-  {:green_circle:} <b>выполнено</b>{{#info.1}}: {{info.1}}{{/info.1}}
-{{/s5}}
-{{br}}
-        ',# }}}
-        7 => 'строка ({{max}})',
-        8 => 'число [{{min}},{{max}}]',
-        9 => 'играть',
-        10 => 'закрыть',
-        11 => '{:exclamation:} не удалось запустить задачу',
-        12 => 'завершить',
-        13 => 'выберите опцию',
-        14 => 'обновить',
-        15 => 'сброс',
-        16 => 'предыдущий',
-        17 => 'далее',
-        18 => 'повторить',
-        19 => '',
-      ],
-      # }}}
-    ],
-    $EMOJI = [
-      # {{{
-      'arrow_up'         => "\xE2\xAC\x86",
-      'arrow_down'       => "\xE2\xAC\x87",
-      'arrow_up_small'   => "\xF0\x9F\x94\xBC",
-      'arrow_down_small' => "\xF0\x9F\x94\xBD",
-      'arrow_left'       => "\xE2\xAC\x85",
-      'arrow_right'      => "\xE2\x9E\xA1",
-      'arrow_forward'    => "\xE2\x96\xB6",
-      'arrow_backward'   => "\xE2\x97\x80",
-      'fast_forward'     => "\xE2\x8F\xA9",
-      'rewind'           => "\xE2\x8F\xAA",
-      'eject_symbol'     => "\xE2\x8F\x8F",
-      'scroll'           => "\xF0\x9F\x93\x9C",
-      'game_die'         => "\xF0\x9F\x8E\xB2",
-      'video_game'       => "\xF0\x9F\x8E\xAE",
-      'exclamation'      => "\xE2\x9D\x97",
-      'question'         => "\xE2\x9D\x93",
-      'slot_machine'     => "\xF0\x9F\x8E\xB0",
-      'no_entry_sign'    => "\xF0\x9F\x9A\xAB",
-      'star'             => "\xE2\xAD\x90",
-      'star2'            => "\xF0\x9F\x8C\x9F",
-      'stop_button'      => "\xE2\x8F\xB9",
-      'previous_track'   => "\xE2\x8F\xAE",
-      'next_track'       => "\xE2\x8F\xAD",
-      'heavy_multiplication_x' => "\xE2\x9C\x96",
-      'heavy_minus_sign' => "\xE2\x9E\x96",
-      'x'                => "\xE2\x9D\x8C",
-      'record_button'    => "\xE2\x8F\xBA",
-      'heavy_check_mark' => "\xE2\x9C\x94",
-      'white_small_square' => "\xE2\x96\xAB",
-      'black_small_square' => "\xE2\x96\xAA",
-      'black_medium_small_square' => "\xE2\x97\xBC",
-      'ballot_box_with_check' => "\xE2\x98\x91",
-      'moneybag'         => "\xF0\x9F\x92\xB0",
-      'sparkles'         => "\xE2\x9C\xA8",
-      'watermelon'       => "\xF0\x9F\x8D\x89",
-      'grapes'           => "\xF0\x9F\x8D\x87",
-      'cherries'         => "\xF0\x9F\x8D\x92",
-      'flame'            => "\xF0\x9F\x94\xA5",
-      'boom'             => "\xF0\x9F\x92\xA5",
-      'anger'            => "\xF0\x9F\x92\xA2",
-      'red_circle'       => "\xF0\x9F\x94\xB4",
-      'green_circle'     => "\xF0\x9F\x9F\xA2",
-      'blue_circle'      => "\xF0\x9F\x94\xB5",
-      'arrows_counterclockwise' => "\xF0\x9F\x94\x84",
-      'yellow_circle'    => "\xF0\x9F\x9F\xA1",
-      'orange_circle'    => "\xF0\x9F\x9F\xA0",
-      'white_circle'     => "\xE2\x9A\xAA",
-      'black_circle'     => "\xE2\x9A\xAB",
-      'purple_circle'    => "\xF0\x9F\x9F\xA3",
-      'arrow_right_hook' => "\xE2\x86\xAA",
-      'tada'             => "\xF0\x9F\x8E\x89",
-      'double_vertical_bar' => "\xE2\x8F\xB8",
-      'new'              => "\xF0\x9F\x86\x95",
-      'ok'               => "\xF0\x9F\x86\x97",
-      'up'               => "\xF0\x9F\x86\x99",
-      'vs'               => "\xF0\x9F\x86\x9A",
-      'zap'              => "\xE2\x9A\xA1",
-      # }}}
-    ];
-  ###
-  static function start(string $id = 'master'): int # {{{
+  static $WINOS = true;
+  static function start(string $id = 'master'): never # {{{
   {
     # configure environment
     ini_set('html_errors', 0);
     ini_set('implicit_flush', 1);
     set_time_limit(0);
-    set_error_handler(function($no, $msg, $file, $line) {
-      # all errors, except supressed (@) must be handled,
-      # unhandled are thrown as an exception
+    set_error_handler(function(int $no, string $msg, string $file, int $line) {
+      # all errors except supressed (@),
+      # must be handled or thrown
       if (error_reporting() !== 0) {
         throw new \Exception($msg, $no);
       }
       return false;
     });
-    self::$WINOS = (defined('PHP_OS_FAMILY') && strncasecmp(PHP_OS_FAMILY, 'WIN', 3) === 0);
     # create bot instance
-    if (!($bot = self::construct($id))) {
-      return 1;
+    if (!($bot = self::construct($id, true))) {
+      exit(1);
     }
-    return 1;
-    # show commands tree
-    $name = self::str_fg_color('@'.$this->cfg->name, 'cyan');
-    $this->log("$name start\n".$this->items->dump(2, 'cyan'));
-    ###
-    ###
-    ###
-    ###
     # enforce graceful termination
-    self::$WINOS && sapi_windows_set_ctrl_handler(function ($i) use ($lock) {
-      @unlink($lock);
+    register_shutdown_function(function() use ($bot) {
+      # guard against fatals (not catched by error handler)
+      error_get_last() && $bot->destruct();
+    });
+    self::$WINOS && sapi_windows_set_ctrl_handler(function (int $e) use ($bot) {
+      # console breaks must stop bot processes
+      $bot->destruct();
       exit(1);
     });
-    register_shutdown_function(function() use ($lock) {
-      error_get_last() && @unlink($lock);
-    });
+    # report startup and show commands tree
+    $bot->log->info("started");
+    # ...
+    # ...
+    # ...
+    exit(1);
     try
     {
       # prepare
-      $this->log("$name loop($timeout)");
       $res = 0;
       $req = [
         'offset'  => 0,
@@ -354,7 +63,7 @@ class Bot extends StasisConstruct # {{{
           sleep(1); continue;
         }
         # reset error counter
-        $this->errors = 0;
+        #$this->errors = 0;
         # process updates
         foreach ($a->result as $b)
         {
@@ -373,11 +82,11 @@ class Bot extends StasisConstruct # {{{
         }
       }
     }
-    catch (\Exception $e) {
+    catch (\Exception $e)
+    {
       $this->logException($e);
     }
     # complete
-    BotFiles::unlock($file);
     restore_error_handler();
     if (~$res)
     {
@@ -388,127 +97,81 @@ class Bot extends StasisConstruct # {{{
     return 1;
   }
   # }}}
-  static function construct(string $id): ?self # {{{
+  private static function construct(string $id, bool $console): ?self # {{{
   {
-    # prepare
-    $log = BotLog::construct($id);
-    if (!($dir = BotDirs::construct($id, $log)) ||
-        !($cfg = BotConfig::construct($dir, $log)))
+    try
     {
-      return null;
-    }
-    # construct
-    $bot = new static([
-      'id'       => $id,
-      'log'      => $log,
-      'dir'      => $dir,
-      'cfg'      => $cfg,
-      'file'     => null,
-      'api'      => null,
-      'tp'       => null,
-      'items'    => null,
-      'messages' => null,# [lang:[index:text]]
-      'buttons'  => null,# [button:caption]
-      'errors'   => 0,
-    ]);
-    # initialize
-    if (!$dir->init($bot) ||
-        !$log->init($bot) ||
-        !$cfg->init($bot))
-    {
-      return null;
-    }
-    require_once $dir->inc.'mustache.php';
-    require_once $dir->bot.'control.php';
-    ###
-    if (!($bot->file = BotFiles::construct($bot))
-        !($bot->api  = BotApi::construct($bot))
-    )
-    {
-      return null;
-    }
-    ###
-    ###
-    ###
-    {
-      $log->error("failed to initialize api: $id");
-      return null;
-    }
-    # template parser {{{
-    if (!file_exists($a = $incdir.'mustache.php'))
-    {
-      $bot->logError("file not found: $a");
-      return null;
-    }
-    require_once $a;
-    $a = [
-      'logger'  => (function(string $msg, int $level) use ($bot) {
-        $bot->logMustache($msg, $level);
-      }),
-      'helpers' => [
-        'BR'    => "\n",
-        'NBSP'  => "\xC2\xA0",# non-breakable space
-        'END'   => "\xC2\xAD",# SOFT HYPHEN U+00AD
-      ],
-    ];
-    if (($bot->tp = Mustache::init($a)) === null)
-    {
-      $bot->logError("failed to initialize mustache");
-      return null;
-    }
-    # }}}
-    # messages {{{
-    if (file_exists($a = $datadir.'messages.json'))
-    {
-      # precompiled
-      $bot->messages = json_decode(file_get_contents($a), true);
-    }
-    else
-    {
-      # merge and render
-      $bot->messages = file_exists($b = $botdir.'messages.inc')
-        ? array_merge(self::$MESSAGES, (require $b))
-        : self::$MESSAGES;
-      foreach ($bot->messages as &$c)
+      # prepare
+      $bot = null;
+      $log = BotLog::construct($id, $console);
+      if (!($dir = BotDirs::construct($id, $log)) ||
+          !($cfg = BotConfig::construct($dir, $log)))
       {
-        foreach ($c as &$d) {
-          $d = $bot->tp->render($d, '{: :}', self::$EMOJI);
-        }
+        throw new \Exception();
       }
-      unset($c, $d);
-      # store
-      $b = json_encode($bot->messages, JSON_UNESCAPED_UNICODE);
-      $b && file_put_contents($a, $b);
-    }
-    # }}}
-    # button captions {{{
-    if (file_exists($a = $datadir.'buttons.json'))
-    {
-      # load precompiled
-      $bot->buttons = json_decode(file_get_contents($a), true);
-    }
-    else
-    {
-      # merge and render
-      $bot->buttons = file_exists($b = $botdir.'buttons.inc')
-        ? array_merge(self::$BUTTONS, (require $b))
-        : self::$BUTTONS;
-      foreach ($bot->buttons as &$c) {
-        $c = $bot->tp->render($c, '{: :}', self::$EMOJI);
+      # construct
+      $bot = new static([
+        'id'   => $id,
+        'log'  => $log,
+        'dir'  => $dir,
+        'cfg'  => $cfg,
+        'file' => null,
+        'api'  => null,
+        'tp'   => null,
+        'text' => null,
+        'cmd'  => null,
+      ]);
+      # initialize base
+      if (!$dir->init($bot) || !$log->init($bot) || !$cfg->init($bot)) {
+        throw new \Exception();
       }
-      unset($c);
-      # store
-      $b = json_encode($bot->buttons, JSON_UNESCAPED_UNICODE);
-      $b && file_put_contents($a, $b);
+      # load dependencies
+      require_once $dir->inc.'mustache.php';
+      require_once $dir->src.'control.php';
+      # construct files and telegram api
+      if (!($bot->file = BotFiles::construct($bot)) ||
+          !($bot->api  = BotApi::construct($bot)))
+      {
+        throw new \Exception();
+      }
+      # construct template parser
+      $o = [$log->new('mustache'), 'errorOnly'];
+      $o = [
+        'logger'  => \Closure::fromCallable($o),
+        'helpers' => [
+          'BR'    => "\n",
+          'NBSP'  => "\xC2\xA0",# non-breakable space
+          'END'   => "\xC2\xAD",# SOFT HYPHEN U+00AD
+        ]
+      ];
+      if (!($bot->tp = Mustache::construct($o)))
+      {
+        $log->error('failed to construct template parser');
+        throw new \Exception();
+      }
+      # construct texts and commands
+      if (!($bot->text = BotTexts::construct($bot)) ||
+          !($bot->cmd  = BotCommands::construct($bot)))
+      {
+        throw new \Exception();
+      }
     }
-    # }}}
-    # command items {{{
-    if (($bot->items = BotItems::init($bot)) === null) {
-      return null;
+    catch (\Exception $e)
+    {
+      $e->getCode() && $log->exception($e);
+      if ($bot)
+      {
+        $bot->destruct();
+        $bot = null;
+      }
     }
-    # }}}
-    # complete
     return $bot;
+  }
+  # }}}
+  function destruct(): void # {{{
+  {
+    ($a = $this->api) && $a->destruct();
+    ($a = $this->cfg) && $a->finit();
   }
   # }}}
   function update(object $u): int # {{{
@@ -527,18 +190,18 @@ class Bot extends StasisConstruct # {{{
     # check
     if (!$r)
     {
-      $bot->log->skip();
       return 0;
     }
     # handle user request
     return ($u = BotUser::init($this, $r)) ? $u->finit() : 0;
   }
   # }}}
-  function stop(): void # {{{
-  {
-  }
-  # }}}
 }
+# initialize static props
+Bot::$WINOS = (
+  defined('PHP_OS_FAMILY') &&
+  strncasecmp(PHP_OS_FAMILY, 'WIN', 3) === 0
+);
 # }}}
 class BotLog # {{{
 {
@@ -548,8 +211,8 @@ class BotLog # {{{
     public ?self  $parent,
     public object $cfg
   ) {}
-  static function construct(string $name): self {
-    return new self($name, null, new BotLogConfig());
+  static function construct(string $name, bool $console): self {
+    return new self($name, null, new BotLogConfig($console));
   }
   function init(object $bot): bool
   {
@@ -600,24 +263,22 @@ class BotLog # {{{
     return "[{$x}m{$str}[0m";
   }
   # }}}
-  function log(string $msg, int $level = 0, int $sep = 0): void # {{{
+  function out(string $msg, int $level = 0, int $sep = 0): void # {{{
   {
     # prepare
-    $t = $this->cfg;
-    $s = $t->sep[$level];
-    $c = $t->color[$level];
+    $cfg = $this->cfg;
     # file output
-    if ($f = $t->files[(($level === 1) ? 1 : 0)])
+    if ($f = $cfg->files[(($level === 1) ? 1 : 0)])
     {
       #$a = date(DATE_ATOM).': ';
       #$b = $name ? implode(' '.$PREFIX, $name) : '';
       #file_put_contents($f, $a.$b.$msg."\n", FILE_APPEND);
     }
-    # standard output
-    if (($level === 1 && ($f = STDERR)) || ($f = STDOUT))
+    # console output
+    if ($cfg->console)
     {
-      # compose names chain
-      $s = self::str_fg_color($s, $c, 1);
+      $c = $cfg->color[$level];
+      $s = self::str_fg_color($cfg->sep[$sep], $c, 1);
       $x = '';
       $p = $this;
       while ($p->parent)
@@ -625,51 +286,34 @@ class BotLog # {{{
         $x = self::str_bg_color($p->name, $c, 0)." $s $x";
         $p = $p->parent;
       }
-      # compose root, message, line break and output
-      fwrite($f,
-        self::str_fg_color($t->rootPrefix, $t->rootColor, 1).
-        self::str_fg_color($p->name, $t->rootColor, 0).
+      $c = $cfg->rootColor;
+      fwrite(
+        (($level === 1) ? STDERR : STDOUT),
+        self::str_fg_color($cfg->rootPrefix, $c, 1).
+        self::str_fg_color($p->name, $c, 0).
         " $s $x$msg\n"
       );
     }
-    /***
-    # sfx {{{
-    if (self::$WINOS && $this->cfg['sfx'] && !self::$IS_TASK)
-    {
-      # play sound through batch-file
-      $m = $this->dir->inc.'sfx';
-      $m = 'START "" /D "'.$m.'" /B play.bat info.wav';
-      if ($m = popen($m, 'r'))
-      {
-        fgetc($m);
-        pclose($m);
-      }
-    }
-    # }}}
-    /***/
   }
   # }}}
-  function dump(mixed $var): void # {{{
-  {
-    $this->log(var_export($var, true), 0);
-  }
-  # }}}
-  ###
   function info(string $msg, int $sep = 0): void # {{{
   {
-    $this->log($msg, 0, $sep);
+    $this->out($msg, 0, $sep);
   }
   # }}}
   function error(string $msg): void # {{{
   {
-    #$this->tasks = [];# abort
-    #$this->errors++;
-    $this->log($msg, 1, 0);
+    $this->out($msg, 1, 0);
+  }
+  # }}}
+  function errorOnly(string $msg, int $level): void # {{{
+  {
+    $level && $this->out($msg, 1);
   }
   # }}}
   function warn(string $msg): void # {{{
   {
-    $this->log($msg, 2, 0);
+    $this->out($msg, 2, 0);
   }
   # }}}
   function exception(object $e): void # {{{
@@ -692,7 +336,7 @@ class BotLog # {{{
       'E_USER_DEPRECATED' => 16384,
       'E_ALL' => 32767,
     ];
-    $a = $e->getMessage();
+    ($a = $e->getMessage()) && ($a = ": $a");
     $b = $e->getTraceAsString();
     if ($c = strpos($b, "\n"))
     {
@@ -706,30 +350,59 @@ class BotLog # {{{
     $d = isset($d['file'])
       ? str_replace(__DIR__, '', $d['file']).'('.$d['line'].')'
       : '---';
-    $this->log("\n  #0 $d\n  $b", 1, [$c,$a]);
-    $this->errors++;
+    ###
+    $this->out("$c$a\n  #0 $d\n  $b", 1);
   }
   # }}}
-  ###
-  function logMustache(string $msg, int $level): void # {{{
+  function dumpVar(mixed $var): void # {{{
   {
-    $level && $this->log($msg, 1, 'mustache');
+    $this->log(var_export($var, true), 0);
   }
   # }}}
-  function logCycle(): void # {{{
+  function dumpCommands( # {{{
+    int    $pad   = 0,
+    string $color = 'cyan',
+    ?array &$tree = null,
+    array  &$indent = []
+  ):string
   {
-    if (STDOUT) {
-      fwrite(STDOUT, self::str_fg_color('>', 'cyan', 0));
+    # prepare
+    !$tree && ($tree = $this->tree);
+    $x = '';
+    $i = 0;
+    $j = count($tree);
+    # compose tree items
+    foreach ($tree as &$a)
+    {
+      # compose indent
+      $pad && ($x .= str_repeat(' ', $pad));
+      foreach ($indent as $b) {
+        $x .= $b ? Bot::str_fg_color('│ ', $color) : '  ';
+      }
+      # compose item line
+      $b  = (++$i === $j);
+      $c  = Bot::str_fg_color(($b ? '└─' : '├─'), $color);
+      $x .= $c.$a->name."\n";
+      # recurse
+      if ($a->items)
+      {
+        $indent[] = !$b;
+        $x .= $this->dump($pad, $color, $a->items, $indent);
+        array_pop($indent);
+      }
     }
+    # done
+    return $x;
   }
   # }}}
 }
 class BotLogConfig
 {
   function __construct(
+    public bool   $console,
     public array  $files  = ['',''],# level:[!1,1]
-    public array  $sep    = ['>','<'],# in,out
-    public array  $level  = ['green','red','yellow'],# info,error,warn
+    public array  $sep    = ['>','<'],# out,in
+    public array  $color  = ['green','red','yellow'],# level:[info,error,warn]
     public string $rootColor  = 'cyan',
     public string $rootPrefix = '@',
   ) {}
@@ -754,6 +427,19 @@ class BotDirs extends StasisConstruct # {{{
       $log->error("directory not found: $data");
       return null;
     }
+    # determine user and group data storage
+    if (!file_exists($user = $data.'u'.DIRECTORY_SEPARATOR) &&
+        !@mkdir($user))
+    {
+      $log->error("failed to create: $user");
+      return null;
+    }
+    if (!file_exists($group = $data.'g'.DIRECTORY_SEPARATOR) &&
+        !@mkdir($group))
+    {
+      $log->error("failed to create: $group");
+      return null;
+    }
     # image and font directories must be prioritized
     $img  = [];
     $font = [];
@@ -761,29 +447,31 @@ class BotDirs extends StasisConstruct # {{{
     file_exists($a = $data.'font'.DIRECTORY_SEPARATOR) && ($font[] = $a);
     # construct
     return new static([
-      'home' => $home,
-      'inc'  => $inc,
-      'data' => $data,
-      'img'  => $img,
-      'font' => $font,
-      'bot'  => '',
+      'home'  => $home,
+      'inc'   => $inc,
+      'data'  => $data,
+      'user'  => $user,
+      'group' => $group,
+      'img'   => $img,
+      'font'  => $font,
+      'src'   => '',
     ]);
   }
   function init(object $bot): bool
   {
     # set bot directory
-    $dir = $this->home.'bots'.DIRECTORY_SEPARATOR.$bot->cfg->bot.DIRECTORY_SEPARATOR;
-    if (!file_exists($dir))
+    $src = $this->home.'bots'.DIRECTORY_SEPARATOR.$bot->cfg->bot.DIRECTORY_SEPARATOR;
+    if (!file_exists($src))
     {
-      $bot->log->error("directory not found: $dir");
+      $bot->log->error("directory not found: $src");
       return false;
     }
-    $this->bot = $dir;
+    $this->src = $src;
     # add image directory
-    file_exists($a = $dir.'img'.DIRECTORY_SEPARATOR) && ($this->img[] = $a);
+    file_exists($a = $src.'img'.DIRECTORY_SEPARATOR) && ($this->img[] = $a);
     # add font directories
     $a = 'font'.DIRECTORY_SEPARATOR;
-    file_exists($b = $dir.$a) && ($this->font[] = $b);
+    file_exists($b = $src.$a) && ($this->font[] = $b);
     file_exists($b = $this->inc.$a) && ($this->font[] = $b);
     # done
     return true;
@@ -816,7 +504,8 @@ class BotConfig extends StasisConstruct # {{{
     'debugTasks'           => false,
     # }}}
   ];
-  static function construct(object $dir, object $log): ?self
+  public string $file;
+  static function construct(object $dir, object $log): ?self # {{{
   {
     # check configuration file exists
     if (!file_exists($file = $dir->data.self::$FILE))
@@ -838,25 +527,28 @@ class BotConfig extends StasisConstruct # {{{
     $o->file = $file;
     return $o;
   }
-  public string $file;
-  function init(object $bot): bool
+  # }}}
+  function init(object $bot): bool # {{{
   {
     if (!BotFiles::lock($file = $this->file))
     {
       $bot->log->error("failed to lock: $file");
+      $this->file = '';
       return false;
     }
     return true;
   }
-  function finit(): void
+  # }}}
+  function finit(): void # {{{
   {
-    BotFiles::unlock($this->file);
+    ($a = $this->file) && BotFiles::unlock($a);
   }
+  # }}}
 }
 # }}}
 class BotFiles extends StasisConstruct # {{{
 {
-  static $ID_FILE='fids.json'
+  static $ID_FILE='fids.json';
   static function construct($bot): self # {{{
   {
     # get file identifiers map
@@ -881,7 +573,7 @@ class BotFiles extends StasisConstruct # {{{
   # }}}
   function setId(string $file, string $id): void # {{{
   {
-    if ($this->idMap)
+    if ($this->idFile)
     {
       $this->idMap[$file] = $id;
       if (self::lock($this->idFile))
@@ -895,7 +587,7 @@ class BotFiles extends StasisConstruct # {{{
   static function lock(string $file, bool $force = false): string # {{{
   {
     # prepare
-    $id    = time();
+    $id    = strval(time());
     $count = 50;
     $lock  = "$file.lock";
     # wait until lock released or count exhausted
@@ -912,15 +604,10 @@ class BotFiles extends StasisConstruct # {{{
       # clear cache
       clearstatcache(true, $lock);
     }
-    # set new lock and
-    # make sure no collisions
-    if (!file_put_contents($lock, $id) ||
-        !file_exists($lock) ||
-        file_get_contents($lock) !== $id)
-    {
-      return '';
-    }
-    return $lock;
+    # set new lock and make sure no collisions
+    return (file_put_contents($lock, $id) && file_get_contents($lock) === $id)
+      ? $lock
+      : '';
   }
   # }}}
   static function unlock(string $file) # {{{
@@ -964,32 +651,74 @@ class BotFiles extends StasisConstruct # {{{
 # }}}
 class BotApi extends StasisConstruct # {{{
 {
-  static function init(object $bot): ?self # {{{
+  static $URL = 'https://api.telegram.org/bot';
+  static $OPT = [
+    # {{{
+    CURLOPT_RETURNTRANSFER => true,
+    CURLOPT_CONNECTTIMEOUT => 10,# default(0): 300
+    CURLOPT_TIMEOUT        => 0,# default(0): never
+    ###
+    CURLOPT_TCP_NODELAY    => true,
+    CURLOPT_TCP_KEEPALIVE  => 1,
+    CURLOPT_TCP_KEEPIDLE   => 300,
+    CURLOPT_TCP_KEEPINTVL  => 300,
+    ###
+    CURLOPT_HTTP_VERSION   => CURL_HTTP_VERSION_1_1,
+    #CURLOPT_VERBOSE        => true,
+    #CURLOPT_SSL_VERIFYHOST => 0,
+    #CURLOPT_SSL_VERIFYPEER => false,
+    # }}}
+  ];
+  static function construct(object $bot): ?self # {{{
   {
-    static $URL = 'https://api.telegram.org/bot';
-    # create curl instance
-    if (!($curl = curl_init())) {
-      return null;
+    # prepare
+    $log  = $bot->log->new('api');
+    $api  = null;
+    $curl = $murl = false;
+    try
+    {
+      # create curl instance
+      if (!($curl = curl_init())) {
+        throw new \Exception('curl_init() failed');
+      }
+      # configure
+      if (!curl_setopt_array($curl, self::$OPT)) {
+        throw new \Exception('failed to configure');
+      }
+      # create multi-curl instance
+      if (!($murl = curl_multi_init())) {
+        throw new \Exception('curl_multi_init() failed');
+      }
+      if ($a = curl_multi_add_handle($murl, $curl)) {
+        throw new \Exception(curl_multi_strerror($a));
+      }
+      # construct
+      $api = new static([
+        'log'    => $log,
+        'url'    => self::$URL.$bot->cfg->token,
+        'curl'   => $curl,
+        'murl'   => $murl,
+        'result' => null,
+      ]);
     }
-    # configure
-    curl_setopt_array($curl, [
-      #CURLOPT_FORBID_REUSE   => true, # close after response
-      CURLOPT_RETURNTRANSFER => true, # as a string
-      CURLOPT_CONNECTTIMEOUT => 120,
-      CURLOPT_TIMEOUT        => 120,
-      #CURLOPT_HTTPHEADER     => ['connection: keep-alive', 'keep-alive: 120'],
-      #CURLOPT_SSL_VERIFYHOST => 0,
-      #CURLOPT_SSL_VERIFYPEER => false,
-      #CURLOPT_VERBOSE        => true,
-    ]);
-    # construct
-    return new static([
-      'bot'    => $bot,
-      'log'    => $bot->log->new('api'),
-      'curl'   => $curl,
-      'url'    => $URL.$bot->cfg->token,
-      'result' => null,
-    ]);
+    catch (\Exception $e)
+    {
+      $curl && curl_close($curl);
+      $murl && curl_multi_close($murl);
+      $log->error($e->getMessage());
+    }
+    return $api;
+  }
+  # }}}
+  function destruct(): void # {{{
+  {
+    if ($a = $this->murl)
+    {
+      curl_multi_remove_handle($a, $b = $this->curl);
+      curl_multi_close($a);
+      curl_close($b);
+      $this->murl = $this->curl = null;
+    }
   }
   # }}}
   function send(string $method, array $args, ?object $file = null): object|bool # {{{
@@ -1067,9 +796,493 @@ class BotApiFile extends \CURLFile
   # }}}
 }
 # }}}
+class BotTexts extends StasisConstruct # {{{
+{
+  static $MESSAGES = [
+    'en' => [# {{{
+      0 => '{:no_entry_sign:} game not available',
+      1 => '{:exclamation:} command failed',
+      2 => '{:exclamation:} operation failed',
+      3 => '{:exclamation:} not found',
+      4 => 'add',
+      5 => 'empty',
+      6 => # FORM template {{{
+      '
+{{#desc}}
+<i>Description:</i>{{br}}
+{{desc}}{{br}}
+{{br}}
+{{/desc}}
+<i>Parameters:</i>{{br}}
+{{#fields}}
+{{#s0}}
+  {{#before}}
+    {{#valueLen}}
+      {:green_circle:} {{name}}: {{value}}
+    {{/valueLen}}
+    {{^valueLen}}
+      {{#required}}{:yellow_circle:} {{/required}}
+      {{^required}}{:green_circle:} {{/required}}
+      {{name}} -
+    {{/valueLen}}
+  {{/before}}
+  {{#current}}
+    {:white_small_square:} <b>{{name}}: </b>
+    {{#valueLen}}<code>&lt;</code>{{value}}<code>&gt;</code>{{/valueLen}}
+    {{^valueLen}}<code>&lt;{{hint}}&gt;</code>{{/valueLen}}
+  {{/current}}
+  {{#after}}
+    {:black_small_square:} {{name}}
+    {{#valueLen}}: {{value}}{{/valueLen}}
+  {{/after}}
+  {{br}}
+{{/s0}}
+{{#s1}}
+  {:green_circle:} {{name}}
+  {{#valueLen}}: <b>{{value}}</b>{{/valueLen}}
+  {{^valueLen}} -{{/valueLen}}
+  {{br}}
+{{/s1}}
+{{#s2}}
+  {{#required}}
+    {{#valueLen}}{:green_circle:} {{/valueLen}}
+    {{^valueLen}}{:yellow_circle:} {{/valueLen}}
+  {{/required}}
+  {{^required}}
+    {:green_circle:} 
+  {{/required}}
+  {{#valueLen}}{{name}}: {{value}}{{/valueLen}}
+  {{^valueLen}}{{name}} -{{/valueLen}}
+  {{br}}
+{{/s2}}
+{{#s3s4s5}}
+  {{#valueLen}}
+    {:green_circle:} {{name}}: <b>{{value}}</b>
+    {{br}}
+  {{/valueLen}}
+{{/s3s4s5}}
+{{/fields}}
+{{br}}
+{{^s0}}
+<i>Status:</i>{{br}}
+{{/s0}}
+{{#s1}}
+{:blue_circle:} confirm operation
+{{/s1}}
+{{#s2}}
+{:yellow_circle:} missing required parameter
+{{/s2}}
+{{#s3}}
+{{^info.0}}{:blue_circle:} {{/info.0}}
+{{#info.0}}{:purple_circle:} {{/info.0}}
+processing{{#info.0}}..{{/info.0}}
+{{/s3}}
+{{#s4}}
+{:red_circle:} <b>failure</b>{{#info.1}}: {{info.1}}{{/info.1}}
+{{/s4}}
+{{#s5}}
+{:green_circle:} <b>complete</b>{{#info.1}}: {{info.1}}{{/info.1}}
+{{/s5}}
+{{br}}
+      ',# }}}
+      7 => 'string ({{max}})',
+      8 => 'number [{{min}}..{{max}}]',
+      9 => 'play',
+      10 => 'close',
+      11 => '{:exclamation:} task failed to start',
+      12 => 'complete',
+      13 => 'select option',
+      14 => 'refresh',
+      15 => 'reset',
+      16 => 'previous',
+      17 => 'next',
+      18 => 'repeat',
+      19 => '',
+    ],
+    # }}}
+    'ru' => [# {{{
+      0 => '{:no_entry_sign:} игра не доступна',
+      1 => '{:exclamation:} неверная комманда',
+      2 => '{:exclamation:} сбой операции',
+      3 => '{:exclamation:} не найдено',
+      4 => 'добавить',
+      5 => 'пусто',
+      6 => # FORM template {{{
+      '
+{{#desc}}
+<i>Описание:</i>{{br}}
+{{desc}}{{br}}
+{{br}}
+{{/desc}}
+<i>Параметры:</i>{{br}}
+{{#fields}}
+{{#s0}}
+  {{#before}}
+    {{#valueLen}}
+      {:green_circle:} {{name}}: {{value}}
+    {{/valueLen}}
+    {{^valueLen}}
+      {{#required}}{:yellow_circle:} {{/required}}
+      {{^required}}{:green_circle:} {{/required}}
+      {{name}} -
+    {{/valueLen}}
+  {{/before}}
+  {{#current}}
+    {:white_small_square:} <b>{{name}}: </b>
+    {{#valueLen}}<code>&lt;</code>{{value}}<code>&gt;</code>{{/valueLen}}
+    {{^valueLen}}<code>&lt;{{hint}}&gt;</code>{{/valueLen}}
+  {{/current}}
+  {{#after}}
+    {:black_small_square:} {{name}}
+    {{#valueLen}}: {{value}}{{/valueLen}}
+  {{/after}}
+  {{br}}
+{{/s0}}
+{{#s1}}
+  {:green_circle:} {{name}}
+  {{#valueLen}}: <b>{{value}}</b>{{/valueLen}}
+  {{^valueLen}} -{{/valueLen}}
+  {{br}}
+{{/s1}}
+{{#s2}}
+  {{#required}}
+    {{#valueLen}}{:green_circle:} {{/valueLen}}
+    {{^valueLen}}{:yellow_circle:} {{/valueLen}}
+  {{/required}}
+  {{^required}}
+    {:green_circle:} 
+  {{/required}}
+  {{#valueLen}}{{name}}: {{value}}{{/valueLen}}
+  {{^valueLen}}{{name}} -{{/valueLen}}
+  {{br}}
+{{/s2}}
+{{#s3s4s5}}
+  {{#valueLen}}
+    {:green_circle:} {{name}}: <b>{{value}}</b>
+    {{br}}
+  {{/valueLen}}
+{{/s3s4s5}}
+{{/fields}}
+{{br}}
+{{^s0}}
+<i>Статус:</i>{{br}}
+{{/s0}}
+{{#s1}}
+{:blue_circle:} подтвердите действие
+{{/s1}}
+{{#s2}}
+{:yellow_circle:} не задан обязательный параметр
+{{/s2}}
+{{#s3}}
+{{^info.0}}{:blue_circle:} {{/info.0}}
+{{#info.0}}{:purple_circle:} {{/info.0}}
+обработка{{#info.0}}..{{/info.0}}
+{{/s3}}
+{{#s4}}
+{:red_circle:} <b>ошибка</b>{{#info.1}}: {{info.1}}{{/info.1}}
+{{/s4}}
+{{#s5}}
+{:green_circle:} <b>выполнено</b>{{#info.1}}: {{info.1}}{{/info.1}}
+{{/s5}}
+{{br}}
+      ',# }}}
+      7 => 'строка ({{max}})',
+      8 => 'число [{{min}},{{max}}]',
+      9 => 'играть',
+      10 => 'закрыть',
+      11 => '{:exclamation:} не удалось запустить задачу',
+      12 => 'завершить',
+      13 => 'выберите опцию',
+      14 => 'обновить',
+      15 => 'сброс',
+      16 => 'предыдущий',
+      17 => 'далее',
+      18 => 'повторить',
+      19 => '',
+    ],
+    # }}}
+  ];
+  static $BUTTONS = [
+    # {{{
+    'up'       => '{:eject_symbol:} {{.}}',
+    'close'    => '{:stop_button:} {{.}}',
+    'open'     => '{{.}} {:arrow_forward:}',
+    'play'     => '{:arrow_forward:} {{.}}',
+    'prev'     => '{:rewind:} {{.}}',
+    'next'     => '{{.}} {:fast_forward:}',
+    'first'    => '{:previous_track:} {{.}}',
+    'last'     => '{{.}} {:next_track:}',
+    'refresh'  => '{{.}} {:arrows_counterclockwise:}',
+    'reset'    => '{:arrows_counterclockwise:} {{.}}',
+    'retry'    => '{:arrow_right_hook:} {{.}}',
+    'ok'       => 'OK',
+    'add'      => '{{.}} {:new:}',
+    ###
+    'select0'  => '{{.}}',
+    'select1'  => '{:green_circle:} {{.}}',
+    'fav_on'   => '{:star:}',
+    'fav_off'  => '{:sparkles:}{:star:}{:sparkles:}',
+    # }}}
+  ];
+  static $EMOJI = [
+    # {{{
+    'arrow_up'         => "\xE2\xAC\x86",
+    'arrow_down'       => "\xE2\xAC\x87",
+    'arrow_up_small'   => "\xF0\x9F\x94\xBC",
+    'arrow_down_small' => "\xF0\x9F\x94\xBD",
+    'arrow_left'       => "\xE2\xAC\x85",
+    'arrow_right'      => "\xE2\x9E\xA1",
+    'arrow_forward'    => "\xE2\x96\xB6",
+    'arrow_backward'   => "\xE2\x97\x80",
+    'fast_forward'     => "\xE2\x8F\xA9",
+    'rewind'           => "\xE2\x8F\xAA",
+    'eject_symbol'     => "\xE2\x8F\x8F",
+    'scroll'           => "\xF0\x9F\x93\x9C",
+    'game_die'         => "\xF0\x9F\x8E\xB2",
+    'video_game'       => "\xF0\x9F\x8E\xAE",
+    'exclamation'      => "\xE2\x9D\x97",
+    'question'         => "\xE2\x9D\x93",
+    'slot_machine'     => "\xF0\x9F\x8E\xB0",
+    'no_entry_sign'    => "\xF0\x9F\x9A\xAB",
+    'star'             => "\xE2\xAD\x90",
+    'star2'            => "\xF0\x9F\x8C\x9F",
+    'stop_button'      => "\xE2\x8F\xB9",
+    'previous_track'   => "\xE2\x8F\xAE",
+    'next_track'       => "\xE2\x8F\xAD",
+    'heavy_multiplication_x' => "\xE2\x9C\x96",
+    'heavy_minus_sign' => "\xE2\x9E\x96",
+    'x'                => "\xE2\x9D\x8C",
+    'record_button'    => "\xE2\x8F\xBA",
+    'heavy_check_mark' => "\xE2\x9C\x94",
+    'white_small_square' => "\xE2\x96\xAB",
+    'black_small_square' => "\xE2\x96\xAA",
+    'black_medium_small_square' => "\xE2\x97\xBC",
+    'ballot_box_with_check' => "\xE2\x98\x91",
+    'moneybag'         => "\xF0\x9F\x92\xB0",
+    'sparkles'         => "\xE2\x9C\xA8",
+    'watermelon'       => "\xF0\x9F\x8D\x89",
+    'grapes'           => "\xF0\x9F\x8D\x87",
+    'cherries'         => "\xF0\x9F\x8D\x92",
+    'flame'            => "\xF0\x9F\x94\xA5",
+    'boom'             => "\xF0\x9F\x92\xA5",
+    'anger'            => "\xF0\x9F\x92\xA2",
+    'red_circle'       => "\xF0\x9F\x94\xB4",
+    'green_circle'     => "\xF0\x9F\x9F\xA2",
+    'blue_circle'      => "\xF0\x9F\x94\xB5",
+    'arrows_counterclockwise' => "\xF0\x9F\x94\x84",
+    'yellow_circle'    => "\xF0\x9F\x9F\xA1",
+    'orange_circle'    => "\xF0\x9F\x9F\xA0",
+    'white_circle'     => "\xE2\x9A\xAA",
+    'black_circle'     => "\xE2\x9A\xAB",
+    'purple_circle'    => "\xF0\x9F\x9F\xA3",
+    'arrow_right_hook' => "\xE2\x86\xAA",
+    'tada'             => "\xF0\x9F\x8E\x89",
+    'double_vertical_bar' => "\xE2\x8F\xB8",
+    'new'              => "\xF0\x9F\x86\x95",
+    'ok'               => "\xF0\x9F\x86\x97",
+    'up'               => "\xF0\x9F\x86\x99",
+    'vs'               => "\xF0\x9F\x86\x9A",
+    'zap'              => "\xE2\x9A\xA1",
+    # }}}
+  ];
+  static function construct(object $bot): ?self # {{{
+  {
+    # messages
+    if (!($msg = BotFiles::get_json($a = $bot->dir->data.'messages.json')))
+    {
+      # load from bot directory and merge over defaults
+      $msg = file_exists($b = $bot->dir->src.'messages.inc')
+        ? array_merge(self::$MESSAGES, (include $b))
+        : self::$MESSAGES;
+      # render emojis
+      foreach ($msg as &$c)
+      {
+        foreach ($c as &$d) {
+          $d = $bot->tp->render($d, '{: :}', self::$EMOJI);
+        }
+      }
+      unset($c, $d);
+      # store
+      if (!BotFiles::set_json($a, $msg))
+      {
+        $bot->log->error("set_json($a) failed");
+        return null;
+      }
+    }
+    # button captions
+    if (!($btn = BotFiles::get_json($a = $bot->dir->data.'buttons.json')))
+    {
+      # load source and merge over defaults
+      $btn = file_exists($b = $bot->dir->src.'buttons.inc')
+        ? array_merge(self::$BUTTONS, (include $b))
+        : self::$BUTTONS;
+      # render emojis
+      foreach ($btn as &$c) {
+        $c = $bot->tp->render($c, '{: :}', self::$EMOJI);
+      }
+      unset($c);
+      # store
+      if (!BotFiles::set_json($a, $btn))
+      {
+        $bot->log->error("set_json($a) failed");
+        return null;
+      }
+    }
+    # construct
+    return new static([
+      'msg' => $msg,
+      'btn' => $btn,
+    ]);
+  }
+  # }}}
+}
+# }}}
+class BotCommands extends StasisConstruct # {{{
+{
+  static function construct(object $bot): ?self # {{{
+  {
+    # try to load precompiled
+    $isRefined = true;
+    if (!($data = BotFiles::get_json($bot->dir->data.'commands.json')))
+    {
+      # include and merge
+      $isRefined = false;
+      $a = 'commands.inc';
+      if (!file_exists($b = $bot->dir->src.$a))
+      {
+        $bot->log->error("file not found: $b");
+        return null;
+      }
+      if (!($data = include $b) || !is_array($data))
+      {
+        $bot->log->error("incorrect file: $b");
+        return null;
+      }
+      if (file_exists($b = $bot->dir->data.$a) &&
+          is_array($c = (include $b)))
+      {
+        $data = array_merge($data, $c);
+      }
+    }
+    # parse and construct root items
+    $base = '\\'.__NAMESPACE__.'\\BotItem';
+    foreach ($data as $a => &$b)
+    {
+      # determine item class
+      $type = $base.(isset($b['type']) ? ucfirst($b['type']) : 'Img');
+      # check exists
+      if (!$isRefined && !class_exists($type, false))
+      {
+        $bot->log->error("class not found: $type");
+        return null;
+      }
+      # construct
+      if (($c = $type::construct($bot, $a, $b, null, $isRefined)) === null)
+      {
+        $bot->log->error("failed to construct $type::$a");
+        return null;
+      }
+    }
+    unset($b);
+    # construct
+    return new static([
+      'tree' => $c,
+      'map'  => self::createMap($c),
+    ]);
+  }
+  # }}}
+  static function createMap(array &$tree): array # {{{
+  {
+    $map = [];
+    foreach ($tree as $a)
+    {
+      $map[$a->id] = $a;
+      if ($a->items)
+      {
+        foreach (self::createMap($a->items) as $b) {
+          $map[$b->id] = $b;
+        }
+      }
+    }
+    return $map;
+  }
+  # }}}
+}
+class BotCommand extends StasisConstruct
+{
+  # {{{
+  # command syntax: /<item>!<func> <args>
+  const EXPR = '|^\/((\w+)([:/-](\w+)){0,8})(!(\w{1,})){0,1}( (.{1,})){0,1}$|';
+  const MAX_SIZE = 200;
+  static function parse(string $exp, bool $loose = true): ?self
+  {
+    # check correct size
+    if (($a = strlen($exp)) < 2 || $a > self::MAX_SIZE) {
+      return null;
+    }
+    # determine bot name (specified as postfix in groups)
+    $bot = (($a = strrpos($exp, '@')) !== false)
+      ? substr($exp, 0, $a)
+      : '';
+    # check
+    if ($loose && $exp[0] === '!')
+    {
+      # parse simplified expression
+      $item = '';
+      if ($a = strpos($exp, ' '))
+      {
+        $func = substr($exp, 1, $a);
+        $args = explode(',', substr($exp, $a + 1));
+      }
+      else
+      {
+        $func = substr($exp, 1);
+        $args = [];
+      }
+    }
+    else
+    {
+      # parse full-fledged command
+      $a = null;
+      if (!preg_match_all(self::EXPR, $exp, $a)) {
+        return null;
+      }
+      # extract
+      $item = $a[1][0];
+      $func = $a[6][0];
+      $args = strlen($a[8][0])
+        ? explode(',', $a[8][0])
+        : null;
+      # check deep link (tg://<BOT_NAME>?start=<item>)
+      if ($item === 'start' && !$func && $args)
+      {
+        $item = $args[0];
+        $args = null;
+      }
+      # remove separators [:],[-],[/]
+      if (strpos($item, ':')) {
+        $item = str_replace(':', '', $item);
+      }
+      elseif (strpos($item, '-')) {
+        $item = str_replace('-', '', $item);
+      }
+      elseif (strpos($item, '/')) {
+        $item = str_replace('/', '', $item);
+      }
+    }
+    # construct
+    return new static([
+      'id'   => $item,
+      'func' => $func,
+      'args' => $args,
+      'bot'  => $bot,
+    ]);
+  }
+  # }}}
+}
+# }}}
 ###
-# {{{
-class BotRequestInput extends StasisConstruct
+class BotRequestInput extends StasisConstruct # {{{
 {
   static function init(object $msg): ?object # {{{
   {
@@ -1130,7 +1343,8 @@ class BotRequestInput extends StasisConstruct
   }
   # }}}
 }
-class BotRequestCommand extends BotRequestInput
+# }}}
+class BotRequestCommand extends BotRequestInput # {{{
 {
   static function init(object $msg): self # {{{
   {
@@ -1211,7 +1425,8 @@ class BotRequestCommand extends BotRequestInput
   }
   # }}}
 }
-class BotRequestCallback extends StasisConstruct
+# }}}
+class BotRequestCallback extends StasisConstruct # {{{
 {
   static function init(object $query): ?object # {{{
   {
@@ -1331,7 +1546,8 @@ class BotRequestCallback extends StasisConstruct
   }
   # }}}
 }
-class BotRequestGame extends StasisConstruct
+# }}}
+class BotRequestGame extends StasisConstruct # {{{
 {
   static function init(object $query): ?self # {{{
   {
@@ -1366,7 +1582,8 @@ class BotRequestGame extends StasisConstruct
   }
   # }}}
 }
-class BotRequestInline extends StasisConstruct
+# }}}
+class BotRequestInline extends StasisConstruct # {{{
 {
   static function init(object $query): ?self # {{{
   {
@@ -2045,185 +2262,11 @@ class BotUserConfigItem extends StasisConstruct implements \ArrayAccess, \JsonSe
 }
 # }}}
 ###
-class BotItems extends StasisConstruct # {{{
-{
-  static function init(object $bot): ?self # {{{
-  {
-    static $FILE1='commands.json', $FILE2='commands.inc';
-    # check
-    if ($b = file_exists($a = $bot->dir->data.$FILE1))
-    {
-      # load precompiled
-      if (!($c = file_get_contents($a)) ||
-          !($c = json_decode($c, true)))
-      {
-        $bot->log->error("failed to load: $a");
-        return null;
-      }
-    }
-    else
-    {
-      # merge
-      $c = require $bot->dir->bot.$FILE2;
-      if (file_exists($d = $bot->dir->data.$FILE2)) {
-        $c = array_merge($c, (require $d));
-      }
-    }
-    # construct roots
-    $base = '\\'.__NAMESPACE__.'\\BotItem';
-    foreach ($c as $d => &$e)
-    {
-      $type = $base.(isset($e['type']) ? ucfirst($e['type']) : 'Img');
-      if (!$b && !class_exists($type, false))
-      {
-        $bot->log->error("class $type not found");
-        return null;
-      }
-      if (($e = $type::init($bot, $d, $e, null, $b)) === null)
-      {
-        $bot->log->error("failed to construct $type::$d");
-        return null;
-      }
-    }
-    unset($e);
-    # construct
-    return new static([
-      'tree' => $c,
-      'map'  => self::createMap($c),
-    ]);
-  }
-  # }}}
-  static function createMap(array &$tree): array # {{{
-  {
-    $map = [];
-    foreach ($tree as $a)
-    {
-      $map[$a->id] = $a;
-      if ($a->items)
-      {
-        foreach (self::createMap($a->items) as $b) {
-          $map[$b->id] = $b;
-        }
-      }
-    }
-    return $map;
-  }
-  # }}}
-  function dump( # {{{
-    int    $pad   = 0,
-    string $color = 'cyan',
-    ?array &$tree = null,
-    array  &$indent = []
-  ):string
-  {
-    # prepare
-    !$tree && ($tree = $this->tree);
-    $x = '';
-    $i = 0;
-    $j = count($tree);
-    # compose tree items
-    foreach ($tree as &$a)
-    {
-      # compose indent
-      $pad && ($x .= str_repeat(' ', $pad));
-      foreach ($indent as $b) {
-        $x .= $b ? Bot::str_fg_color('│ ', $color) : '  ';
-      }
-      # compose item line
-      $b  = (++$i === $j);
-      $c  = Bot::str_fg_color(($b ? '└─' : '├─'), $color);
-      $x .= $c.$a->name."\n";
-      # recurse
-      if ($a->items)
-      {
-        $indent[] = !$b;
-        $x .= $this->dump($pad, $color, $a->items, $indent);
-        array_pop($indent);
-      }
-    }
-    # done
-    return $x;
-  }
-  # }}}
-}
-class BotCommand extends StasisConstruct
-{
-  # {{{
-  # command syntax: /<item>!<func> <args>
-  const EXPR = '|^\/((\w+)([:/-](\w+)){0,8})(!(\w{1,})){0,1}( (.{1,})){0,1}$|';
-  const MAX_SIZE = 200;
-  static function parse(string $exp, bool $loose = true): ?self
-  {
-    # check correct size
-    if (($a = strlen($exp)) < 2 || $a > self::MAX_SIZE) {
-      return null;
-    }
-    # determine bot name (specified as postfix in groups)
-    $bot = (($a = strrpos($exp, '@')) !== false)
-      ? substr($exp, 0, $a)
-      : '';
-    # check
-    if ($loose && $exp[0] === '!')
-    {
-      # parse simplified expression
-      $item = '';
-      if ($a = strpos($exp, ' '))
-      {
-        $func = substr($exp, 1, $a);
-        $args = explode(',', substr($exp, $a + 1));
-      }
-      else
-      {
-        $func = substr($exp, 1);
-        $args = [];
-      }
-    }
-    else
-    {
-      # parse full-fledged command
-      $a = null;
-      if (!preg_match_all(self::EXPR, $exp, $a)) {
-        return null;
-      }
-      # extract
-      $item = $a[1][0];
-      $func = $a[6][0];
-      $args = strlen($a[8][0])
-        ? explode(',', $a[8][0])
-        : null;
-      # check deep link (tg://<BOT_NAME>?start=<item>)
-      if ($item === 'start' && !$func && $args)
-      {
-        $item = $args[0];
-        $args = null;
-      }
-      # remove separators [:],[-],[/]
-      if (strpos($item, ':')) {
-        $item = str_replace(':', '', $item);
-      }
-      elseif (strpos($item, '-')) {
-        $item = str_replace('-', '', $item);
-      }
-      elseif (strpos($item, '/')) {
-        $item = str_replace('/', '', $item);
-      }
-    }
-    # construct
-    return new static([
-      'id'   => $item,
-      'func' => $func,
-      'args' => $args,
-      'bot'  => $bot,
-    ]);
-  }
-  # }}}
-}
-# }}}
 abstract class BotItem extends StasisConstruct implements \JsonSerializable # {{{
 {
-  # {{{
-  static $DATATYPE = 0, $ERROR = null;
-  static function init(
+  static $DATAFILE = 0;# 0=none, 1=private, 2=public
+  static $ERROR = null;# exception
+  static function construct(# {{{
     object  $bot,
     string  $name,
     array   &$struct,
@@ -2240,7 +2283,7 @@ abstract class BotItem extends StasisConstruct implements \JsonSerializable # {{
     if (!$isRefined)
     {
       # initialize texts
-      # correct empty or absent primary language
+      # correct empty or primary language
       if (!isset($struct['text'])) {
         $struct['text'] = ['en'=>[]];
       }
@@ -2248,7 +2291,7 @@ abstract class BotItem extends StasisConstruct implements \JsonSerializable # {{
         $struct['text'] = ['en'=>$struct['text']];
       }
       # correct absent languages (copy primary)
-      foreach ($bot->messages as $a => &$b)
+      foreach ($bot->text->msg as $a => &$b)
       {
         if (!isset($struct['text'][$a])) {
           $struct['text'][$a] = $struct['text']['en'];
@@ -2263,15 +2306,15 @@ abstract class BotItem extends StasisConstruct implements \JsonSerializable # {{
           if (strpos($b, "\r") !== false) {
             $b = str_replace("\r\n", "\n", $b);
           }
-          $b = $bot->tp->render($b, '{: :}', $bot::$EMOJI);
-          $b = $bot->tp->render($b, '{! !}', $bot->buttons);
+          $b = $bot->tp->render($b, '{: :}', BotTexts::$EMOJI);
+          $b = $bot->tp->render($b, '{! !}', $bot->text->btn);
         }
       }
       unset($a, $b);
       # initialize other props
-      $struct[$a = 'datatype'] = isset($struct[$a])
+      $struct[$a = 'datafile'] = isset($struct[$a])
         ? $struct[$a]
-        : self::$DATATYPE;
+        : self::$DATAFILE;
       $struct[$a = 'handler'] = $b = isset($struct[$a])
         ? $struct[$a]
         : 0;
@@ -2320,7 +2363,9 @@ abstract class BotItem extends StasisConstruct implements \JsonSerializable # {{
     }
     return $item;
   }
-  function jsonSerialize(): array {
+  # }}}
+  function jsonSerialize(): array # {{{
+  {
     return $this->struct;
   }
   # }}}
@@ -2805,7 +2850,7 @@ class BotItemTxt extends BotItem # {{{
         $b = 'img'.DIRECTORY_SEPARATOR;
         $c = $b.$item['titleId'].'.jpg';# more specific first
         $d = $b.$name.'.jpg';# less specific last
-        $a = $this->dir->bot;
+        $a = $this->dir->src;
         $b = $this->dir->inc;
         # determine single source
         $a = (file_exists($a.$c)
@@ -2918,7 +2963,7 @@ class BotItemTxt extends BotItem # {{{
 # }}}
 class BotItemList extends BotItem # {{{
 {
-  static $DATATYPE = 1;
+  static $DATAFILE = 1;
   # data {{{
   static public $template = [
     'en' => # {{{
@@ -3148,7 +3193,7 @@ page <b>{{page}}</b> of {{page_count}} ({{item_count}})
 # }}}
 class BotItemForm extends BotItem # {{{
 {
-  static $DATATYPE = 1;
+  static $DATAFILE = 1;
   static function render($bot, &$item, $func, $args) # {{{
   {
     # prepare {{{
@@ -3842,841 +3887,4 @@ class BotItemForm extends BotItem # {{{
   # }}}
 }
 # }}}
-class BotItemCaptcha extends BotItem # {{{
-{
-  # {{{
-  public static
-    $STEP   = 2,# seconds, one decrement
-    $BLINK  = 0,# seconds, indicator blinks
-    $PAUSE  = 2,# seconds, transition
-    $STAGES = 3,# total indicator stages
-    $TEMPLATE = # {{{
-    '
-    <a href="tg://user?id={[user.id]}">{[user.name]}</a> 
-    {{#A1}}
-      {{#t1}}
-        {{#blink}}{:red_circle:}{{/blink}}
-        {{^blink}}{:orange_circle:}{{/blink}}
-      {{/t1}}
-      {{#t2}}
-        {{#blink}}{:orange_circle:}{{/blink}}
-        {{^blink}}{:purple_circle:}{{/blink}}
-      {{/t2}}
-      {{#t3}}
-        {{#blink}}{:purple_circle:}{{/blink}}
-        {{^blink}}{:blue_circle:}{{/blink}}
-      {{/t3}}
-      <b> {{time}}</b>
-      {{br}}{{br}}
-      {{question}}
-    {{/A1}}
-    {{#A2}}
-      {:red_circle:} <a href="https://youtu.be/mQ_AdzWE5Ec">timed out</a>
-    {{/A2}}
-    {{#A3}}
-      {:green_circle:} correct
-      {{br}}{{br}}
-      {{question}}
-    {{/A3}}
-    {{#A4}}
-      {:red_circle:} incorrect
-      {{br}}{{br}}
-      {{question}}
-    {{/A4}}
-    {{#A5}}
-      {:green_circle:} qualified
-      {{br}}{{br}}
-      {:tada:}{:tada:}{:tada:}
-    {{/A5}}
-    {{#A6}}
-      {:red_circle:} failed
-    {{/A6}}
-    {{br}}{{end}}
-    ';
-    # }}}
-  ###
-  static function getTotalSize($time)
-  {
-    $step   = self::$STEP;
-    $blink  = self::$BLINK;
-    $stages = self::$STAGES;
-    $size   = intval(ceil($time / $stages));
-    $total  = intval($stages * ceil($size / $step));
-    return [$total,$size];
-  }
-  static function getQA($q, $A)
-  {
-    # extract question's answers
-    $a = [];
-    $b = 0;
-    while (array_key_exists(($c = $q.'a'.$b), $A)) {
-      $a[$c] = $A[$c]; ++$b;
-    }
-    return $a;
-  }
-  static function getMixedQA($q, $A)
-  {
-    # get answers and mixup
-    $a = array_keys(self::getQA($q, $A));
-    shuffle($a);
-    return $a;
-  }
-  # }}}
-  static function render($bot, &$item, $func, $args) # {{{
-  {
-    # prepare {{{
-    $conf  = &$item['config'];
-    $text  = $item['text'][$bot->user->lang];
-    $retry = $item['retry'];
-    $A = 0;
-    if ($init = array_key_exists('A', $conf))
-    {
-      $A = $conf['A'];# current captcha stage
-      $B = $conf['B'];# total ticks left
-      $C = $conf['C'];# question group index
-      $D = $conf['D'];# question index
-      $E = $conf['E'];# question answer keys
-      $F = $conf['F'];# current time stage
-      $G = $conf['G'];# current blink state
-      $H = $conf['H'];# current retry timeout
-      $I = $conf['I'];# current answer
-    }
-    # }}}
-    # update {{{
-    switch ($A) {
-    case 2:
-    case 6:
-      # TIMED OUT or FAILED {{{
-      # check retry state
-      if ($H)
-      {
-        if ($func === 'retry')
-        {
-          # restart requirested
-          # message should be updated
-          $bot->user->changed = true;
-          # check time passed
-          $retry = $retry - (time() - $H);
-          if ($retry <= 0)
-          {
-            # unlock restart
-            $H = $retry = 0;
-          }
-        }
-        else {
-          $retry = 0;# dont show
-        }
-      }
-      if ($H) {break;}
-      # set to recreate item's message
-      $item['isNew'] = true;
-      # }}}
-      ### fallthrough..
-    case 0:
-      # STARTUP {{{
-      ### switch to the next stage
-      $A = 1;
-      $B = self::getTotalSize($item['timeout'])[0];
-      ### select first question
-      $C = 0;
-      $D = count($item['markup'][$C]);
-      $D = ($D === 1) ? 0 : rand(0, $D - 1);
-      ### mixup answers
-      $E = self::getMixedQA($item['markup'][$C][$D], $text);
-      $E = implode(',', $E);
-      ### initial time stage
-      $F = self::$STAGES;
-      $G = 0;
-      $H = 0;
-      $I = '';
-      $bot->taskAttach($item, $item['timeout']);
-      # }}}
-      break;
-    case 1:
-    case 3:
-      # OPERATE
-      switch ($func) {
-      case 'done':
-        # TIMED OUT {{{
-        $A = 2;
-        $B = 0;
-        $H = $retry ? time() : 0;# record when
-        $retry = 0;# dont show
-        break;
-        # }}}
-      case 'progress':
-        # {{{
-        # update indicator [total,stage,blink]
-        $B = intval($args[0]);
-        $F = intval($args[1]);
-        $G = intval($args[2]);
-        # check correct stage approval
-        if ($A === 3 && $G === 2)
-        {
-          # advance question group index
-          if (($C = $C + 1) < count($item['markup']))
-          {
-            ### recharge
-            $A = 1;
-            $D = count($item['markup'][$C]);
-            $D = ($D === 1) ? 0 : rand(0, $D - 1);
-            ### mixup answers
-            $E = self::getMixedQA($item['markup'][$C][$D], $text);
-            $E = implode(',', $E);
-          }
-          else
-          {
-            ### complete captcha
-            $A = 5;
-          }
-        }
-        break;
-        # }}}
-      default:
-        # ANSWER {{{
-        # check already
-        if ($A === 3) {break;}
-        # check correct
-        $a = $item['markup'][$C][$D].'a';
-        $b = false;# wrong
-        foreach (explode(',', $text[$a]) as $c)
-        {
-          if ($func === $a.$c) {
-            $b = true; break;
-          }
-        }
-        # set anser
-        $A = $b ? 3 : 4;
-        $H = $retry ? time() : 0;# charge retry
-        $I = $func;
-        $bot->logDebug('answer '.$I.($b?'+':'-'));
-        break;
-        # }}}
-      }
-      break;
-    case 4:
-      # INCORRECT {{{
-      if ($func === 'done')
-      {
-        $A = 6;
-        $B = 0;
-        $retry = 0;# dont show hint
-      }
-      # }}}
-      break;
-    case 5:
-      # COMPLETE {{{
-      if ($func === 'reset')
-      {
-        # reset and re-render
-        unset($conf['A']);
-        $item['isNew'] = true;
-        return self::render($bot, $item, '', null);
-      }
-      # }}}
-      break;
-    }
-    if (!$init ||
-        $A !== $conf['A'] ||
-        $B !== $conf['B'] ||
-        $C !== $conf['C'] ||
-        $D !== $conf['D'] ||
-        $E !== $conf['E'] ||
-        $F !== $conf['F'] ||
-        $G !== $conf['G'] ||
-        $H !== $conf['H'] ||
-        $I !== $conf['I'])
-    {
-      $conf['A'] = $A;
-      $conf['B'] = $B;
-      $conf['C'] = $C;
-      $conf['D'] = $D;
-      $conf['E'] = $E;
-      $conf['F'] = $F;
-      $conf['G'] = $G;
-      $conf['H'] = $H;
-      $conf['I'] = $I;
-      $bot->user->changed = true;
-    }
-    # }}}
-    # render {{{
-    switch ($A) {
-    case 1:
-    case 3:
-    case 4:
-      # question is being asked.. {{{
-      # determine text
-      $a = $item['markup'][$C][$D];
-      $a = trim($text[$a]);
-      # determine markup
-      $b = explode(',', $E);
-      $c = count($b);
-      $d = [];
-      if ($A === 1)
-      {
-        # all answer variants shown
-        $i = 0;
-        while ($i < $c)
-        {
-          $e = [];
-          $j = -1;
-          while (++$j < $item['rowLimit'] && $i < $c)
-          {
-            $e[] = '_'.$b[$i];
-            $i++;
-          }
-          $d[] = $e;
-        }
-      }
-      else
-      {
-        # show selected variant and blank others
-        $i = 0;
-        while ($i < $c)
-        {
-          $e = [];
-          $j = -1;
-          while (++$j < $item['rowLimit'] && $i < $c)
-          {
-            if ($b[$i] === $I) {
-              $e[] = ['text'=>$text[$b[$i]],'callback_data'=>'!'];
-            }
-            else {
-              $e[] = ' ';
-            }
-            $i++;
-          }
-          $d[] = $e;
-        }
-      }
-      $b = $d;
-      # }}}
-      break;
-    case 2:
-    case 6:
-      # failed states {{{
-      # replace question with last answer
-      $a = $I;
-      # custom retry button
-      # displayed with or without a hint
-      $b = $bot->tp->render($text['retry'], ['x'=>$retry]);
-      $c = '/'.$item['id'].'!retry';
-      $b = [['text'=>$b,'callback_data'=>$c]];
-      $b = [$b];
-      # }}}
-      break;
-    case 5:
-      $a = '';
-      $b = $item['markupComplete'];
-      break;
-    }
-    # get the template
-    if (!($c = $item['content']))
-    {
-      # default, add emojis
-      $c = $bot->tp->render(self::$TEMPLATE, Bot::$EMOJI, '{: :}');
-    }
-    # set
-    $item['textContent'] = $bot->render_content($c, [
-      'question' => $a,
-      'A1'    => ($A === 1),
-      'A2'    => ($A === 2),
-      'A3'    => ($A === 3),
-      'A4'    => ($A === 4),
-      'A5'    => ($A === 5),
-      'A6'    => ($A === 6),
-      'time'  => $B,
-      't1'    => ($F == 1),
-      't2'    => ($F == 2),
-      't3'    => ($F >= 3),
-      'blink' => $G,
-      'retry' => $retry,
-    ]);
-    $item['markup'] = $b;
-    $item['title'] = '';
-    $a = array_key_exists('brand', $item)
-      ? $item['brand']
-      : $item['name'];
-    $item['titleId'] = ($A === 1 && $C === 0 && $item['intro'])
-      ? $a.'_0'
-      : $a.'_'.$A;
-    # }}}
-    return true;
-  }
-  # }}}
-  static function task($bot, &$item, $data) # {{{
-  {
-    # prepare
-    $step  = self::$STEP;
-    $blink = self::$BLINK;
-    $stage = 1 + self::$STAGES;
-    $total = self::getTotalSize($data);
-    $size  = $total[1];
-    $total = $total[0];
-    $A = 1;
-    # iterate
-    while (--$stage)
-    {
-      # make stage steps
-      $a = $step + $size;
-      while (($a -= $step) > 0)
-      {
-        # delay
-        $bot::delay($step - $blink);
-        # decrement
-        if (--$total === 0) {
-          break 2;
-        }
-        # update
-        $bot->taskRender($item, [$total,$stage,1], function(&$item) use ($bot) {
-          # make sure update is valid
-          return ($item['config']['A'] === 1);
-        });
-        # check stage changed
-        if (($A = $item['config']['A']) !== 1)
-        {
-          # delay
-          $bot::delay(self::$PAUSE);
-          # complete incorrect
-          if ($A !== 3) {
-            break 2;
-          }
-          # approve correct (with special blink)
-          if (!$bot->taskRender($item, [$total,$stage,2])) {
-            break 2;
-          }
-          # complete correct
-          if ($item['config']['A'] === 5) {
-            break 2;
-          }
-          $bot::delay($blink);
-        }
-        /***
-        if ($blink)
-        {
-          $bot::delay($blink);
-          $bot->taskRender($item, [$total,$stage,0]);
-        }
-        /***/
-      }
-    }
-    # complete
-    return [1];
-  }
-  # }}}
-}
-# }}}
-/***
-  # TODO
-# handle navigational item {{{
-if (($a = $item['type']) === 'open' || $a === 'inject')
-{
-  # checkout destination
-  $b = $item;
-  if (!isset($item['path']) || !($item = $this->itemGet($item['path'])))
-  {
-    $this->log('failed to '.$a.' item, path not found');
-    return 0;
-  }
-  # recurse
-  return ($a === 'open')
-    ? $this->itemRender($item)
-    : $this->itemRender($item, $a, $b);
-}
-# }}}
-# start task {{{
-      /***
-      # output startup signal,
-      # any other output to STDOUT/STDERR will terminate process
-      echo "TASK STARTED\n";
-      # load task plan
-      if (!file_exists($args[1]) ||
-          !($plan = file_get_contents($args[1])) ||
-          !($plan = json_decode($plan, true)) ||
-          !is_array($plan) ||
-          !array_key_exists('id', $plan) ||
-          !($plan['id'] === $args[2]))
-      {
-        break;
-      }
-      # create instance
-      if (($b = self::init($plan['bot'], true)) === null) {
-        break;
-      }
-      # register task unlocker
-      register_shutdown_function(function($file) {
-        if (file_exists($file)) {
-          unlink($file);
-        }
-      }, $args[1]);
-      # operate
-      try
-      {
-        # attach bot's user
-        $b->user = (object)$plan['user'];
-        $b->user->chat = (object)$b->user->chat;
-        # execute
-        if (!$b->taskWork($plan)) {
-          throw new \Exception($args[0].' failed #'.$plan['id'].': '.$plan['item']);
-        }
-        $b->taskDetach();# enable continuation
-      }
-      catch (\Exception $e) {
-        $b->logException($e);# recorded
-      }
-# }}}
-  # task manager {{{
-  private function userConfigAttach() # {{{
-  {
-    # determine filename (depends on chat)
-    $file = $this->user->dir.'config';
-    $chat = $this->user->chat;
-    if ($chat->type !== 'private') {
-      $file = $file.strval($chat->id);
-    }
-    $file = $file.'.json';
-    # aquire a forced lock
-    if (!self::file_lock($file, true))
-    {
-      $this->logError("forced lock failed: $file");
-      return false;
-    }
-    # read, decode contents and
-    # set user's configuration
-    $this->user->config = file_exists($file)
-      ? json_decode(file_get_contents($file), true)
-      : [];
-    # done
-    $this->user->file = $file;
-    $this->user->changed = false;
-    return true;
-  }
-  # }}}
-  private function userConfigDetach($nowrite = false) # {{{
-  {
-    if ($file = $this->user->file)
-    {
-      # write changes
-      if (!$nowrite && $this->user->changed) {
-        file_put_contents($file, json_encode($this->user->config));
-      }
-      # release lock
-      self::file_unlock($file);
-    }
-    return true;
-  }
-  # }}}
-  public function taskAttach( # {{{
-    &$item,       # object (standard) or string (custom)
-    $data = null, # task data
-    $tick = false # enables progress ticks
-  ) {
-    ###
-    if ($item)
-    {
-      # compose php interpreter command
-      $task = __DIR__.DIRECTORY_SEPARATOR.'index.php';
-      $task = '"'.PHP_BINARY.'" -f "'.$task.'" -- ';
-      # check type
-      if (is_string($item))
-      {
-        # unmanaged, custom operation
-        $this->log("custom task: $item");
-        $this->tasks[] = [0, $task.$item];
-      }
-      else
-      {
-        # standard
-        # determine task plan file
-        $file = 'task_'.$item['path'].'.json';
-        $file = $this->user->dir.$file;
-        if ($this->cfg['debugtask'])
-        {
-          $plan = -1;
-          $this->log('debug task: '.$item['id']);
-        }
-        else
-        {
-          $plan = uniqid();
-          $this->log("task: $file");
-        }
-        # determine process arguments
-        $args = ' "'.$file.'" '.$plan;
-        # add worker
-        $this->tasks[] = [$plan, $task.'task'.$args, $file, $item['id'], $data];
-        # add ticker
-        if ($tick) {
-          $this->tasks[] = [$plan, $task.'progress'.$args, $file, $item['id'], $data];
-        }
-      }
-    }
-    return true;
-  }
-  # }}}
-  public function taskDetach() # {{{
-  {
-    # copy and reset
-    $tasks = $this->tasks;
-    $debugtask = $this->cfg['debugtask'];
-    $this->tasks = [];
-    # spawn all tasks one by one
-    foreach ($tasks as $task)
-    {
-      # create task plan
-      $file = $task[2];
-      $plan = [
-        'id'   => $task[0],
-        'bot'  => $this->id,
-        'item' => $task[3],
-        'data' => $task[4],
-        'user' => $this->user,
-      ];
-      # run
-      if ($debugtask)
-      {
-        # sync
-        $this->log('===');
-        if (!$this->taskWork($plan)) {break;}
-        $this->log('===');
-      }
-      else
-      {
-        # async
-        # create plan file
-        if (!file_put_contents($file, json_encode($plan)))
-        {
-          $this->logError("file_put_contents($file) failed");
-          break;
-        }
-        # launch
-        if (!self::async_execute($task[1])) {
-          break;
-        }
-      }
-    }
-    # update user configuration (in debug mode)
-    if ($debugtask) {
-      $this->userConfigDetach();
-    }
-    # done
-    return true;
-  }
-  # }}}
-  private function taskWork($plan) # {{{
-  {
-    # measure time
-    $time = microtime(true);
-    # possess item
-    if (!($item = $this->itemGet($plan['item'])))
-    {
-      $this->logError('item not found: '.$plan['item']);
-      return false;# unlikely
-    }
-    # possess handler
-    if (!($a = $item['typeHandler']))
-    {
-      $this->logError('handler not found: '.$plan['item']);
-      return false;# no handler
-    }
-    # execute
-    if (!($res = $a::task($this, $item, $plan['data'])) ||
-        !is_array($res) || !count($res))
-    {
-      $res = [0];
-    }
-    # measure time spent and delay completion
-    $a = 300000;# 300ms
-    if (($b = microtime(true) - $time) > 0 && $b < $a) {
-      usleep($a - $b);
-    }
-    # complete
-    return $this->taskUpdate(
-      $item, 'done',
-      $res, $this->cfg['debugtask'],
-      null
-    );
-  }
-  # }}}
-  private function taskProgress($plan, $file) # TODO {{{
-  {
-    static
-      $tickSize = 500000;# 500ms
-      $maxTicks = 2*7200;# x500ms, 7200=1h
-    ###
-    # determine item handler
-    $item = null;
-    $a = '\\'.__NAMESPACE__.'\\item_';
-    $a = $a.str_replace(':', '_', $plan['item']);
-    if (!class_exists($a, false)) {
-      return false;
-    }
-    # start ticks loop
-    $b = method_exists($a, 'tick');
-    $c = 0;# counter
-    $d = 0;# default result
-    while (file_exists($file) && $c < $maxTicks)
-    {
-      # suspend
-      usleep($tickSize);
-      if (!file_exists($file)) {
-        break;
-      }
-      # tick
-      if ($b)
-      {
-        # custom
-        $e = $a::tick($this, $item, $c, $d);
-      }
-      else
-      {
-        # default
-        $e = ($c % 2) ? 1 : 0;
-      }
-      ++$c;
-      # update when changed
-      if ($d !== $e)
-      {
-        $this->taskRender($item, [$e]);
-        $d = $e;
-      }
-    }
-    # done
-    return true;
-  }
-  # }}}
-  public function taskRender(&$item, $args, $callback = null) # {{{
-  {
-    return $this->taskUpdate(
-      $item, 'progress',
-      $args, $this->cfg['debugtask'],
-      $callback
-    );
-  }
-  # }}}
-  private function taskUpdate(&$item, $func, $args, $debug, $callback) # {{{
-  {
-    # before any task update is made to the user's view,
-    # configuration must be locked (except the debug case)
-    if (!$debug && !$this->userConfigAttach()) {
-      return false;
-    }
-    try
-    {
-      # attach task item
-      $a = $args ? ' '.implode(',', $args) : '';
-      $a = '/'.$item['id'].'!'.$func.$a;
-      if (!($b = $this->itemAttach($a))) {
-        throw new \Exception("failed to attach: $a");
-      }
-      elseif ($b === -1) {
-        throw new \Exception('', -1);
-      }
-      $item = $this->item;
-      # check displayed
-      # the _item parameter is untrusted..
-      $c = $this->user->config;
-      $b = $item['root']['id'];
-      if (array_key_exists($b, $c) &&
-          array_key_exists('_msg', $c[$b]) &&
-          $c[$b]['_msg'] &&
-          $c[$b]['_item'] === $item['id'])
-      {
-        # callback and update
-        if (!$callback || $callback($item)) {
-          $this->itemUpdate($c[$b]['_msg'], $item, ($func !== 'done'));
-        }
-      }
-    }
-    catch (\Exception $e) {
-      ~$e->getCode() && $this->logException($e);
-    }
-    # release user configuration lock
-    if (!$debug) {
-      $this->userConfigDetach();
-    }
-    # complete
-    return $item;
-  }
-  # }}}
-  # }}}
-  function render_content($text, $data = []) # {{{
-  {
-    ### {{current}}, apply specific template trims
-    $data['BR']  = "\n";
-    $data['END'] = "\xC2\xAD";# SOFT HYPHEN U+00AD
-    $data['NBSP'] = "\xC2\xA0";# non-breakable space
-    $text = $this->tp->render(preg_replace('/\n\s*/m', '', $text), $data);
-    $text = str_replace("\r", '', $text);
-    ### {[base]}
-    return $this->tp->render($text, [
-      'user' => $this->user,
-    ], '{[ ]}');
-  }
-  # }}}
-  ###
-  static function async_execute(string $command) # {{{
-  {
-    if (self::$WINOS)
-    {
-      # this will not work,
-      # kept for history of stdin/out redirection to NUL,
-      # which would signal of no output and
-      # make function return instantly (no wait)
-      #system($task.' 1>NUL 2>&1');
-      ###
-      # this trick will not work,
-      # seem that it relies on CPU speed,
-      # using START command neither works
-      #pclose(popen($task, 'r'));
-      ###
-      # this will start the START command,
-      # WARNING: without the START command, it will go sync!
-      # which will start the PHP CLI command (NOWAIT),
-      # which will start the bot task handler,
-      # which will return "TASK STARTED" here
-      $command = 'START "" /B '.$command.' 2>&1';
-      if (!($a = popen($command, 'r')) ||
-          !($b = fgets($a)))
-      {
-        $this->logError("async_execute($command) failed");
-        return false;
-      }
-      ###
-      # pclose() will terminate START before
-      # it actually start anything, so the task
-      # response is obtained before (by reading),
-      # which resolves timing problem (i guess)
-      #sleep(5); # NO NEED!
-      pclose($a);
-      # just check that process belongs here
-      if (strncmp('TASK STARTED', $b, 12) !== 0)
-      {
-        $this->logError("async_execute($command) incorrect response");
-        return false;
-      }
-    }
-    else
-    {
-      # TODO: test nix* variant
-      shell_exec('/usr/bin/nohup '.$command.' >/dev/null 2>&1 &');
-    }
-    # done
-    return true;
-  }
-  # }}}
-  static function delay(float|int $sec): void # {{{
-  {
-    # determine base and remainder
-    $a = intval($sec);
-    $b = intval(100000 * ($sec - $a));
-    # sleep
-    if ($a) {sleep($a);}
-    if ($b) {usleep($b);}
-  }
-  # }}}
-/***/
-# TODO: list of lists
-# TODO: language switch form
-# TODO: form input bob
-# TODO: parallel
 ?>
