@@ -4,13 +4,12 @@ namespace SM;
 abstract class StasisConstruct # {{{
 {
   protected function __construct(array $o) {
-    foreach ($o as $k => $v) {$this->$k = $v;}
+    foreach ($o as $k => &$v) {$this->$k = &$v;}
   }
 }
 # }}}
 class Bot extends StasisConstruct # {{{
 {
-  const POLLING_TIMEOUT  = 120;
   const MESSAGE_LIFETIME = 48*60*60;
   static $WINOS = true;
   static function start(string $id = 'master'): never # {{{
@@ -19,9 +18,9 @@ class Bot extends StasisConstruct # {{{
     ini_set('html_errors', 0);
     ini_set('implicit_flush', 1);
     set_time_limit(0);
-    set_error_handler(function(int $no, string $msg, string $file, int $line) {
-      # all errors except supressed (@),
-      # must be handled or thrown
+    set_error_handler(function($no, $msg, $file, $line) {
+      # all errors, except supressed (@) must be handled,
+      # unhandled are thrown as an exception
       if (error_reporting() !== 0) {
         throw new \Exception($msg, $no);
       }
@@ -33,7 +32,7 @@ class Bot extends StasisConstruct # {{{
     }
     # enforce graceful termination
     register_shutdown_function(function() use ($bot) {
-      # guard against fatals (not catched by error handler)
+      # guard against non-recoverable (non-catched) errors
       error_get_last() && $bot->destruct();
     });
     self::$WINOS && sapi_windows_set_ctrl_handler(function (int $e) use ($bot) {
@@ -41,68 +40,34 @@ class Bot extends StasisConstruct # {{{
       $bot->destruct();
       exit(1);
     });
-    # report startup and show commands tree
-    $bot->log->info("started");
-    # ...
-    # ...
-    # ...
-    exit(1);
+    # prepare
+    $e = null;
     try
     {
-      # prepare
-      $res = 0;
-      $req = [
-        'offset'  => 0,
-        'timeout' => $timeout,
-      ];
+      # report
+      $bot->log->info('started');
+      $bot->log->commands($bot->cmd->tree);
       # operate
-      while ($this->errors < 5 && file_exists($lock))
+      while (($u = $bot->api->getUpdates()) !== null)
       {
-        # request updates (long polling)
-        if (!($a = $this->api->send('getUpdates', $req))) {
-          sleep(1); continue;
-        }
-        # reset error counter
-        #$this->errors = 0;
-        # process updates
-        foreach ($a->result as $b)
-        {
-          if ($res = $this->update($b))
-          {
-            # save api offset
-            $this->api->send('getUpdates', [
-              'offset'  => $b->update_id + 1,
-              'timeout' => 0,
-              'limit'   => 1,
-            ]);
-            break 2;
-          }
-          # shift offset
-          $req['offset'] = $b->update_id + 1;
-        }
+        #foreach ($u as $update) {}
       }
     }
-    catch (\Exception $e)
-    {
-      $this->logException($e);
-    }
-    # complete
-    restore_error_handler();
-    if (~$res)
-    {
-      $this->log("$name stop\n");
-      return 0;
-    }
-    $this->log("$name restart\n");
-    return 1;
+    catch (\Exception $e) {}
+    catch (\Error $e) {}
+    # report
+    $e && $bot->log->exception($e);
+    # terminate
+    $bot->destruct();
+    exit(1);
   }
   # }}}
-  private static function construct(string $id, bool $console): ?self # {{{
+  static function construct(string $id, bool $console): ?self # {{{
   {
     try
     {
       # prepare
-      $bot = null;
+      $bot = $e = null;
       $log = BotLog::construct($id, $console);
       if (!($dir = BotDirs::construct($id, $log)) ||
           !($cfg = BotConfig::construct($dir, $log)))
@@ -111,18 +76,21 @@ class Bot extends StasisConstruct # {{{
       }
       # construct
       $bot = new static([
-        'id'   => $id,
-        'log'  => $log,
-        'dir'  => $dir,
-        'cfg'  => $cfg,
-        'file' => null,
-        'api'  => null,
-        'tp'   => null,
-        'text' => null,
-        'cmd'  => null,
+        'id'     => $id,
+        'log'    => $log,
+        'dir'    => $dir,
+        'cfg'    => $cfg,
+        'file'   => null,
+        'api'    => null,
+        'tp'     => null,
+        'text'   => null,
+        'cmd'    => null,
       ]);
       # initialize base
-      if (!$dir->init($bot) || !$log->init($bot) || !$cfg->init($bot)) {
+      if (!$dir->init($bot) ||
+          !$log->init($bot) ||
+          !$cfg->init($bot))
+      {
         throw new \Exception();
       }
       # load dependencies
@@ -156,22 +124,24 @@ class Bot extends StasisConstruct # {{{
         throw new \Exception();
       }
     }
-    catch (\Exception $e)
-    {
+    catch (\Exception $e) {
       $e->getCode() && $log->exception($e);
-      if ($bot)
-      {
-        $bot->destruct();
-        $bot = null;
-      }
+    }
+    catch (\Error $e) {
+      $log->exception($e);
+    }
+    if ($e)
+    {
+      $bot && $bot->destruct();
+      return null;
     }
     return $bot;
   }
   # }}}
-  function destruct(): void # {{{
+  function control(): bool # {{{
   {
-    ($a = $this->api) && $a->destruct();
-    ($a = $this->cfg) && $a->finit();
+    #$this->log->info('control()');
+    return true;
   }
   # }}}
   function update(object $u): int # {{{
@@ -196,6 +166,17 @@ class Bot extends StasisConstruct # {{{
     return ($u = BotUser::init($this, $r)) ? $u->finit() : 0;
   }
   # }}}
+  function destruct(): void # {{{
+  {
+    if ($this->id)
+    {
+      $this->log->info('stopped');
+      ($a = $this->api) && $a->destruct();
+      ($a = $this->cfg) && $a->destruct();
+      $this->id = '';
+    }
+  }
+  # }}}
 }
 # initialize static props
 Bot::$WINOS = (
@@ -216,6 +197,8 @@ class BotLog # {{{
   }
   function init(object $bot): bool
   {
+    # set bot name
+    $this->name = $bot->cfg->name;
     # set logfiles
     if ($bot->cfg->saveAccessLog) {
       $this->cfg->files[0] = $bot->dir->data.'ACCESS.log';
@@ -231,7 +214,7 @@ class BotLog # {{{
   # }}}
   static function str_bg_color(string $str, string $name, int $strong=0): string # {{{
   {
-    static $color = [
+    static $COLOR = [
       'black'   => [40,100],
       'red'     => [41,101],
       'green'   => [42,102],
@@ -241,7 +224,7 @@ class BotLog # {{{
       'cyan'    => [46,106],
       'white'   => [47,107],
     ];
-    $x = $color[$name][$strong];
+    $x = $COLOR[$name][$strong];
     return (strpos($str, "\n") === false)
       ? "[{$x}m{$str}[0m"
       : "[{$x}m".str_replace("\n", "[0m\n[{$x}m", $str).'[0m';
@@ -249,7 +232,7 @@ class BotLog # {{{
   # }}}
   static function str_fg_color(string $str, string $name, int $strong=0): string # {{{
   {
-    static $color = [
+    static $COLOR = [
       'black'   => [30,90],
       'red'     => [31,91],
       'green'   => [32,92],
@@ -259,11 +242,11 @@ class BotLog # {{{
       'cyan'    => [36,96],
       'white'   => [37,97],
     ];
-    $x = $color[$name][$strong];
+    $x = $COLOR[$name][$strong];
     return "[{$x}m{$str}[0m";
   }
   # }}}
-  function out(string $msg, int $level = 0, int $sep = 0): void # {{{
+  function out(int $level, int $sep, string ...$msg): void # {{{
   {
     # prepare
     $cfg = $this->cfg;
@@ -277,43 +260,50 @@ class BotLog # {{{
     # console output
     if ($cfg->console)
     {
+      # compose name chain
       $c = $cfg->color[$level];
       $s = self::str_fg_color($cfg->sep[$sep], $c, 1);
       $x = '';
       $p = $this;
       while ($p->parent)
       {
-        $x = self::str_bg_color($p->name, $c, 0)." $s $x";
+        $x = self::str_bg_color($p->name, $c)." $s $x";
         $p = $p->parent;
       }
+      # compose msg chain
+      for ($i = 0, $j = count($msg) - 1; $i < $j; ++$i) {
+        $x = $x.self::str_bg_color($msg[$i], $c)." $s ";
+      }
+      $x = " $s $x".$msg[$j];
+      # output
       $c = $cfg->rootColor;
       fwrite(
         (($level === 1) ? STDERR : STDOUT),
         self::str_fg_color($cfg->rootPrefix, $c, 1).
         self::str_fg_color($p->name, $c, 0).
-        " $s $x$msg\n"
+        "$x\n"
       );
     }
   }
   # }}}
   function info(string $msg, int $sep = 0): void # {{{
   {
-    $this->out($msg, 0, $sep);
+    $this->out(0, $sep, $msg);
   }
   # }}}
   function error(string $msg): void # {{{
   {
-    $this->out($msg, 1, 0);
+    $this->out(1, 0, $msg);
   }
   # }}}
   function errorOnly(string $msg, int $level): void # {{{
   {
-    $level && $this->out($msg, 1);
+    $level && $this->out(1, 0, $msg);
   }
   # }}}
   function warn(string $msg): void # {{{
   {
-    $this->out($msg, 2, 0);
+    $this->out(2, 0, $msg);
   }
   # }}}
   function exception(object $e): void # {{{
@@ -336,63 +326,75 @@ class BotLog # {{{
       'E_USER_DEPRECATED' => 16384,
       'E_ALL' => 32767,
     ];
-    ($a = $e->getMessage()) && ($a = ": $a");
+    $a = $e->getMessage();
     $b = $e->getTraceAsString();
     if ($c = strpos($b, "\n"))
     {
       $b = str_replace("\n", "\n  ", substr($b, $c + 1));
       $b = str_replace(__DIR__, '', $b);
     }
-    if ($d = array_search($c = $e->getCode(), $E, true)) {
-      $c = substr($d, 2);
-    }
+    $c = ($d = array_search($c = $e->getCode(), $E, true))
+      ? substr($d, 2)
+      : 'EXCEPTION';
     $d = $e->getTrace()[0];
     $d = isset($d['file'])
       ? str_replace(__DIR__, '', $d['file']).'('.$d['line'].')'
       : '---';
     ###
-    $this->out("$c$a\n  #0 $d\n  $b", 1);
+    $this->out(1, 0, $c, "$a\n  #0 $d\n  $b");
   }
   # }}}
-  function dumpVar(mixed $var): void # {{{
+  function waiting(): void # {{{
   {
-    $this->log(var_export($var, true), 0);
+    fwrite(STDOUT, self::str_fg_color('╬', $this->cfg->rootColor));
   }
-  # }}}
-  function dumpCommands( # {{{
-    int    $pad   = 0,
-    string $color = 'cyan',
-    ?array &$tree = null,
-    array  &$indent = []
+  function commands( # {{{
+    array  &$tree,
+    int    $pad     = 0,
+    string $color   = 'cyan',
+    array  &$indent = [],
+    int    $level   = 0
   ):string
   {
+    # check
+    if (!$this->cfg->console) {
+      return '';
+    }
     # prepare
-    !$tree && ($tree = $this->tree);
     $x = '';
     $i = 0;
     $j = count($tree);
-    # compose tree items
+    # iterate
     foreach ($tree as &$a)
     {
       # compose indent
       $pad && ($x .= str_repeat(' ', $pad));
       foreach ($indent as $b) {
-        $x .= $b ? Bot::str_fg_color('│ ', $color) : '  ';
+        $x .= $b ? self::str_fg_color('│ ', $color, 1) : '  ';
       }
       # compose item line
       $b  = (++$i === $j);
-      $c  = Bot::str_fg_color(($b ? '└─' : '├─'), $color);
+      $c  = self::str_fg_color(($b ? '└─' : '├─'), $color, 1);
       $x .= $c.$a->name."\n";
       # recurse
       if ($a->items)
       {
         $indent[] = !$b;
-        $x .= $this->dump($pad, $color, $a->items, $indent);
+        $x .= $this->commands($a->items, $pad, $color, $indent, $level + 1);
         array_pop($indent);
       }
     }
+    # output
+    !$level && fwrite(STDOUT, "$x\n");
     # done
     return $x;
+  }
+  # }}}
+  # }}}
+  # TODO
+  function dumpVar(mixed $var): void # {{{
+  {
+    $this->out(0, 0, var_export($var, true));
   }
   # }}}
 }
@@ -539,9 +541,13 @@ class BotConfig extends StasisConstruct # {{{
     return true;
   }
   # }}}
-  function finit(): void # {{{
+  function destruct(): void # {{{
   {
-    ($a = $this->file) && BotFiles::unlock($a);
+    if ($a = $this->file)
+    {
+      BotFiles::unlock($a);
+      $this->file = '';
+    }
   }
   # }}}
 }
@@ -651,19 +657,28 @@ class BotFiles extends StasisConstruct # {{{
 # }}}
 class BotApi extends StasisConstruct # {{{
 {
-  static $URL = 'https://api.telegram.org/bot';
+  const URL = 'https://api.telegram.org/bot';
+  const POLLING_TIMEOUT = 120;# max=50?
   static $OPT = [
     # {{{
     CURLOPT_RETURNTRANSFER => true,
     CURLOPT_CONNECTTIMEOUT => 10,# default(0): 300
     CURLOPT_TIMEOUT        => 0,# default(0): never
+    CURLOPT_FORBID_REUSE   => false,
+    CURLOPT_FRESH_CONNECT  => false,
     ###
     CURLOPT_TCP_NODELAY    => true,
     CURLOPT_TCP_KEEPALIVE  => 1,
     CURLOPT_TCP_KEEPIDLE   => 300,
     CURLOPT_TCP_KEEPINTVL  => 300,
+    #CURLOPT_TCP_FASTOPEN   => true,
     ###
     CURLOPT_HTTP_VERSION   => CURL_HTTP_VERSION_1_1,
+    #CURLOPT_HTTP_VERSION   => CURL_HTTP_VERSION_2TLS,
+    CURLMOPT_PIPELINING    => 0,
+    CURLOPT_PIPEWAIT       => false,
+    CURLOPT_FOLLOWLOCATION => false,
+    #CURLOPT_NOSIGNAL       => true,
     #CURLOPT_VERBOSE        => true,
     #CURLOPT_SSL_VERIFYHOST => 0,
     #CURLOPT_SSL_VERIFYPEER => false,
@@ -689,16 +704,14 @@ class BotApi extends StasisConstruct # {{{
       if (!($murl = curl_multi_init())) {
         throw new \Exception('curl_multi_init() failed');
       }
-      if ($a = curl_multi_add_handle($murl, $curl)) {
-        throw new \Exception(curl_multi_strerror($a));
-      }
       # construct
       $api = new static([
-        'log'    => $log,
-        'url'    => self::$URL.$bot->cfg->token,
-        'curl'   => $curl,
-        'murl'   => $murl,
-        'result' => null,
+        'bot'  => $bot,
+        'log'  => $log,
+        'url'  => self::URL.$bot->cfg->token,
+        'curl' => $curl,
+        'murl' => $murl,
+        'res'  => null,
       ]);
     }
     catch (\Exception $e)
@@ -710,15 +723,137 @@ class BotApi extends StasisConstruct # {{{
     return $api;
   }
   # }}}
-  function destruct(): void # {{{
+  function getUpdates(bool $end = false): ?array # {{{
   {
-    if ($a = $this->murl)
+    # prepare
+    static $log, $o, $q;
+    # initialize
+    if (!$log)
     {
-      curl_multi_remove_handle($a, $b = $this->curl);
-      curl_multi_close($a);
-      curl_close($b);
-      $this->murl = $this->curl = null;
+      if ($end) {# ignore, never called
+        return null;
+      }
+      $log = $this->log->new('getUpdates');
+      $o = [
+        'offset'  => 0,
+        'limit'   => 100,
+        'timeout' => self::POLLING_TIMEOUT
+      ];
+      $q = [
+        CURLOPT_URL  => $this->url.'/getUpdates',
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => &$o
+      ];
     }
+    # set final parameters
+    if ($end)
+    {
+      if (!$o['offset']) {
+        return null;# offset wasn't shifted
+      }
+      $o['limit']   = 1;
+      $o['timeout'] = 0;
+    }
+    # configure request
+    if (!curl_setopt_array($this->curl, $q))
+    {
+      $log->error('failed to configure');
+      return null;
+    }
+    # to save remote offset,
+    # perform short polling routine
+    if ($end)
+    {
+      @curl_exec($this->curl);
+      return $log = null;
+    }
+    # to get bot updates,
+    # perform long polling routine
+    # {{{
+    if ($a = curl_multi_add_handle($this->murl, $this->curl))
+    {
+      $log->error(curl_multi_strerror($a));
+      return null;
+    }
+    try
+    {
+      $a = 1;
+      while (1)
+      {
+        if ($b = curl_multi_exec($this->murl, $a))
+        {
+          $log->error(curl_multi_strerror($b));
+          return null;
+        }
+        elseif ($a === 0) {
+          break;
+        }
+        while (($b = curl_multi_select($this->murl, 0.5)) === 0)
+        {
+          usleep(300000);# 300ms
+          if (!$this->bot->control()) {
+            return null;
+          }
+        }
+        if ($b === -1)
+        {
+          $log->error(curl_multi_strerror(curl_multi_errno($this->murl)));
+          return null;
+        }
+      }
+      # check connection status
+      if (($a = curl_multi_info_read($this->murl)) &&
+          ($a = $a['result']))
+      {
+        $log->error(curl_strerror($a));
+        return null;
+      }
+      if (!($a = curl_getinfo($this->curl, CURLINFO_RESPONSE_CODE)))
+      {
+        $log->error('connection failed');
+        return null;
+      }
+      if ($a !== 200)
+      {
+        $log->error("HTTP status $a");
+        return null;
+      }
+      # get response text
+      if (!($a = curl_multi_getcontent($this->curl))) {
+        return [];
+      }
+    }
+    finally
+    {
+      # cleanup
+      if ($b = curl_multi_remove_handle($this->murl, $this->curl))
+      {
+        $log->error(curl_multi_strerror($b));
+        return null;
+      }
+    }
+    # }}}
+    # decode result
+    if (!($b = json_decode($a, false)) || !is_object($b))
+    {
+      $log->error("incorrect response\n█{$a}█\n");
+      return null;
+    }
+    # check response flag
+    if (!$b->ok)
+    {
+      $log->error(isset($b->description)
+        ? $b->description
+        : 'faulty response'
+      );
+      return null;
+    }
+    # shift offset
+    if ($a = count($b->result)) {
+      $o['offset'] = 1 + $b->result[$a - 1]->update_id;
+    }
+    # complete
+    return $b->result;
   }
   # }}}
   function send(string $method, array $args, ?object $file = null): object|bool # {{{
@@ -742,7 +877,7 @@ class BotApi extends StasisConstruct # {{{
       CURLOPT_POST => true,
       CURLOPT_POSTFIELDS => $args,
     ]);
-    $this->result = null;
+    $this->res = null;
     $a = curl_exec($this->curl);
     # explicitly remove temporary files
     if ($file && $file instanceof BotApiFile) {
@@ -762,7 +897,7 @@ class BotApi extends StasisConstruct # {{{
       return false;
     }
     # decode
-    if (!($this->result = $a = json_decode($a, false)))
+    if (!($this->res = $a = json_decode($a, false)))
     {
       $this->log->error('json_decode('.json_last_error().'): '.json_last_error_msg());
       return false;
@@ -774,6 +909,21 @@ class BotApi extends StasisConstruct # {{{
       return false;
     }
     return $a;
+  }
+  # }}}
+  function destruct(): void # {{{
+  {
+    if ($this->murl)
+    {
+      $this->getUpdates(true);
+      curl_multi_close($this->murl);
+      $this->murl = null;
+    }
+    if ($this->curl)
+    {
+      curl_close($this->curl);
+      $this->curl = null;
+    }
   }
   # }}}
 }
@@ -1177,7 +1327,7 @@ class BotCommands extends StasisConstruct # {{{
         return null;
       }
       # construct
-      if (($c = $type::construct($bot, $a, $b, null, $isRefined)) === null)
+      if (($b = $type::construct($bot, $a, $b, null, $isRefined)) === null)
       {
         $bot->log->error("failed to construct $type::$a");
         return null;
@@ -1186,8 +1336,8 @@ class BotCommands extends StasisConstruct # {{{
     unset($b);
     # construct
     return new static([
-      'tree' => $c,
-      'map'  => self::createMap($c),
+      'tree' => $data,
+      'map'  => self::createMap($data),
     ]);
   }
   # }}}
@@ -1826,10 +1976,10 @@ class BotUser extends StasisConstruct # {{{
       $item->text = &$s['text']['en'];
     }
     # attach data
-    if ($s['datatype'])
+    if ($s['datafile'])
     {
       $file = $item->id.'.json';
-      $file = $s['datatype'] === 1
+      $file = $s['datafile'] === 1
         ? $this->dir.$file
         : $bot->dir->data.$file;
       if (file_exists($file) && ($a = file_get_contents($file))) {
@@ -2349,12 +2499,12 @@ abstract class BotItem extends StasisConstruct implements \JsonSerializable # {{
         $type = $base.(isset($b['type']) ? ucfirst($b['type']) : 'Img');
         if (!$isRefined && !class_exists($type, false))
         {
-          $bot->logWarn("handler class not found: $type");
+          $bot->log->warn("class not found: $type");
           return null;
         }
-        if (($b = $type::init($bot, $a, $b, $item, $isRefined)) === null)
+        if (($b = $type::construct($bot, $a, $b, $item, $isRefined)) === null)
         {
-          $bot->logWarn("failed to construct $type::$a");
+          $bot->log->warn("failed to construct $type::$a");
           return null;
         }
       }
@@ -2973,7 +3123,7 @@ page <b>{{page}}</b> of {{page_count}} ({{item_count}})
     # }}}
     'ru' => # {{{
     '
-страница <b>{{page}}</b> из {{page_count}} ({{item_count}})
+бва ­Ёж  <b>{{page}}</b> Ё§ {{page_count}} ({{item_count}})
     ',
     # }}}
   ];
