@@ -5,9 +5,18 @@ if (isset($_SERVER['REQUEST_METHOD']))
   # WEBHOOK (single update)
   # ...
 }
-else
+elseif (isset($argc) && isset($argv))
 {
   # CLI (getUpdates loop)
-  SM\Bot::start();
+  if ($argc === 1) {
+    SM\Bot::start();# master
+  }
+  elseif ($argc === 2) {
+    SM\Bot::start($argv[1]);# slave
+  }
+  elseif ($argc === 3) {
+    # TODO: task
+  }
 }
+exit(10);
 ?>

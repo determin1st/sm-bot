@@ -11,9 +11,12 @@ abstract class StasisConstruct # {{{
 class Bot extends StasisConstruct # {{{
 {
   const MESSAGE_LIFETIME = 48*60*60;
-  static $WINOS = true;
   static function start(string $id = 'master'): never # {{{
   {
+    # check requirements
+    if (!defined('PHP_VERSION_ID') || PHP_VERSION_ID < 80000) {
+      exit(4);
+    }
     # configure environment
     ini_set('html_errors', 0);
     ini_set('implicit_flush', 1);
@@ -28,81 +31,87 @@ class Bot extends StasisConstruct # {{{
     });
     # create bot instance
     if (!($bot = self::construct($id, true))) {
-      exit(1);
+      exit(3);
     }
     # enforce graceful termination
     register_shutdown_function(function() use ($bot) {
       # guard against non-recoverable (non-catched) errors
       error_get_last() && $bot->destruct();
     });
-    self::$WINOS && sapi_windows_set_ctrl_handler(function (int $e) use ($bot) {
-      # console breaks must stop bot processes
-      $bot->destruct();
-      exit(1);
-    });
-    # prepare
-    $e = null;
+    if ($bot->master && function_exists($e = 'sapi_windows_set_ctrl_handler'))
+    {
+      # WinOS: console breaks must stop masterbot
+      $e(function (int $e) use ($bot) {
+        $bot->destruct();
+        exit(2);
+      });
+    }
+    # operate
     try
     {
-      # report
+      # report startup
       $bot->log->info('started');
-      $bot->log->commands($bot->cmd->tree);
-      # operate
+      $bot->log->commands();
+      # loop
       while (($u = $bot->api->getUpdates()) !== null)
       {
-        #foreach ($u as $update) {}
+        foreach ($u as $update)
+        {
+          if (!$this->handle($update)) {
+            break 2;
+          }
+        }
       }
     }
-    catch (\Exception $e) {}
-    catch (\Error $e) {}
-    # report
-    $e && $bot->log->exception($e);
+    catch (\Exception|\Error $e) {
+      $bot->log->exception($e);
+    }
     # terminate
     $bot->destruct();
-    exit(1);
+    exit($bot->status);
   }
   # }}}
-  static function construct(string $id, bool $console): ?self # {{{
+  static function construct(string $id, bool $proc): ?self # {{{
   {
     try
     {
-      # prepare
-      $bot = $e = null;
-      $log = BotLog::construct($id, $console);
-      if (!($dir = BotDirs::construct($id, $log)) ||
-          !($cfg = BotConfig::construct($dir, $log)))
-      {
-        throw new \Exception();
-      }
       # construct
+      $log = null;
       $bot = new static([
+        'master' => ($id === 'master'),
         'id'     => $id,
-        'log'    => $log,
-        'dir'    => $dir,
-        'cfg'    => $cfg,
+        'log'    => null,
+        'dir'    => null,
+        'cfg'    => null,
         'file'   => null,
         'api'    => null,
         'tp'     => null,
         'text'   => null,
         'cmd'    => null,
+        'proc'   => $proc,
+        'status' => 1,
       ]);
-      # initialize base
-      if (!$dir->init($bot) ||
+      # initialize
+      # set base objects
+      $bot->log = $log = new BotLog($id, new BotLogConfig($bot));
+      if (!($bot->dir = $dir = BotDirs::construct($id, $log)) ||
+          !($bot->cfg = $cfg = BotConfig::construct($dir, $log)) ||
+          !$dir->init($bot) ||
           !$log->init($bot) ||
           !$cfg->init($bot))
       {
-        throw new \Exception();
+        throw new \Exception('', -1);
       }
       # load dependencies
       require_once $dir->inc.'mustache.php';
       require_once $dir->src.'control.php';
-      # construct files and telegram api
+      # set files and telegram api
       if (!($bot->file = BotFiles::construct($bot)) ||
           !($bot->api  = BotApi::construct($bot)))
       {
-        throw new \Exception();
+        throw new \Exception('', -1);
       }
-      # construct template parser
+      # set template parser
       $o = [$log->new('mustache'), 'errorOnly'];
       $o = [
         'logger'  => \Closure::fromCallable($o),
@@ -115,89 +124,88 @@ class Bot extends StasisConstruct # {{{
       if (!($bot->tp = Mustache::construct($o)))
       {
         $log->error('failed to construct template parser');
-        throw new \Exception();
+        throw new \Exception('', -1);
       }
-      # construct texts and commands
+      # set texts and commands
       if (!($bot->text = BotTexts::construct($bot)) ||
           !($bot->cmd  = BotCommands::construct($bot)))
       {
-        throw new \Exception();
+        throw new \Exception('', -1);
       }
+      # process controller (console mode)
+      if ($proc && !($proc = $bot->master
+        ? BotMaster::construct($bot)
+        : BotSlave::construct($bot)))
+      {
+        throw new \Exception('', -1);
+      }
+      $bot->proc = $proc;
     }
-    catch (\Exception $e) {
-      $e->getCode() && $log->exception($e);
-    }
-    catch (\Error $e) {
-      $log->exception($e);
-    }
-    if ($e)
+    catch (\Exception|\Error $e)
     {
+      $log && ~$e->getCode() && $log->exception($e);
       $bot && $bot->destruct();
-      return null;
+      $bot = null;
     }
     return $bot;
   }
   # }}}
-  function control(): bool # {{{
+  function check(): bool # {{{
   {
-    #$this->log->info('control()');
-    return true;
+    return $this->proc->check();
   }
   # }}}
-  function update(object $u): int # {{{
+  function handle(object $update): int # {{{
   {
-    # parse update
-    $r = null;
-    if (isset($u->callback_query)) {
-      $r = BotRequestCallback::init($u->callback_query);
+    # construct request
+    $x = null;
+    if (isset($update->callback_query)) {
+      $x = BotRequestCallback::init($update->callback_query);
     }
-    elseif (isset($u->inline_query)) {
-      #$r = BotRequestInline::init($u->inline_query);
+    elseif (isset($update->inline_query)) {
+      #$x = BotRequestInline::init($update->inline_query);
     }
-    elseif (isset($u->message)) {
-      #$r = BotRequestInput::init($u->message);
+    elseif (isset($update->message)) {
+      $x = BotRequestInput::init($update->message);
     }
-    # check
-    if (!$r)
+    # construct user
+    if (!$x || !($x = BotUser::construct($this, $x)))
     {
-      return 0;
+      return true;
     }
     # handle user request
-    return ($u = BotUser::init($this, $r)) ? $u->finit() : 0;
+    return ($x = BotUser::init($this, $x)) ? $x->finit() : 0;
   }
   # }}}
   function destruct(): void # {{{
   {
-    if ($this->id)
+    if ($this->log)
     {
+      $this->proc && is_object($this->proc) && $this->proc->destruct();
+      $this->api  && $this->api->destruct();
+      $this->cfg  && $this->cfg->destruct();
       $this->log->info('stopped');
-      ($a = $this->api) && $a->destruct();
-      ($a = $this->cfg) && $a->destruct();
-      $this->id = '';
+      $this->log = null;
     }
   }
   # }}}
 }
-# initialize static props
-Bot::$WINOS = (
-  defined('PHP_OS_FAMILY') &&
-  strncasecmp(PHP_OS_FAMILY, 'WIN', 3) === 0
-);
 # }}}
 class BotLog # {{{
 {
   # contructor/initializer {{{
-  private function __construct(
-    public string $name,
-    public ?self  $parent,
-    public object $cfg
+  function __construct(
+    public string  $name,
+    public ?object $cfg,
+    public ?object $parent = null,
   ) {}
-  static function construct(string $name, bool $console): self {
-    return new self($name, null, new BotLogConfig($console));
+  function new(string $name): self {
+    return new self($name, $this->cfg, $this);
   }
   function init(object $bot): bool
   {
-    # set bot name
+    # set bot and root name
+    $this->cfg->bot = $bot;
     $this->name = $bot->cfg->name;
     # set logfiles
     if ($bot->cfg->saveAccessLog) {
@@ -207,9 +215,6 @@ class BotLog # {{{
       $this->cfg->files[1] = $bot->dir->data.'ERROR.log';
     }
     return true;
-  }
-  function new(string $name): self {
-    return new self($name, $this, $this->cfg);
   }
   # }}}
   static function str_bg_color(string $str, string $name, int $strong=0): string # {{{
@@ -258,7 +263,7 @@ class BotLog # {{{
       #file_put_contents($f, $a.$b.$msg."\n", FILE_APPEND);
     }
     # console output
-    if ($cfg->console)
+    if ($f = $cfg->bot->proc)
     {
       # compose name chain
       $c = $cfg->color[$level];
@@ -274,15 +279,15 @@ class BotLog # {{{
       for ($i = 0, $j = count($msg) - 1; $i < $j; ++$i) {
         $x = $x.self::str_bg_color($msg[$i], $c)." $s ";
       }
-      $x = " $s $x".$msg[$j];
-      # output
-      $c = $cfg->rootColor;
-      fwrite(
-        (($level === 1) ? STDERR : STDOUT),
-        self::str_fg_color($cfg->rootPrefix, $c, 1).
+      # compose all
+      $c = $cfg->root[1];
+      $x = (
+        self::str_fg_color($cfg->root[0], $c, 1).
         self::str_fg_color($p->name, $c, 0).
-        "$x\n"
+        " $s $x".$msg[$j]."\n"
       );
+      # output
+      ($f === true) ? fwrite(STDOUT, $x) : $f->out($x);
     }
   }
   # }}}
@@ -344,22 +349,24 @@ class BotLog # {{{
     $this->out(1, 0, $c, "$a\n  #0 $d\n  $b");
   }
   # }}}
-  function waiting(): void # {{{
+  function commands(): void # {{{
   {
-    fwrite(STDOUT, self::str_fg_color('╬', $this->cfg->rootColor));
+    if (($bot = $this->cfg->bot)->proc)
+    {
+      $a = self::parseTree($bot->cmd->tree, 0, $this->cfg->root[1]);
+      $bot->proc->out("$a\n");
+    }
   }
-  function commands( # {{{
-    array  &$tree,
-    int    $pad     = 0,
-    string $color   = 'cyan',
+  # }}}
+  ###
+  static function parseTree( # {{{
+    ?array &$tree,
+    int    $pad,
+    string $color,
     array  &$indent = [],
     int    $level   = 0
   ):string
   {
-    # check
-    if (!$this->cfg->console) {
-      return '';
-    }
     # prepare
     $x = '';
     $i = 0;
@@ -380,33 +387,23 @@ class BotLog # {{{
       if ($a->items)
       {
         $indent[] = !$b;
-        $x .= $this->commands($a->items, $pad, $color, $indent, $level + 1);
+        $x .= self::parseTree($a->items, $pad, $color, $indent, $level + 1);
         array_pop($indent);
       }
     }
-    # output
-    !$level && fwrite(STDOUT, "$x\n");
-    # done
     return $x;
   }
   # }}}
-  # }}}
-  # TODO
-  function dumpVar(mixed $var): void # {{{
-  {
-    $this->out(0, 0, var_export($var, true));
-  }
-  # }}}
 }
-class BotLogConfig
+# }}}
+class BotLogConfig # {{{
 {
   function __construct(
-    public bool   $console,
-    public array  $files  = ['',''],# level:[!1,1]
-    public array  $sep    = ['>','<'],# out,in
-    public array  $color  = ['green','red','yellow'],# level:[info,error,warn]
-    public string $rootColor  = 'cyan',
-    public string $rootPrefix = '@',
+    public ?object $bot,
+    public array   $files = ['',''],# level:[!1,1]
+    public array   $sep   = ['>','<'],# out,in
+    public array   $color = ['green','red','yellow'],# level:[info,error,warn]
+    public array   $root  = ['@','cyan']# prefix,color
   ) {}
 }
 # }}}
@@ -594,7 +591,7 @@ class BotFiles extends StasisConstruct # {{{
   {
     # prepare
     $id    = strval(time());
-    $count = 50;
+    $count = 20;
     $lock  = "$file.lock";
     # wait until lock released or count exhausted
     while (file_exists($lock) && --$count) {
@@ -791,7 +788,7 @@ class BotApi extends StasisConstruct # {{{
         while (($b = curl_multi_select($this->murl, 0.5)) === 0)
         {
           usleep(300000);# 300ms
-          if (!$this->bot->control()) {
+          if (!$this->bot->check()) {
             return null;
           }
         }
@@ -939,8 +936,10 @@ class BotApiFile extends \CURLFile
   }
   function __destruct()
   {
-    if ($this->name && $this->isTemp) {
-      @unlink($this->name) && ($this->name = '');
+    if ($this->name && $this->isTemp && file_exists($this->name))
+    {
+      @unlink($this->name);
+      $this->name = '';
     }
   }
   # }}}
@@ -1432,9 +1431,293 @@ class BotCommand extends StasisConstruct
 }
 # }}}
 ###
+class BotMaster extends StasisConstruct # {{{
+{
+  static function construct(object $bot): ?self # {{{
+  {
+    # determine starter command
+    if (!file_exists($cmd = $bot->dir->home.'start.php'))
+    {
+      $bot->log->error("file not found: $cmd");
+      return null;
+    }
+    $cmd = '"'.PHP_BINARY.'" -f "'.$cmd.'" ';
+    # construct
+    return new static([
+      'bot' => $bot,
+      'log' => $bot->log->new('proc'),
+      'cmd' => $cmd,
+      'map' => [],
+    ]);
+  }
+  # }}}
+  function start($id): bool # {{{
+  {
+    # check
+    if (isset($this->map[$id])) {
+      return true;
+    }
+    # start new process
+    if (!($slave = BotMasterSlave::construct($this, $id))) {
+      return false;
+    }
+    # store
+    $this->map[$id] = $slave;
+    return true;
+  }
+  # }}}
+  function check(): bool # {{{
+  {
+    foreach ($this->map as $id => $slave)
+    {
+      if (!$slave->check())
+      {
+        $slave->destruct();
+        unset($this->map[$id]);
+      }
+    }
+    return true;
+  }
+  # }}}
+  function out(string $s): void # {{{
+  {
+    fwrite(STDOUT, $s);
+  }
+  # }}}
+  function destruct(): void # {{{
+  {
+    foreach ($this->map as $id => $slave) {
+      $slave->destruct();
+    }
+  }
+  # }}}
+}
+# }}}
+class BotMasterSlave extends StasisConstruct # {{{
+{
+  static function construct(object $master, string $id): ?self # {{{
+  {
+    # prepare
+    static $DESC = [['pipe','r'],['pipe','w']];# STDIN/OUT
+    static $OPTS = [
+      'suppress_errors' => false,
+      'bypass_shell'    => true,
+      'blocking_pipes'  => true,
+      'create_process_group' => true,
+      #'create_process_group' => false,
+      'create_new_console'   => false,
+    ];
+    $bot  = $master->bot;
+    $log  = $master->log->new($id);
+    $cmd  = $master->cmd.$id;
+    $pipe = null;
+    $home = $bot->dir->home;
+    $out  = $bot->dir->data."$id.proc";
+    $log->info('start');
+    try
+    {
+      # execute
+      if (($proc = proc_open($cmd, $DESC, $pipe, $home, null, $OPTS)) === false ||
+          !is_resource($proc))
+      {
+        throw new \Exception("proc_open($cmd) failed", -1);
+      }
+      # initiate sync protocol
+      # set master lockfile
+      if (!touch($out)) {
+        throw new \Exception("touch($out) failed", -1);
+      }
+      if (fwrite($pipe[0], $out) === false) {
+        throw new \Exception('fwrite() failed', -1);
+      }
+      # wait
+      while (file_exists($out))
+      {
+        usleep(200000);
+        if (!($a = proc_get_status($proc)) || !$a['running']) {
+          throw new \Exception('exited('.$a['exitcode'].')', -1);
+        }
+      }
+      # get slave lockfile
+      stream_set_blocking($pipe[1], true);
+      if (($in = fread($pipe[1], 300)) === false) {
+        throw new \Exception('fread() failed', -1);
+      }
+      if (!file_exists($in)) {
+        throw new \Exception("file not found: $in", -1);
+      }
+      # unlock slave
+      @unlink($in);
+    }
+    catch (\Exception $e)
+    {
+      # report error
+      if (~$e->getCode()) {
+        $log->exception($e);
+      }
+      else {
+        $log->error($e->getMessage());
+      }
+      # cleanup
+      if (file_exists($out)) {
+        @unlink($out);
+      }
+      if ($pipe)
+      {
+        is_resource($pipe[0]) && fclose($pipe[0]);
+        if (is_resource($pipe[1]))
+        {
+          ($a = fread($pipe[1], 2000)) && fwrite(STDOUT, $a);
+          fclose($pipe[1]);
+        }
+      }
+      return null;
+    }
+    # construct
+    return new static([
+      'log'  => $log,
+      'proc' => $proc,
+      'lock' => [$in, $out],
+      'pipe' => $pipe,
+    ]);
+  }
+  # }}}
+  function check(): bool # {{{
+  {
+    # read slave output
+    $in = $this->lock[0];
+    while (file_exists($in))
+    {
+      @unlink($in);
+      if ($a = fread($this->pipe[1], 8000)) {
+        fwrite(STDOUT, $a);
+      }
+    }
+    # check process state
+    if (!($a = proc_get_status($this->proc)) || !$a['running'])
+    {
+      $this->log->info('exited('.$a['exitcode'].')');
+      return false;
+    }
+    return true;
+  }
+  # }}}
+  function destruct(): void # {{{
+  {
+    # prepare
+    $pipe = $this->pipe;
+    # check
+    if ($this->check())
+    {
+      # process is still running,
+      # send termination command
+      $this->log->info('stop');
+      fwrite($pipe[0], 'stop');
+      touch($out = $this->lock[1]);
+      # wait
+      while (file_exists($out)) {
+        usleep(200000);
+      }
+      while (($a = proc_get_status($this->proc)) && $a['running']) {
+        usleep(200000);
+      }
+      # read final output
+      if (file_exists($a = $this->lock[0])) {
+        @unlink($a);
+      }
+      if ($a = fread($pipe[1], 8000)) {
+        fwrite(STDOUT, $a);
+      }
+    }
+    # cleanup
+    fclose($pipe[0]);
+    fclose($pipe[1]);
+  }
+  # }}}
+}
+# }}}
+class BotSlave extends StasisConstruct # {{{
+{
+  static function construct(object $bot): ?self # {{{
+  {
+    # prepare
+    $log = $bot->log->new('proc');
+    # initiate sync protocol
+    # get master lockfile
+    stream_set_blocking(STDIN, true);
+    if (($in = fread(STDIN, 300)) === false)
+    {
+      $log->error('fread() failed');
+      return null;
+    }
+    # check
+    if (!file_exists($in))
+    {
+      $log->error("file not found: $in");
+      return null;
+    }
+    # set slave lockfile
+    if (!touch($out = $bot->dir->data.$bot->id.'.proc'))
+    {
+      $log->error("touch($out) failed");
+      return null;
+    }
+    if (fwrite(STDOUT, $out) === false)
+    {
+      $log->error("fwrite() failed");
+      return null;
+    }
+    # unlock master
+    @unlink($in);
+    # wait
+    for ($a = 0, $b = 10; $a < $b && file_exists($out); ++$a) {
+      usleep(200000);
+    }
+    if ($a === $b)
+    {
+      @unlink($out);
+      $log->error('master timed out');
+      return null;
+    }
+    # complete
+    return new static([
+      'log'  => $log,
+      'lock' => [$in, $out],
+    ]);
+  }
+  # }}}
+  function check(): bool # {{{
+  {
+    # check master command arrived
+    if (!file_exists($in = $this->lock[0])) {
+      return true;
+    }
+    # read input
+    $a = fread(STDIN, 100);
+    @unlink($in);
+    # operate
+    switch ($a) {
+    case 'stop':
+      return false;
+    }
+    return true;
+  }
+  # }}}
+  function out(string $s): void # {{{
+  {
+    fwrite(STDOUT, $s);
+    touch($this->lock[1]);
+  }
+  # }}}
+  function destruct(): void # {{{
+  {}
+  # }}}
+}
+# }}}
+###
 class BotRequestInput extends StasisConstruct # {{{
 {
-  static function init(object $msg): ?object # {{{
+  static function construct(object $msg): ?object # {{{
   {
     if (!isset($msg->from)) {
       return null;
@@ -1805,7 +2088,7 @@ class BotUser extends StasisConstruct # {{{
     # TODO: groups
     $isAdmin = in_array($from->id, $bot->cfg->admins);
     # check masterbot access
-    if (!$isAdmin && $bot->id === 'master')
+    if (!$isAdmin && $bot->master)
     {
       $bot->logWarn("access denied: $name");
       return null;
