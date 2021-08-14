@@ -1,5 +1,5 @@
 <?php
-#declare(strict_types=1);
+declare(strict_types=1);
 namespace SM;
 abstract class StasisConstruct # {{{
 {
@@ -1873,7 +1873,7 @@ class BotRequestCommand extends BotRequestInput # {{{
     # report
     $log->info($msg->text, 1);
     # handle bot command
-    # {{{
+    # TODO {{{
     switch ($item) {
     case 'restart':
       #$user->isAdmin && ($res = -1);
@@ -1914,7 +1914,7 @@ class BotRequestCommand extends BotRequestInput # {{{
     }
     # }}}
     # handle item command
-    # check
+    # check exists
     if (!isset($bot->cmd->map[$item]))
     {
       # unknown item
@@ -1926,15 +1926,13 @@ class BotRequestCommand extends BotRequestInput # {{{
       }
       return true;
     }
-    # render item
-    $item = $user->render($bot->cmd->map[$item], '', $data);
-    ###
-    ($item = $user->render($cmd)) && $user->send($item);
+    # send new item
+    $item = $bot->cmd->map[$item];
+    $item = $user->send($user->render($item, '', $data));
     # cleanup
-    if (!$user->isGroup || ($item && $item->msg))
-    {
-      $this->wipe($user);
-    }
+    $cfg->wipeUserInput && ($item || !$user->isGroup) &&
+    $bot->api->deleteMessage($msg);
+    # complete
     return true;
   }
   # }}}
@@ -2220,7 +2218,6 @@ class BotUser extends StasisConstruct # {{{
   # }}}
   function render(object $item, string $func, string $data): ?object # {{{
   {
-    # initialize item
     # attach configuration and root
     $item->config = $this->config->getItem($item);
     $item->root   = $this->config->getRoot($item);
@@ -2306,7 +2303,7 @@ class BotUser extends StasisConstruct # {{{
     }
     # }}}
     /***/
-    # attach language specific text
+    # attach language specific texts
     $s = &$item->struct;
     if (isset($s['text'][$this->lang])) {
       $item->text = &$s['text'][$this->lang];
@@ -2322,9 +2319,8 @@ class BotUser extends StasisConstruct # {{{
       $file = $s['datafile'] === 1
         ? $this->dir.$file
         : $this->bot->dir->data.$file;
-      if (file_exists($file) && ($a = file_get_contents($file))) {
-        $item->data = json_decode($a, true);
-      }
+      ###
+      $item->data = BotFiles::get_json($file);
     }
     # render messages
     $item->msg = $item->render($this, $func, $data);
@@ -2335,7 +2331,7 @@ class BotUser extends StasisConstruct # {{{
       $this->log->warn("set_json($file) failed");
     }
     # complete
-    return $this->item = $item;
+    return $item;
   }
   # }}}
   function markup(object $item, array &$rows, ?array &$ext = null): string # {{{
@@ -2493,10 +2489,10 @@ class BotUser extends StasisConstruct # {{{
       : '';
   }
   # }}}
-  function send(object $item): bool # {{{
+  function send(?object $item): bool # {{{
   {
     # check
-    if (!$item->msg) {
+    if (!$item || !$item->msg) {
       return false;
     }
     # create new root
@@ -2906,7 +2902,8 @@ class BotItemImg extends BotItem # {{{
   {
     # prepare
     $bot = $user->bot;
-    $o   = $bot->cfg;
+    $log = $user->log;
+    $cfg = $bot->cfg;
     $s   = &$this->struct;
     $msg = [];
     # invoke handler
@@ -2945,9 +2942,9 @@ class BotItemImg extends BotItem # {{{
       {
         if (!($msg[$c] = self::title(
           $this->text['@'],
-          $o->showBreadcrumb ? $this->breadcrumb() : '',
-          $o->colors[$a = 'title'],
-          $o->fonts[$a]
+          $cfg->showBreadcrumb ? $this->breadcrumb() : '',
+          $cfg->colors[$a = 'title'],
+          $cfg->fonts[$a]
         )))
         {
           $bot->logException(self::$ERROR);
@@ -2971,9 +2968,9 @@ class BotItemImg extends BotItem # {{{
       # use item name as title
       if (!($msg[$c] = self::title(
         $this->name,
-        $o->showBreadcrumb ? $this->breadcrumb() : '',
-        $o->colors[$a = 'title'],
-        $o->fonts[$a]
+        $cfg->showBreadcrumb ? $this->breadcrumb() : '',
+        $cfg->colors[$a = 'title'],
+        $cfg->fonts[$a]
       )))
       {
         $bot->logException(self::$ERROR);
