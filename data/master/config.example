@@ -1,5 +1,5 @@
 {
-    "bot":"master",
+    "source":"master",
     "token":"<ID:KEY>",
     "name":"<NAME>",
     "admins":[]

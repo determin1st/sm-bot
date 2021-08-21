@@ -1,14 +1,7 @@
 <?php
 declare(strict_types=1);
 namespace SM;
-abstract class StasisConstruct # {{{
-{
-  function __construct(array $o) {
-    foreach ($o as $k => &$v) {$this->$k = &$v;}
-  }
-}
-# }}}
-class Bot extends StasisConstruct # {{{
+class Bot # {{{
 {
   const MESSAGE_LIFETIME = 48*60*60;
   static function start(string $id = 'master'): never # {{{
@@ -18,10 +11,10 @@ class Bot extends StasisConstruct # {{{
       exit(4);
     }
     # configure environment
-    ini_set('html_errors', 0);
-    ini_set('implicit_flush', 1);
+    ini_set('html_errors', '0');
+    ini_set('implicit_flush', '1');
     set_time_limit(0);
-    set_error_handler(function($no, $msg, $file, $line) {
+    set_error_handler(function(int $no, string $msg, string $file, int $line) {
       # all errors, except supressed (@) must be handled,
       # unhandled are thrown as an exception
       if (error_reporting() !== 0) {
@@ -57,13 +50,13 @@ class Bot extends StasisConstruct # {{{
       {
         foreach ($u as $update)
         {
-          if (!$this->handle($update)) {
+          if (!$bot->handle($update)) {
             break 2;
           }
         }
       }
     }
-    catch (\Exception|\Error $e) {
+    catch (\Throwable $e) {
       $bot->log->exception($e);
     }
     # terminate
@@ -71,48 +64,32 @@ class Bot extends StasisConstruct # {{{
     exit($bot->status);
   }
   # }}}
-  static function construct(string $id, bool $proc): ?self # {{{
+  static function construct(string $id, bool $console): ?self # {{{
   {
     try
     {
-      # construct
-      $log = null;
-      $bot = new static([
-        'master' => ($id === 'master'),
-        'id'     => $id,
-        'log'    => null,
-        'dir'    => null,
-        'cfg'    => null,
-        'file'   => null,
-        'api'    => null,
-        'tp'     => null,
-        'text'   => null,
-        'cmd'    => null,
-        'proc'   => $proc,
-        'status' => 1,
-      ]);
-      # initialize
-      # set base objects
-      $bot->log = $log = new BotLog($id, new BotLogConfig($bot));
-      if (!($bot->dir = $dir = BotDirs::construct($id, $log)) ||
-          !($bot->cfg = $cfg = BotConfig::construct($dir, $log)) ||
-          !$dir->init($bot) ||
-          !$log->init($bot) ||
-          !$cfg->init($bot))
+      # construct base
+      $bot = new self($id, $console, ($id === 'master'));
+      if (!($bot->log = BotLog::construct($bot))    ||
+          !($bot->dir = BotDirs::construct($bot))   ||
+          !($bot->cfg = BotConfig::construct($bot)) ||
+          !$bot->dir->init() ||
+          !$bot->log->init() ||
+          !$bot->cfg->init())
       {
-        throw self::error();
+        throw BotError::skip();
       }
       # load dependencies
-      require_once $dir->inc.'mustache.php';
-      require_once $dir->src.'control.php';
+      require_once $bot->dir->inc.'mustache.php';
+      require_once $bot->dir->src.'handlers.php';
       # set files and telegram api
       if (!($bot->file = BotFiles::construct($bot)) ||
           !($bot->api  = BotApi::construct($bot)))
       {
-        throw self::error();
+        throw BotError::skip();
       }
       # set template parser
-      $o = [$log->new('mustache'), 'errorOnly'];
+      $o = [$bot->log->new('mustache'), 'errorOnly'];
       $o = [
         'logger'  => \Closure::fromCallable($o),
         'helpers' => [
@@ -121,38 +98,60 @@ class Bot extends StasisConstruct # {{{
           'END'   => "\xC2\xAD",# SOFT HYPHEN U+00AD
         ]
       ];
-      if (!($bot->tp = Mustache::construct($o)))
-      {
-        $log->error('failed to construct template parser');
-        throw self::error();
+      if (!($bot->tp = Mustache::construct($o))) {
+        throw BotError::skip();
       }
       # set texts and commands
       if (!($bot->text = BotTexts::construct($bot)) ||
           !($bot->cmd  = BotCommands::construct($bot)))
       {
-        throw self::error();
+        throw BotError::skip();
       }
-      # process controller (console mode)
-      if ($proc && !($proc = $bot->master
+      # set process controller (console mode)
+      if ($console && !($bot->proc = $bot->master
         ? BotMaster::construct($bot)
         : BotSlave::construct($bot)))
       {
-        throw self::error();
+        throw BotError::skip();
       }
-      $bot->proc = $proc;
     }
-    catch (\Exception|\Error $e)
+    catch (\Throwable $e)
     {
-      $log && $log->exception($e);
-      $bot && $bot->destruct();
-      $bot = null;
+      $bot->log->exception($e);
+      $bot->destruct();
+      return null;
     }
     return $bot;
   }
   # }}}
-  static function error(string $msg = ''): object # {{{
+  function __construct(# {{{
+    public string   $id,
+    public bool     $console,
+    public bool     $master,
+    public ?object  $log  = null,
+    public ?object  $dir  = null,
+    public ?object  $cfg  = null,
+    public ?object  $file = null,
+    public ?object  $api  = null,
+    public ?object  $tp   = null,
+    public ?object  $text = null,
+    public ?object  $cmd  = null,
+    public ?object  $proc = null,
+    public int      $status = 1,
+    public ?object  $upd  = null
+  ) {}
+  # }}}
+  function destruct(): void # {{{
   {
-    return new \Exception($msg, -1);
+    if ($this->log)
+    {
+      $this->upd  && $this->upd->destruct();
+      $this->proc && is_object($this->proc) && $this->proc->destruct();
+      $this->api  && $this->api->destruct();
+      $this->cfg  && $this->cfg->destruct();
+      $this->log->info('stopped');
+      $this->log = null;
+    }
   }
   # }}}
   function check(): bool # {{{
@@ -162,97 +161,67 @@ class Bot extends StasisConstruct # {{{
   # }}}
   function handle(object $update): bool # {{{
   {
-    # construct request
-    $x = null;
-    if (isset($update->callback_query)) {
-      $x = BotRequestCallback::construct($update->callback_query);
-    }
-    elseif (isset($update->inline_query)) {
-      #$x = BotRequestInline::construct($update->inline_query);
-    }
-    elseif (isset($update->message)) {
-      $x = BotRequestInput::construct($update->message);
-    }
-    # construct user
-    if (!$x || !($x = BotUser::construct($this, $x))) {
-      return true;# ignore update
-    }
-    # reply
-    return $x->reply();
-  }
-  # }}}
-  function destruct(): void # {{{
-  {
-    if ($this->log)
-    {
-      $this->proc && is_object($this->proc) && $this->proc->destruct();
-      $this->api  && $this->api->destruct();
-      $this->cfg  && $this->cfg->destruct();
-      $this->log->info('stopped');
-      $this->log = null;
-    }
+    return ($this->upd = BotUpdate::construct($this, $update))
+      ? $this->upd->handle()
+      : true;
   }
   # }}}
 }
 # }}}
+class BotError extends \Error # {{{
+{
+  static function text(string $msg): self {
+    return new self($msg);
+  }
+  static function skip(): self {
+    return new self('');
+  }
+  static function from(object $e): object
+  {
+    return ($e instanceof BotError)
+      ? ($e->origin ?: $e)
+      : new self('', $e);
+  }
+  function __construct(
+    string $msg,
+    public ?object $origin = null
+  )
+  {
+    parent::__construct($msg, -1);
+  }
+}
+# }}}
 class BotLog # {{{
 {
-  # contructor/initializer {{{
-  function __construct(
+  static function construct(object $bot): self # {{{
+  {
+    return new self($bot->id, new BotLogConfig($bot));
+  }
+  # }}}
+  function __construct(# {{{
     public string  $name,
-    public ?object $cfg,
+    public object  $cfg,
     public ?object $parent = null,
   ) {}
-  function new(string $name): self {
-    return new self($name, $this->cfg, $this);
-  }
-  function init(object $bot): bool
+  # }}}
+  function init(): bool # {{{
   {
-    # set bot and root name
-    $this->cfg->bot = $bot;
-    $this->name = $bot->cfg->name;
+    # set root name
+    $this->name = ($bot = $this->cfg->bot)->cfg->name;
     # set logfiles
-    if ($bot->cfg->saveAccessLog) {
-      $this->cfg->files[0] = $bot->dir->data.'ACCESS.log';
+    if ($a = $bot->cfg->accessLog) {
+      $this->cfg->files[0] = $bot->dir->data.$a;
     }
-    if ($bot->cfg->saveErrorLog) {
-      $this->cfg->files[1] = $bot->dir->data.'ERROR.log';
+    if ($a = $bot->cfg->errorLog) {
+      $this->cfg->files[1] = $bot->dir->data.$a;
     }
     return true;
   }
   # }}}
-  static function str_bg_color(string $str, string $name, int $strong=0): string # {{{
+  # api
+  function new(string $name): self # {{{
   {
-    static $COLOR = [
-      'black'   => [40,100],
-      'red'     => [41,101],
-      'green'   => [42,102],
-      'yellow'  => [43,103],
-      'blue'    => [44,104],
-      'magenta' => [45,105],
-      'cyan'    => [46,106],
-      'white'   => [47,107],
-    ];
-    $x = $COLOR[$name][$strong];
-    return (strpos($str, "\n") === false)
-      ? "[{$x}m{$str}[0m"
-      : "[{$x}m".str_replace("\n", "[0m\n[{$x}m", $str).'[0m';
-  }
-  # }}}
-  static function str_fg_color(string $str, string $name, int $strong=0): string # {{{
-  {
-    static $COLOR = [
-      'black'   => [30,90],
-      'red'     => [31,91],
-      'green'   => [32,92],
-      'yellow'  => [33,93],
-      'blue'    => [34,94],
-      'magenta' => [35,95],
-      'cyan'    => [36,96],
-      'white'   => [37,97],
-    ];
-    $x = $COLOR[$name][$strong];
-    return "[{$x}m{$str}[0m";
+    return new self($name, $this->cfg, $this);
   }
   # }}}
   function out(int $level, int $sep, string ...$msg): void # {{{
@@ -267,31 +236,31 @@ class BotLog # {{{
       #file_put_contents($f, $a.$b.$msg."\n", FILE_APPEND);
     }
     # console output
-    if ($f = $cfg->bot->proc)
+    if ($cfg->bot->console)
     {
       # compose name chain
       $c = $cfg->color[$level];
-      $s = self::str_fg_color($cfg->sep[$sep], $c, 1);
+      $s = self::fgColor($cfg->sep[$sep], $c, 1);
       $x = '';
       $p = $this;
       while ($p->parent)
       {
-        $x = self::str_bg_color($p->name, $c)." $s $x";
+        $x = self::bgColor($p->name, $c)." $s $x";
         $p = $p->parent;
       }
       # compose msg chain
       for ($i = 0, $j = count($msg) - 1; $i < $j; ++$i) {
-        $x = $x.self::str_bg_color($msg[$i], $c)." $s ";
+        $x = $x.self::bgColor($msg[$i], $c)." $s ";
       }
       # compose all
       $c = $cfg->root[1];
       $x = (
-        self::str_fg_color($cfg->root[0], $c, 1).
-        self::str_fg_color($p->name, $c, 0).
+        self::fgColor($cfg->root[0], $c, 1).
+        self::fgColor($p->name, $c, 0).
         " $s $x".$msg[$j]."\n"
       );
       # output
-      ($f === true) ? fwrite(STDOUT, $x) : $f->out($x);
+      ($f = $cfg->bot->proc) ? $f->out($x) : fwrite(STDOUT, $x);
     }
   }
   # }}}
@@ -317,47 +286,30 @@ class BotLog # {{{
   # }}}
   function exception(object $e): void # {{{
   {
-    static $E = [
-      'E_ERROR' => 1,
-      'E_RECOVERABLE_ERROR' => 4096,
-      'E_WARNING' => 2,
-      'E_PARSE' => 4,
-      'E_NOTICE' => 8,
-      'E_STRICT' => 2048,
-      'E_DEPRECATED' => 8192,
-      'E_CORE_ERROR' => 16,
-      'E_CORE_WARNING' => 32,
-      'E_COMPILE_ERROR' => 64,
-      'E_COMPILE_WARNING' => 128,
-      'E_USER_ERROR' => 256,
-      'E_USER_WARNING' => 512,
-      'E_USER_NOTICE' => 1024,
-      'E_USER_DEPRECATED' => 16384,
-      'E_ALL' => 32767,
-    ];
-    # check error message thrown (special code)
-    $msg = $e->getMessage();
-    if (($code = $e->getCode()) === -1)
+    # check object type
+    if ($e instanceof BotError)
     {
-      $msg && $this->error($msg);
-      return;
+      if (!$e->origin)
+      {
+        ($msg = $e->getMessage()) && $this->error($msg);
+        return;
+      }
+      $e = $e->origin;
     }
-    # determine trace and error type
+    $msg = $e->getMessage();
+    # determine trace
     $a = $e->getTraceAsString();
     if ($b = strpos($a, "\n"))
     {
       $a = str_replace("\n", "\n  ", substr($a, $b + 1));
       $a = str_replace(__DIR__, '', $a);
     }
-    $b = ($c = array_search($code, $E, true))
-      ? substr($c, 2)
-      : 'EXCEPTION';
-    $c = $e->getTrace()[0];
-    $c = isset($c['file'])
-      ? str_replace(__DIR__, '', $c['file']).'('.$c['line'].')'
+    $b = $e->getTrace()[0];
+    $b = isset($b['file'])
+      ? str_replace(__DIR__, '', $b['file']).'('.$b['line'].')'
       : '---';
     ###
-    $this->out(1, 0, $b, "$msg\n  #0 $c\n  $a");
+    $this->out(1, 0, get_class($e), "$msg\n  #0 $b\n  $a");
   }
   # }}}
   function commands(): void # {{{
@@ -369,7 +321,48 @@ class BotLog # {{{
     }
   }
   # }}}
-  ###
+  function dump(mixed $var): void # {{{
+  {
+    if (($bot = $this->cfg->bot)->proc) {
+      $bot->proc->out(var_export($var, true)."\n");
+    }
+  }
+  # }}}
+  # helpers
+  static function bgColor(string $str, string $name, int $strong=0): string # {{{
+  {
+    static $COLOR = [
+      'black'   => [40,100],
+      'red'     => [41,101],
+      'green'   => [42,102],
+      'yellow'  => [43,103],
+      'blue'    => [44,104],
+      'magenta' => [45,105],
+      'cyan'    => [46,106],
+      'white'   => [47,107],
+    ];
+    $x = $COLOR[$name][$strong];
+    return (strpos($str, "\n") === false)
+      ? "[{$x}m{$str}[0m"
+      : "[{$x}m".str_replace("\n", "[0m\n[{$x}m", $str).'[0m';
+  }
+  # }}}
+  static function fgColor(string $str, string $name, int $strong=0): string # {{{
+  {
+    static $COLOR = [
+      'black'   => [30,90],
+      'red'     => [31,91],
+      'green'   => [32,92],
+      'yellow'  => [33,93],
+      'blue'    => [34,94],
+      'magenta' => [35,95],
+      'cyan'    => [36,96],
+      'white'   => [37,97],
+    ];
+    $x = $COLOR[$name][$strong];
+    return "[{$x}m{$str}[0m";
+  }
+  # }}}
   static function parseTree( # {{{
     ?array &$tree,
     int    $pad,
@@ -388,12 +381,12 @@ class BotLog # {{{
       # compose indent
       $pad && ($x .= str_repeat(' ', $pad));
       foreach ($indent as $b) {
-        $x .= $b ? self::str_fg_color('│ ', $color, 1) : '  ';
+        $x .= $b ? self::fgColor('│ ', $color, 1) : '  ';
       }
       # compose item line
       $b  = (++$i === $j);
-      $c  = self::str_fg_color(($b ? '└─' : '├─'), $color, 1);
-      $x .= $c.$a->name."\n";
+      $c  = self::fgColor(($b ? '└─' : '├─'), $color, 1);
+      $x .= $c.$a->skel['name']."\n";
       # recurse
       if ($a->items)
       {
@@ -410,19 +403,21 @@ class BotLog # {{{
 class BotLogConfig # {{{
 {
   function __construct(
-    public ?object $bot,
-    public array   $files = ['',''],# level:[!1,1]
+    public object  $bot,
+    public array   $files = ['',''],# level:[error,other]
     public array   $sep   = ['>','<'],# out,in
     public array   $color = ['green','red','yellow'],# level:[info,error,warn]
     public array   $root  = ['@','cyan']# prefix,color
   ) {}
 }
 # }}}
-class BotDirs extends StasisConstruct # {{{
+class BotDirs # {{{
 {
-  static function construct(string $id, object $log): ?self
+  static function construct(object $bot): ?self # {{{
   {
     # determine base paths
+    $id   = $bot->id;
+    $log  = $bot->log;
     $home = __DIR__.DIRECTORY_SEPARATOR;
     $inc  = $home.'inc'.DIRECTORY_SEPARATOR;
     $data = $home.'data'.DIRECTORY_SEPARATOR.$id.DIRECTORY_SEPARATOR;
@@ -456,21 +451,28 @@ class BotDirs extends StasisConstruct # {{{
     file_exists($a = $data.'img'.DIRECTORY_SEPARATOR) && ($img[] = $a);
     file_exists($a = $data.'font'.DIRECTORY_SEPARATOR) && ($font[] = $a);
     # construct
-    return new static([
-      'home'  => $home,
-      'inc'   => $inc,
-      'data'  => $data,
-      'user'  => $user,
-      'group' => $group,
-      'img'   => $img,
-      'font'  => $font,
-      'src'   => '',
-    ]);
+    return new self(
+      $bot, $home, $inc, $data, $user, $group, $img, $font
+    );
   }
-  function init(object $bot): bool
+  # }}}
+  function __construct(# {{{
+    public object $bot,
+    public string $home,
+    public string $inc,
+    public string $data,
+    public string $user,
+    public string $group,
+    public array  $img,
+    public array  $font,
+    public string $src = ''
+  ) {}
+  # }}}
+  function init(): bool # {{{
   {
-    # set bot directory
-    $src = $this->home.'bots'.DIRECTORY_SEPARATOR.$bot->cfg->bot.DIRECTORY_SEPARATOR;
+    # determine source directory
+    $bot = $this->bot;
+    $src = $this->home.'bots'.DIRECTORY_SEPARATOR.$bot->cfg->source.DIRECTORY_SEPARATOR;
     if (!file_exists($src))
     {
       $bot->log->error("directory not found: $src");
@@ -486,63 +488,68 @@ class BotDirs extends StasisConstruct # {{{
     # done
     return true;
   }
+  # }}}
 }
 # }}}
-class BotConfig extends StasisConstruct # {{{
+class BotConfig # {{{
 {
-  static $FILE = 'config.json';
-  static $DEFS = [
+  const DEFS = [
     # {{{
-    'bot'    => '',
+    'source' => '',
     'token'  => '',
     'name'   => '',
     'admins' => [],
-    'colors' => [
-      'title' => [[240,248,255],[0,0,0]],
-    ],
-    'fonts' => [
-      'title' => ['Cuprum-Bold.ttf','Bender.ttf'],
-    ],
-    'forceLang'            => '',
-    'saveAccessLog'        => false,
-    'saveErrorLog'         => false,
-    'useFileIds'           => false,
-    'showBreadcrumb'       => true,
-    'replyFailedCommand'   => false,
-    'replyIgnoredCallback' => true,
-    'wipeUserInput'        => true,
-    'debugTasks'           => false,
+    'style'  => null,
+    'lang'   => '',
+    'wipeUserInput' => true,
+    'accessLog'     => '',
+    'errorLog'      => '',
+    'useFileIds'    => false,
+    'useBreadcrumb' => true,
+    #'replyFailedCommand' => false,
+    #'replyIgnoredCallback' => true,
     # }}}
   ];
-  public string $file;
-  static function construct(object $dir, object $log): ?self # {{{
+  static function construct(object $bot): ?self # {{{
   {
     # check configuration file exists
-    if (!file_exists($file = $dir->data.self::$FILE))
+    if (!file_exists($file = $bot->dir->data.'config.json'))
     {
-      $log->error("file not found: $file");
+      $bot->log->error("file not found: $file");
       return null;
     }
     # load and check data
-    if (!($o = BotFiles::get_json($file))   ||
-        !isset($o[$k = 'bot'])   || !$o[$k] ||
-        !isset($o[$k = 'token']) || !$o[$k] ||
-        !isset($o[$k = 'name'])  || !$o[$k])
+    if (!($o = BotFiles::getJSON($file))    ||
+        !isset($o[$k = 'source']) || !$o[$k] ||
+        !isset($o[$k = 'token'])  || !$o[$k] ||
+        !isset($o[$k = 'name'])   || !$o[$k])
     {
-      $log->error("incorrect file: $file");
+      $bot->log->error("incomplete configuration: $file");
       return null;
     }
     # construct
-    $o = new static(array_merge(self::$DEFS, $o));
-    $o->file = $file;
-    return $o;
+    return new self(
+      $bot, $file, array_merge(self::DEFS, $o)
+    );
   }
   # }}}
-  function init(object $bot): bool # {{{
+  function __construct(# {{{
+    public object $bot,
+    public string $file,
+    array $o
+  )
+  {
+    foreach ($o as $k => &$v) {
+      $this->$k = &$v;
+    }
+    #$this->style = BotConfigStyle::construct($this);
+  }
+  # }}}
+  function init(): bool # {{{
   {
     if (!BotFiles::lock($file = $this->file))
     {
-      $bot->log->error("failed to lock: $file");
+      $this->bot->log->error("failed to lock: $file");
       $this->file = '';
       return false;
     }
@@ -551,31 +558,123 @@ class BotConfig extends StasisConstruct # {{{
   # }}}
   function destruct(): void # {{{
   {
-    if ($a = $this->file)
+    if ($this->file)
     {
-      BotFiles::unlock($a);
+      BotFiles::unlock($this->file);
       $this->file = '';
     }
   }
   # }}}
 }
 # }}}
-class BotFiles extends StasisConstruct # {{{
+class BotConfigStyle # {{{
 {
-  static $ID_FILE='fids.json';
+  const DEFS = [
+    # {{{
+    'background' => [0,0,0],
+    'font' => [
+      'Cuprum-Bold.ttf',
+      'Cuprum-Regular.ttf',
+    ],
+    'color' => [
+      [135,206,235],# skyblue
+      [0,139,139],# darkcyan
+    ],
+    # }}}
+  ];
+  static function construct(object $cfg): self # {{{
+  {
+    return new self($cfg, $cfg->style
+      ? array_merge(self::DEFS, $cfg->style)
+      : self::DEFS
+    );
+  }
+  # }}}
+  function __construct(# {{{
+    public object $cfg,
+    array $o
+  )
+  {
+    foreach ($o as $k => &$v) {
+      $this->$k = &$v;
+    }
+  }
+  # }}}
+  function text(string $text, int $i): ?array # {{{
+  {
+    static $FONT = [];
+    if (!isset($FONT[$i]))
+    {
+      $font = $this->font[$i];
+      foreach ($this->dir->font as $a)
+      {
+        if (file_exists($a.$font))
+        {
+          $FONT[$i] = $font = $a.$font;
+          break;
+        }
+      }
+      if (!isset($FONT[$i]))
+      {
+        $this->log->error("file not found: $font");
+        return null;
+      }
+    }
+    else {
+      $font = $FONT[$i];
+    }
+    return [$text, $font, $this->color[$i]];
+  }
+  # }}}
+}
+# }}}
+class BotFiles # {{{
+{
+  const FILE_IDS = 'fids.json';
   static function construct($bot): self # {{{
   {
-    # get file identifiers map
-    $map = ($file = $bot->cfg->useFileIds ? $bot->dir->data.$ID_FILE : '')
-      ? self::get_json($file)
-      : null;
+    # prepare
+    if ($bot->cfg->useFileIds)
+    {
+      $file = $bot->dir->data.self::FILE_IDS;
+      $map  = self::getJSON($file);
+    }
+    else
+    {
+      $file = '';
+      $map  = null;
+    }
     # construct
-    return new static([
-      'dir'    => $bot->dir,
-      'log'    => $bot->log->new('file'),
-      'idFile' => $file,
-      'idMap'  => $map,
-    ]);
+    return new self(
+      $bot, $bot->log->new('file'), $file, $map
+    );
+  }
+  # }}}
+  function __construct(# {{{
+    public object $bot,
+    public object $log,
+    public string $idFile,
+    public ?array $idMap
+  ) {}
+  # }}}
+  function getImage(string $name): string # {{{
+  {
+    # prepare
+    $file = $name.'.jpg';
+    # check user directory
+    if (($a = $this->bot->user) &&
+        file_exists($b = $a->dir.$file))
+    {
+      return $b;
+    }
+    # search in image directories
+    foreach ($this->bot->dir->img as $a)
+    {
+      if (file_exists($b = $a.$file)) {
+        return $b;
+      }
+    }
+    return '';
   }
   # }}}
   function getId(string $file): string # {{{
@@ -592,36 +691,71 @@ class BotFiles extends StasisConstruct # {{{
       $this->idMap[$file] = $id;
       if (self::lock($this->idFile))
       {
-        self::set_json($this->idFile, $this->idMap);
+        self::setJSON($this->idFile, $this->idMap);
         self::unlock($this->idFile);
       }
     }
   }
   # }}}
-  static function lock(string $file, bool $force = false): string # {{{
+  static function lock(# {{{
+    string  $file,
+    string  $forceId = '',
+    int     $tries = 5
+  ):string
   {
     # prepare
-    $id    = strval(time());
-    $count = 20;
+    static $sleep   = 100000;# 100ms
+    static $timeout = 20;
     $lock  = "$file.lock";
-    # wait until lock released or count exhausted
+    $time  = time();
+    $count = 20;
+    # check
+    if (!$tries) {
+      return '';
+    }
+    # wait released
     while (file_exists($lock) && --$count) {
-      usleep(100000);# 100ms
+      usleep($sleep);
     }
     # check exhausted
     if (!$count)
     {
-      # check not forced or apply force (remove lockfile)
-      if (!$force || !@unlink($lock)) {
+      # get last modification timestamp
+      if (!($x = filemtime($lock))) {
         return '';
       }
-      # clear cache
-      clearstatcache(true, $lock);
+      # check fresh
+      if (($time - $x) <= $timeout)
+      {
+        return $forceId
+          ? self::lock($file, $forceId, $tries - 1)
+          : '';
+      }
+      # remove staled lockfile
+      if (!unlink($lock)) {
+        return '';
+      }
     }
-    # set new lock and make sure no collisions
-    return (file_put_contents($lock, $id) && file_get_contents($lock) === $id)
-      ? $lock
-      : '';
+    # create lockfile
+    if ($forceId)
+    {
+      # store identifier
+      if (file_put_contents($lock, $forceId) === false) {
+        return '';
+      }
+      # make user no collisions
+      if (file_get_contents($lock) !== $forceId) {
+        return self::lock($file, $forceId, $tries - 1);
+      }
+    }
+    else
+    {
+      if (!touch($lock, $time)) {
+        return '';
+      }
+    }
+    # complete
+    return $lock;
   }
   # }}}
   static function unlock(string $file) # {{{
@@ -630,7 +764,7 @@ class BotFiles extends StasisConstruct # {{{
       ? @unlink($lock) : false;
   }
   # }}}
-  static function get_json(string $file): array # {{{
+  static function getJSON(string $file): array # {{{
   {
     if (!file_exists($file) ||
         !($data = file_get_contents($file)) ||
@@ -641,7 +775,7 @@ class BotFiles extends StasisConstruct # {{{
     return $data;
   }
   # }}}
-  static function set_json(string $file, ?array $data): bool # {{{
+  static function setJSON(string $file, ?array $data): bool # {{{
   {
     if ($data)
     {
@@ -663,11 +797,11 @@ class BotFiles extends StasisConstruct # {{{
   # }}}
 }
 # }}}
-class BotApi extends StasisConstruct # {{{
+class BotApi # {{{
 {
   const URL = 'https://api.telegram.org/bot';
-  const POLLING_TIMEOUT = 120;# max=50?
-  static $CONFIG = [
+  const POLLING_TIMEOUT = 120;# current max=50?
+  const CONFIG = [
     # {{{
     CURLOPT_RETURNTRANSFER => true,
     CURLOPT_CONNECTTIMEOUT => 10,# default(0): 300
@@ -702,33 +836,52 @@ class BotApi extends StasisConstruct # {{{
     {
       # create curl instance
       if (!($curl = curl_init())) {
-        throw Bot::error('curl_init() failed');
+        throw BotError::text('curl_init() failed');
       }
       # configure
-      if (!curl_setopt_array($curl, self::$CONFIG)) {
-        throw Bot::error('failed to configure');
+      if (!curl_setopt_array($curl, self::CONFIG)) {
+        throw BotError::text('failed to configure');
       }
       # create multi-curl instance
       if (!($murl = curl_multi_init())) {
-        throw Bot::error('curl_multi_init() failed');
+        throw BotError::text('curl_multi_init() failed');
       }
       # construct
-      $api = new static([
-        'bot'  => $bot,
-        'log'  => $log,
-        'url'  => self::URL.$bot->cfg->token,
-        'curl' => $curl,
-        'murl' => $murl,
-        'res'  => null,
-      ]);
+      $api = new self(
+        $bot, $log, self::URL.$bot->cfg->token, $curl, $murl
+      );
     }
-    catch (\Exception|\Error $e)
+    catch (\Throwable $e)
     {
       $log->exception($e);
       $curl && curl_close($curl);
       $murl && curl_multi_close($murl);
     }
     return $api;
+  }
+  # }}}
+  function __construct(# {{{
+    public ?object  $bot,
+    public ?object  $log,
+    public string   $url,
+    public ?object  $curl,
+    public ?object  $murl
+  ) {}
+  # }}}
+  function destruct(): void # {{{
+  {
+    if ($this->bot)
+    {
+      if ($this->murl)
+      {
+        $this->getUpdates(true);
+        curl_multi_close($this->murl);
+      }
+      if ($this->curl) {
+        curl_close($this->curl);
+      }
+      $this->bot = $this->log = $this->curl = $this->murl = null;
+    }
   }
   # }}}
   function getUpdates(bool $end = false): ?array # {{{
@@ -895,20 +1048,20 @@ class BotApi extends StasisConstruct # {{{
         CURLOPT_POSTFIELDS => $req,
       ];
       if (!curl_setopt_array($this->curl, $req)) {
-        throw Bot::error('failed to set request');
+        throw BotError::text('failed to set request');
       }
       # send
       if (($a = curl_exec($this->curl)) === false) {
-        throw Bot::error('curl_exec('.curl_errno($this->curl).'): '.curl_error($this->curl));
+        throw BotError::text('curl_exec('.curl_errno($this->curl).'): '.curl_error($this->curl));
       }
       # decode response
       if (!($res = json_decode($a, false))) {
-        throw Bot::error("incorrect response\n█{$a}█\n");
+        throw BotError::text("incorrect response\n█{$a}█\n");
       }
       # check result flag
       if (!$res->ok || !isset($res->result))
       {
-        throw Bot::error(isset($res->description)
+        throw BotError::text(isset($res->description)
           ? $res->description
           : "incorrect response\n█{$a}█\n"
         );
@@ -916,7 +1069,7 @@ class BotApi extends StasisConstruct # {{{
       # success
       $res = $res->result;
     }
-    catch (\Exception|\Error $e)
+    catch (\Throwable $e)
     {
       # report error
       $this->log->exception($e);
@@ -934,25 +1087,10 @@ class BotApi extends StasisConstruct # {{{
   # }}}
   function deleteMessage(object $msg): bool # {{{
   {
-    return $this->send('deleteMessage', [
+    return !!$this->send('deleteMessage', [
       'chat_id'    => $msg->chat->id,
       'message_id' => $msg->message_id,
     ]);
-  }
-  # }}}
-  function destruct(): void # {{{
-  {
-    if ($this->murl)
-    {
-      $this->getUpdates(true);
-      curl_multi_close($this->murl);
-      $this->murl = null;
-    }
-    if ($this->curl)
-    {
-      curl_close($this->curl);
-      $this->curl = null;
-    }
   }
   # }}}
 }
@@ -962,7 +1100,7 @@ class BotApiFile extends \CURLFile # {{{
   public bool $isTemp;
   static function construct(string $file, bool $isTemp = true): self
   {
-    $o = new self($file);
+    $o = new static($file);
     $o->postname = basename($file);
     $o->isTemp   = $isTemp;
     return $o;
@@ -981,7 +1119,7 @@ class BotApiFile extends \CURLFile # {{{
   }
 }
 # }}}
-class BotTexts extends StasisConstruct # {{{
+class BotTexts # {{{
 {
   static $MESSAGES = [
     'en' => [# {{{
@@ -1273,7 +1411,7 @@ processing{{#info.0}}..{{/info.0}}
   static function construct(object $bot): ?self # {{{
   {
     # messages
-    if (!($msg = BotFiles::get_json($a = $bot->dir->data.'messages.json')))
+    if (!($msg = BotFiles::getJSON($a = $bot->dir->data.'messages.json')))
     {
       # load from bot directory and merge over defaults
       $msg = file_exists($b = $bot->dir->src.'messages.inc')
@@ -1288,14 +1426,14 @@ processing{{#info.0}}..{{/info.0}}
       }
       unset($c, $d);
       # store
-      if (!BotFiles::set_json($a, $msg))
+      if (!BotFiles::setJSON($a, $msg))
       {
-        $bot->log->error("set_json($a) failed");
+        $bot->log->error("failed to save: $a");
         return null;
       }
     }
     # button captions
-    if (!($btn = BotFiles::get_json($a = $bot->dir->data.'buttons.json')))
+    if (!($btn = BotFiles::getJSON($a = $bot->dir->data.'buttons.json')))
     {
       # load source and merge over defaults
       $btn = file_exists($b = $bot->dir->src.'buttons.inc')
@@ -1307,73 +1445,145 @@ processing{{#info.0}}..{{/info.0}}
       }
       unset($c);
       # store
-      if (!BotFiles::set_json($a, $btn))
+      if (!BotFiles::setJSON($a, $btn))
       {
-        $bot->log->error("set_json($a) failed");
+        $bot->log->error("failed to save: $a");
         return null;
       }
     }
     # construct
-    return new static([
-      'msg' => $msg,
-      'btn' => $btn,
-    ]);
+    return new self($msg, $btn);
   }
+  # }}}
+  function __construct(# {{{
+    public array &$msg,
+    public array &$btn
+  ) {}
   # }}}
 }
 # }}}
-class BotCommands extends StasisConstruct # {{{
+class BotCommands # {{{
 {
+  const FILE_JSON = 'commands.json';
+  const FILE_INC  = 'commands.inc';
+  const NS = '\\'.__NAMESPACE__.'\\';
   static function construct(object $bot): ?self # {{{
   {
-    # try to load precompiled
-    $isRefined = true;
-    if (!($data = BotFiles::get_json($bot->dir->data.'commands.json')))
+    # prepare
+    $fileJson = $bot->dir->data.self::FILE_JSON;
+    $fileInc  = $bot->dir->src.self::FILE_INC;
+    # check precompiled
+    if (file_exists($fileJson))
     {
-      # include and merge
-      $isRefined = false;
-      $a = 'commands.inc';
-      if (!file_exists($b = $bot->dir->src.$a))
+      # load refined source
+      if (!($tree = BotFiles::getJSON($fileJson)))
       {
-        $bot->log->error("file not found: $b");
-        return null;
-      }
-      if (!($data = include $b) || !is_array($data))
-      {
-        $bot->log->error("incorrect file: $b");
-        return null;
-      }
-      if (file_exists($b = $bot->dir->data.$a) &&
-          is_array($c = (include $b)))
-      {
-        $data = array_merge($data, $c);
-      }
-    }
-    # parse and construct root items
-    $base = '\\'.__NAMESPACE__.'\\BotItem';
-    foreach ($data as $a => &$b)
-    {
-      # determine item class
-      $type = $base.(isset($b['type']) ? ucfirst($b['type']) : 'Img');
-      # check exists
-      if (!$isRefined && !class_exists($type, false))
-      {
-        $bot->log->error("class not found: $type");
-        return null;
-      }
-      # construct
-      if (($b = $type::construct($bot, $a, $b, null, $isRefined)) === null)
-      {
-        $bot->log->error("failed to construct $type::$a");
+        $bot->log->error("incorrect file: $fileJson");
         return null;
       }
     }
-    unset($b);
-    # construct
-    return new static([
-      'tree' => $data,
-      'map'  => self::createMap($data),
-    ]);
+    else
+    {
+      # load raw source
+      if (!file_exists($fileInc))
+      {
+        $bot->log->error("file not found: $fileInc");
+        return null;
+      }
+      if (!($tree = include $fileInc) || !is_array($tree))
+      {
+        $bot->log->error("incorrect file: $fileInc");
+        return null;
+      }
+      # merge
+      if (file_exists($fileInc = $bot->dir->data.self::FILE_INC) &&
+          is_array($a = include $fileInc))
+      {
+        $tree = array_merge($tree, $a);
+      }
+      # refine
+      if (!self::refineTree($bot, $tree)) {
+        return null;
+      }
+    }
+    # construct items and map
+    foreach ($tree as &$item)
+    {
+      $class = self::NS.$item['type'];
+      $item  = $class::construct($item, null);
+    }
+    # construct self
+    return new self($tree, self::createMap($tree));
+  }
+  # }}}
+  static function refineTree(# {{{
+    object  $bot,
+    array   &$tree,
+    ?array  &$parent = null
+  ):bool
+  {
+    foreach ($tree as $name => &$skel)
+    {
+      # set base
+      $skel['name'] = $name;
+      $skel[$a = 'id'] = $parent
+        ? $parent[$a].$name
+        : $name;
+      $skel[$a = 'path'] = $parent
+        ? $parent[$a].'/'.$name
+        : $name;
+      # set type class
+      $skel[$a = 'type'] = isset($skel[$a])
+        ? 'BotItem'.ucfirst($skel[$a])
+        : 'BotItemImg';
+      if (!class_exists($class = self::NS.$skel[$a], false))
+      {
+        $bot->log->error("class not found: $class");
+        return false;
+      }
+      # set render flags
+      $skel[$a = 'datafile'] = isset($skel[$a])
+        ? $skel[$a]
+        : $class::DATAFILE;
+      $skel[$a = 'handler'] = isset($skel[$a])
+        ? $skel[$a]
+        : false;
+      # refine texts
+      # set primary language
+      if (!isset($skel['text'])) {
+        $skel['text'] = ['en'=>[]];
+      }
+      elseif (!isset($skel['text']['en'])) {
+        $skel['text'] = ['en'=>$skel['text']];
+      }
+      # set secondary languages
+      foreach (array_keys($bot->text->msg) as $a)
+      {
+        if (!isset($skel['text'][$a])) {
+          $skel['text'][$a] = $skel['text']['en'];
+        }
+      }
+      # set contents
+      foreach ($skel['text'] as &$a)
+      {
+        foreach ($a as &$b)
+        {
+          if (strpos($b, "\r") !== false) {
+            $b = str_replace("\r\n", "\n", $b);
+          }
+          $b = $bot->tp->render($b, '{: :}', BotTexts::$EMOJI);
+          $b = $bot->tp->render($b, '{! !}', $bot->text->btn);
+        }
+      }
+      unset($a, $b);
+      # recurse
+      if (isset($skel[$a = 'items']) &&
+          !self::refineTree($bot, $skel[$a], $skel))
+      {
+        return false;
+      }
+    }
+    return true;
   }
   # }}}
   static function createMap(array &$tree): array # {{{
@@ -1392,10 +1602,15 @@ class BotCommands extends StasisConstruct # {{{
     return $map;
   }
   # }}}
+  function __construct(# {{{
+    public array $tree,
+    public array $map
+  ) {}
+  # }}}
 }
 # }}}
-###
-class BotMaster extends StasisConstruct # {{{
+# console process
+class BotMaster # {{{
 {
   static function construct(object $bot): ?self # {{{
   {
@@ -1407,13 +1622,15 @@ class BotMaster extends StasisConstruct # {{{
     }
     $cmd = '"'.PHP_BINARY.'" -f "'.$cmd.'" ';
     # construct
-    return new static([
-      'bot' => $bot,
-      'log' => $bot->log->new('proc'),
-      'cmd' => $cmd,
-      'map' => [],
-    ]);
+    return new self($bot, $bot->log->new('proc'), $cmd);
   }
+  # }}}
+  function __construct(# {{{
+    public object $bot,
+    public object $log,
+    public string $cmd,
+    public array  $map = []
+  ) {}
   # }}}
   function start($id): bool # {{{
   {
@@ -1457,7 +1674,7 @@ class BotMaster extends StasisConstruct # {{{
   # }}}
 }
 # }}}
-class BotMasterSlave extends StasisConstruct # {{{
+class BotMasterSlave # {{{
 {
   static function construct(object $master, string $id): ?self # {{{
   {
@@ -1484,36 +1701,36 @@ class BotMasterSlave extends StasisConstruct # {{{
       if (($proc = proc_open($cmd, $DESC, $pipe, $home, null, $OPTS)) === false ||
           !is_resource($proc))
       {
-        throw Bot::error("proc_open($cmd) failed");
+        throw BotError::text("proc_open($cmd) failed");
       }
       # initiate sync protocol
       # set master lockfile
       if (!touch($out)) {
-        throw Bot::error("touch($out) failed");
+        throw BotError::text("touch($out) failed");
       }
       if (fwrite($pipe[0], $out) === false) {
-        throw Bot::error('fwrite() failed');
+        throw BotError::text('fwrite() failed');
       }
       # wait
       while (file_exists($out))
       {
         usleep(200000);
         if (!($a = proc_get_status($proc)) || !$a['running']) {
-          throw Bot::error('exited('.$a['exitcode'].')');
+          throw BotError::text('exited('.$a['exitcode'].')');
         }
       }
       # get slave lockfile
       stream_set_blocking($pipe[1], true);
       if (($in = fread($pipe[1], 300)) === false) {
-        throw Bot::error('fread() failed');
+        throw BotError::text('fread() failed');
       }
       if (!file_exists($in)) {
-        throw Bot::error("file not found: $in");
+        throw BotError::text("file not found: $in");
       }
       # unlock slave
       @unlink($in);
     }
-    catch (\Exception|\Error $e)
+    catch (\Throwable $e)
     {
       # report
       $log->exception($e);
@@ -1533,13 +1750,15 @@ class BotMasterSlave extends StasisConstruct # {{{
       return null;
     }
     # construct
-    return new static([
-      'log'  => $log,
-      'proc' => $proc,
-      'lock' => [$in, $out],
-      'pipe' => $pipe,
-    ]);
+    return new self($log, $proc, [$in, $out], $pipe);
   }
+  # }}}
+  function __construct(# {{{
+    public object $log,
+    public object $proc,
+    public array  $lock,
+    public array  $pipe
+  ) {}
   # }}}
   function check(): bool # {{{
   {
@@ -1595,7 +1814,7 @@ class BotMasterSlave extends StasisConstruct # {{{
   # }}}
 }
 # }}}
-class BotSlave extends StasisConstruct # {{{
+class BotSlave # {{{
 {
   static function construct(object $bot): ?self # {{{
   {
@@ -1639,11 +1858,13 @@ class BotSlave extends StasisConstruct # {{{
       return null;
     }
     # complete
-    return new static([
-      'log'  => $log,
-      'lock' => [$in, $out],
-    ]);
+    return new self($log, [$in, $out]);
   }
+  # }}}
+  function __construct(# {{{
+    public object $log,
+    public array  $lock
+  ) {}
   # }}}
   function check(): bool # {{{
   {
@@ -1673,28 +1894,162 @@ class BotSlave extends StasisConstruct # {{{
   # }}}
 }
 # }}}
-###
-class BotRequestInput extends StasisConstruct # {{{
+# update (request handlers)
+class BotUpdate # {{{
 {
-  static function construct(object $msg): ?object # {{{
+  static function construct(object $bot, object $update): ?self # {{{
   {
-    if (!isset($msg->from)) {
+    # parse update and
+    # construct specific request
+    $q = $u = $c = null;
+    if (isset($update->callback_query))
+    {
+      # {{{
+      if (!isset(($q = $update->callback_query)->from))
+      {
+        $bot->log->warn('incorrect callback');
+        $bot->log->dump($update);
+        return null;
+      }
+      $u = $q->from;
+      if (isset($q->game_short_name))
+      {
+        #$x = new BotRequestGame($q);
+        return null;
+      }
+      elseif (isset($q->data))
+      {
+        if (!isset($q->message) ||
+            !isset($q->message->chat))
+        {
+          $bot->log->warn('incorrect data callback');
+          $bot->log->dump($update);
+          return null;
+        }
+        $c = $q->message->chat;
+        $q = new BotRequestCallback($q);
+      }
+      else {
+        return null;
+      }
+      # }}}
+    }
+    elseif (isset($update->inline_query))
+    {
+      # {{{
+      if (!isset(($q = $update->inline_query)->from))
+      {
+        $bot->log->warn('incorrect inline query');
+        $bot->log->dump($update);
+        return null;
+      }
+      $u = $q->from;
+      #$x = new BotRequestInline($q);
+      return null;
+      # }}}
+    }
+    elseif (isset($update->message))
+    {
+      # {{{
+      if (!isset(($q = $update->message)->from) ||
+          !isset($q->chat))
+      {
+        $bot->log->warn('incorrect message');
+        $bot->log->dump($update);
+        return null;
+      }
+      $u = $q->from;
+      $c = $q->chat;
+      $q = (isset($q->text) && ($q->text[0] === '/'))
+        ? new BotRequestCommand($q)
+        : new BotRequestInput($q);
+      # }}}
+    }
+    else
+    {
+      $bot->log->warn('unknown update type');
+      $bot->log->dump($update);
       return null;
     }
-    if (isset($msg->text) && ($msg->text[0] === '/')) {
-      return BotRequestCommand::construct($msg);
+    # construct
+    $q = new self($bot, $q, $u, $c);
+    if (!($q->user = BotUser::construct($q)) ||
+        !$q->req->init() ||
+        !$q->user->init())
+    {
+      $q->destruct();
+      return null;
     }
-    return new static([
-      'from' => $msg->from,
-      'chat' => $msg->chat,
-      'msg'  => $msg,
-    ]);
+    # complete
+    return $q;
   }
   # }}}
-  function reply(object $user): bool # {{{
+  function __construct(# {{{
+    public ?object  $bot,
+    public ?object  $req,
+    public ?object  $from,
+    public ?object  $chat,
+    public ?object  $user = null,
+    public ?object  $item = null
+  )
+  {
+    # bind request
+    $req->upd = $this;
+  }
+  # }}}
+  function destruct(bool $ok = false): void # {{{
+  {
+    if ($this->bot)
+    {
+      $this->req->destruct($ok);
+      $this->user && $this->user->destruct($ok);
+      $this->bot = $this->req = $this->user = $this->item = null;
+    }
+  }
+  # }}}
+  function handle(): bool # {{{
+  {
+    $x = $this->req->reply();
+    $this->destruct(true);
+    return $x;
+  }
+  # }}}
+}
+# }}}
+abstract class BotRequest # {{{
+{
+  function __construct(
+    public ?object  $data,
+    public ?object  $upd  = null,
+    public string   $func = '',
+    public string   $args = ''
+  ) {}
+  abstract function  init(): bool;
+  abstract function reply(): bool;
+  abstract function finit(): void;
+  function destruct(bool $ok): void
+  {
+    if ($this->upd)
+    {
+      $ok && $this->finit();
+      $this->upd = $this->data = null;
+    }
+  }
+}
+# }}}
+class BotRequestInput extends BotRequest # {{{
+{
+  function init(): bool # {{{
+  {
+    return true;
+  }
+  # }}}
+  function reply(): bool # {{{
   {
     # prepare
-    $bot = $user->bot;
+    # ...
+    # done
+    return true;
     /***
     $text = $this->msg->text;
     # check current (first) root accepts input
@@ -1711,146 +2066,104 @@ class BotRequestInput extends StasisConstruct # {{{
         ]);
       }
     }
-    /***/
     # cleanup
-    if (!$user->isGroup && $bot->cfg->wipeUserInput)
+    if ($cfg->wipeUserInput && !$user->isGroup) {
+      $bot->api->deleteMessage($this->msg);
+    }
+    /***/
+  }
+  # }}}
+  function finit(): void # {{{
+  {
+    # prepare
+    $upd  = $this->upd;
+    $bot  = $upd->bot;
+    $user = $upd->user;
+    $msg  = $this->data;
+    # wipe user input or group input if it was consumed
+    if ($bot->cfg->wipeUserInput && (!$user->gid || $upd->item)) {
+      $bot->api->deleteMessage($msg);
+    }
+  }
+  # }}}
+}
+# }}}
+class BotRequestCommand extends BotRequest # {{{
+{
+  const CMD_EXPR = '|^\/(([a-z][a-z0-9]+)([:/-]([a-z][a-z0-9]+)){0,8})( ([^@]{1,})){0,1}(@[a-z_]+bot){0,1}$|i';
+  const CMD_GLOB = [
+    # {{{
+    'stop'    => 1,
+    'restart' => 1,
+    'reset'   => 1,
+    # }}}
+  ];
+  function init(): bool # {{{
+  {
+    # prepare
+    static $REGEX = '|^\/(([a-z][a-z0-9]+)([:/-]([a-z][a-z0-9]+)){0,8})( ([^@]{1,})){0,1}(@[a-z_]+bot){0,1}$|i';
+    $msg  = $this->data;
+    $bot  = $this->upd->bot;
+    $cfg  = $bot->cfg;
+    $user = $this->upd->user;
+    $log  = $user->log->new('cmd');
+    # parse command
+    # syntax: /<item>[ <args>][@<botname>]
+    if (($a = strlen($msg->text)) < 2 || $a > 200 ||
+        !preg_match_all(self::CMD_EXPR, $msg->text, $a))
     {
-      $bot->api->send('deleteMessage', [
-        'chat_id'    => $this->chat->id,
-        'message_id' => $this->msg->message_id,
-      ]);
+      $log->warn($msg->text, 1);
+      return true;
+    }
+    # extract
+    $item = strtolower($a[1][0]);
+    $args = $a[5][0];
+    $name = $a[7][0];
+    # check bot name specified in group and
+    # addressed to this bot
+    if ($user->gid && $name && $name !== $cfg->name) {
+      return false;# ignore
+    }
+    # check deep linking (tg://<BOT_NAME>?start=<item>)
+    if (!$user->gid && $item === 'start' && $args)
+    {
+      $item = strtolower($args);
+      $args = '';
+    }
+    # check global command
+    if (isset(self::CMD_GLOB[$item]))
+    {
+      # attach
+      $this->func = $item;
+      $this->args = $args;
+      $log->info($msg->text, 1);
+      return true;
+    }
+    # remove item separators [:],[-],[/]
+    if (strpos($item, ':')) {
+      $item = str_replace(':', '', $item);
+    }
+    elseif (strpos($item, '-')) {
+      $item = str_replace('-', '', $item);
+    }
+    elseif (strpos($item, '/')) {
+      $item = str_replace('/', '', $item);
+    }
+    # check item exists
+    if (isset($bot->cmd->map[$item]))
+    {
+      # attach
+      $this->upd->item = $bot->cmd->map[$item];
+      $this->args = $args;
+      $log->info($msg->text, 1);
+    }
+    else {
+      $log->warn($msg->text, 1);
     }
     return true;
   }
   # }}}
-}
-# }}}
-class BotCommand extends StasisConstruct # {{{
-{
-  # command syntax: /<item>!<func> <args>
-  const COMMAND_EXP = '|^\/((\w+)([:/-](\w+)){0,8})(!(\w{1,})){0,1}( (.{1,})){0,1}$|';
-  const MAX_SIZE = 200;
-  static function construct(string $exp, bool $loose = true): ?self
-  {
-    # check correct size
-    if (($a = strlen($exp)) < 2 || $a > self::MAX_SIZE) {
-      return null;
-    }
-    # determine bot name (specified as postfix in groups)
-    $bot = (($a = strrpos($exp, '@')) !== false)
-      ? substr($exp, 0, $a)
-      : '';
-    # check
-    if ($loose && $exp[0] === '!')
-    {
-      # parse simplified expression
-      $item = '';
-      if ($a = strpos($exp, ' '))
-      {
-        $func = substr($exp, 1, $a);
-        $args = explode(',', substr($exp, $a + 1));
-      }
-      else
-      {
-        $func = substr($exp, 1);
-        $args = [];
-      }
-    }
-    else
-    {
-      # parse full-fledged command
-      $a = null;
-      if (!preg_match_all(self::COMMAND_EXP, $exp, $a)) {
-        return null;
-      }
-      # extract
-      $item = $a[1][0];
-      $func = $a[6][0];
-      $args = strlen($a[8][0])
-        ? explode(',', $a[8][0])
-        : null;
-      # check deep link (tg://<BOT_NAME>?start=<item>)
-      if ($item === 'start' && !$func && $args)
-      {
-        $item = $args[0];
-        $args = null;
-      }
-      # remove separators [:],[-],[/]
-      if (strpos($item, ':')) {
-        $item = str_replace(':', '', $item);
-      }
-      elseif (strpos($item, '-')) {
-        $item = str_replace('-', '', $item);
-      }
-      elseif (strpos($item, '/')) {
-        $item = str_replace('/', '', $item);
-      }
-    }
-    # construct
-    return new static([
-      'id'   => $item,
-      'func' => $func,
-      'args' => $args,
-      'bot'  => $bot,
-    ]);
-  }
-}
-# }}}
-class BotRequestCommand extends BotRequestInput # {{{
-{
-  static function construct(object $msg): self # {{{
-  {
-    # syntax: /<item>[ <data>][@<botname>]
-    static $EXP = '|^\/(([a-z][a-z0-9]+)([:/-]([a-z][a-z0-9]+)){0,8})( ([^@]{1,})){0,1}(@[a-z_]+bot){0,1}$|i';
-    try
-    {
-      # check size
-      if (($a = strlen($msg->text)) < 2 && $a > 200) {
-        throw Bot::error();
-      }
-      # parse command
-      if (!preg_match_all($EXP, $msg->text, $a)) {
-        throw Bot::error();
-      }
-      # extract
-      $item = strtolower($a[1][0]);
-      $data = $a[5][0];
-      $name = $a[7][0];
-      # check deep linking command (tg://<BOT_NAME>?start=<item>)
-      if ($item === 'start' && $data && !$name)
-      {
-        $item = strtolower($data);
-        $data = '';
-      }
-      # remove item separators [:],[-],[/]
-      if (strpos($item, ':')) {
-        $item = str_replace(':', '', $item);
-      }
-      elseif (strpos($item, '-')) {
-        $item = str_replace('-', '', $item);
-      }
-      elseif (strpos($item, '/')) {
-        $item = str_replace('/', '', $item);
-      }
-    }
-    catch (\Exception|\Error)
-    {
-      $item = null;
-      $data = '';
-      $name = '';
-    }
-    # construct
-    return new static([
-      'from' => $msg->from,
-      'chat' => $msg->chat,
-      'msg'  => $msg,
-      'item' => $item,
-      'data' => $data,
-      'name' => $name,
-    ]);
-  }
-  # }}}
-  function reply(object $user): bool # {{{
+  function reply(): bool # {{{
   {
     # prepare
     $bot = $user->bot;
@@ -1859,8 +2172,8 @@ class BotRequestCommand extends BotRequestInput # {{{
     $msg = $this->msg;
     # check
     if (!($item = $this->item) ||
-        ($this->isGroup && $this->name && $this->name !== $cfg->name) ||
-        (!$this->isGroup && $this->name))
+        ($user->isGroup && $this->name && $this->name !== $cfg->name) ||
+        (!$user->isGroup && $this->name))
     {
       # incorrect command
       if (!$user->isGroup && $cfg->wipeUserInput)
@@ -1872,21 +2185,44 @@ class BotRequestCommand extends BotRequestInput # {{{
     }
     # report
     $log->info($msg->text, 1);
-    # handle bot command
-    # TODO {{{
+    # check exists
+    if (!isset($bot->cmd->map[$item]))
+    {
+      # unknown item
+      if (!$user->isGroup || $this->name) {
+        $log->warn("item not found: $item");
+      }
+      if (!$user->isGroup && $cfg->wipeUserInput) {
+        $bot->api->deleteMessage($msg);
+      }
+      return true;
+    }
+    # send new item
+    $item = $bot->cmd->map[$item];
+    $item = $user->send($user->render($item, '', $this->args));
+    # cleanup
+    $cfg->wipeUserInput && ($item || !$user->isGroup) &&
+    $bot->api->deleteMessage($msg);
+    # complete
+    return true;
+  }
+  # }}}
+  function replyGlobal(): bool # {{{
+  {
+    return true;
     switch ($item) {
     case 'restart':
-      #$user->isAdmin && ($res = -1);
+      #$user->admin && ($res = -1);
       return true;
     case 'stop':
-      #$user->isAdmin && ($res =  1);
+      #$user->admin && ($res =  1);
       return true;
     case 'reset':
       return true;
       /***
       # {{{
       # check allowed
-      if (!$user->isAdmin)
+      if (!$user->admin)
       {
         $this->log("access denied: $text");
         return 1;
@@ -1912,55 +2248,64 @@ class BotRequestCommand extends BotRequestInput # {{{
       # }}}
       /***/
     }
-    # }}}
-    # handle item command
-    # check exists
-    if (!isset($bot->cmd->map[$item]))
-    {
-      # unknown item
-      if (!$user->isGroup || $this->name) {
-        $log->warn("item not found: $item");
-      }
-      if (!$user->isGroup && $cfg->wipeUserInput) {
-        $bot->api->deleteMessage($msg);
-      }
-      return true;
-    }
-    # send new item
-    $item = $bot->cmd->map[$item];
-    $item = $user->send($user->render($item, '', $data));
-    # cleanup
-    $cfg->wipeUserInput && ($item || !$user->isGroup) &&
-    $bot->api->deleteMessage($msg);
-    # complete
-    return true;
+  }
+  # }}}
+  function finit(): void # {{{
+  {
   }
   # }}}
 }
 # }}}
-class BotRequestCallback extends StasisConstruct # {{{
+class BotRequestCallback extends BotRequest # {{{
 {
-  static function init(object $query): ?object # {{{
+  function init(): bool # {{{
   {
-    if (!isset($query->message)) {
-      return null;
+    # prepare
+    $query = $this->data;
+    if (empty($data = $query->data)) {
+      return false;
     }
-    if (isset($query->game_short_name)) {
-      return BotRequestGame::init($query);
+    # parse callback
+    $item = '';
+    $func = '';
+    $args = '';
+    if ($a[0] === '!')
+    {
+      # simplified
+      # syntax: !<func>[ <args>]
+      if ($b = strpos($a, ' '))
+      {
+        $func = substr($a, 1, $b);
+        $args = substr($a, $b + 1);
+      }
+      else {
+        $func = substr($a, 1);
+      }
+      # determine item
+      # ...
     }
-    if (!isset($query->data)) {
-      return null;
+    else
+    {
+      # fully-fledged
+      # syntax: /<item>[!<func>][ <args>]
+      if ($b = strpos($a, ' '))
+      {
+        $args = substr($a, $b + 1);
+        $a = substr($a, 0, $b);
+      }
+      if ($b = strpos($a, '!'))
+      {
+        $func = substr($a, $b + 1);
+        $item = substr($a, 1, $b);
+      }
+      else {
+        $item = substr($a, 1);
+      }
     }
-    return new static([
-      'msg'   => $query->message,
-      'from'  => $query->from,
-      'chat'  => $query->message->chat,
-      'id'    => $query->id,
-      'data'  => $query->data,
-    ]);
+    return true;
   }
   # }}}
-  function reply(object $user): int # {{{
+  function reply(): bool # {{{
   {
     # prepare
     static $FUNC = 'answerCallbackQuery';
@@ -2050,26 +2395,29 @@ class BotRequestCallback extends StasisConstruct # {{{
     /***/
   }
   # }}}
-  function replyNop(object $api, int $id): void # {{{
+  function replyNop(): void # {{{
   {
     $api->send('answerCallbackQuery', [
-      'callback_query_id' => $id
+      'callback_query_id' => $this->id
     ]);
+  }
+  # }}}
+  function finit(): void # {{{
+  {
   }
   # }}}
 }
 # }}}
-class BotRequestGame extends StasisConstruct # {{{
+class BotRequestGame extends BotRequest # {{{
 {
-  static function init(object $query): ?self # {{{
+  function init(): bool # {{{
   {
-    return new static([
-    ]);
+    return false;
   }
   # }}}
-  function reply(object $user): int # {{{
+  function reply(): bool # {{{
   {
-    return 0;
+    return true;
     /***
     if (isset($q->game_short_name) &&
         ($a = $q->game_short_name))
@@ -2093,20 +2441,22 @@ class BotRequestGame extends StasisConstruct # {{{
     /***/
   }
   # }}}
-}
-# }}}
-class BotRequestInline extends StasisConstruct # {{{
-{
-  static function init(object $query): ?self # {{{
+  function finit(): void # {{{
   {
-    return new static([
-    ]);
   }
   # }}}
-  function reply(object $user): int # {{{
+}
+# }}}
+class BotRequestInline extends BotRequest # {{{
+{
+  function init(): bool # {{{
   {
-    $this->log('inline query!!!');
-    return 0;
+    return false;
+  }
+  # }}}
+  function reply(): bool # {{{
+  {
+    return true;
     /***
     $out = (string)rand();
     $results[] = [
@@ -2123,99 +2473,112 @@ class BotRequestInline extends StasisConstruct # {{{
     /***/
   }
   # }}}
+  function finit(): void # {{{
+  {
+  }
+  # }}}
 }
 # }}}
-###
-class BotUser extends StasisConstruct # {{{
+class BotUser # {{{
 {
-  static function construct(object $bot, object $req): ?self # {{{
+  static function construct(object $up): ?self # {{{
   {
     # prepare
-    $from = $req->from;
-    $chat = $req->chat;
-    # determine group name
-    if ($chat->type === 'channel') {
-      return null;
-    }
-    if ($chat->type === 'private') {
-      $group = '';
+    $bot  = $up->bot;
+    $from = $up->from;
+    $chat = $up->chat;
+    # determine group name and identifier
+    if ($chat &&
+        ($chat->type === 'group' ||
+         $chat->type === 'supergroup'))
+    {
+      $groupId   = $chat->id;
+      $groupName = isset($chat->title)
+        ? $chat->title
+        : $groupId;
+      if (isset($chat->username)) {
+        $groupName .= '@'.$chat->username;
+      }
     }
     else
     {
-      $a = isset($chat->title)
-        ? $chat->title
-        : $chat->id;
-      $b = isset($chat->username)
-        ? '@'.$chat->username
-        : '';
-      $group = $a.$b;
+      $groupId   = 0;
+      $groupName = '';
     }
-    # determine user name
-    $a = preg_replace('/[[:^print:]]/', '', trim($from->first_name));
-    $b = isset($from->username) ? '@'.$from->username : '';
-    $user = $a.$b;
+    # determine user name and identifier
+    $userId   = $from->id;
+    $userName = $from->first_name;
+    if (isset($from->username)) {
+      $userName .= '@'.$from->username;
+    }
     # create logger
-    $log = $group
-      ? $bot->log->new($group)->new($user)
-      : $bot->log->new($user);
+    $log = $groupId
+      ? $bot->log->new($groupName)->new($userName)
+      : $bot->log->new($userName);
     # determine bot admin
-    $isAdmin = in_array($from->id, $bot->cfg->admins);
+    $admin = in_array($userId, $bot->cfg->admins);
     # check masterbot access
-    if (!$isAdmin && $bot->master)
+    if (!$admin && $bot->master)
     {
       $log->warn('access denied');
       return null;
     }
     # TODO: determine group admin
     # ...
-    # determine language
-    if (!($lang = $bot->cfg->forceLang) &&
+    # determine user language
+    if (!($lang = $bot->cfg->lang) &&
         (!isset($from->language_code) ||
          !($lang = $from->language_code) ||
          !isset($bot->text->msg[$lang])))
     {
       $lang = 'en';
     }
-    # determine user directory
-    $dir = $group
-      ? $bot->dir->group.$chat->id.DIRECTORY_SEPARATOR
-      : $bot->dir->user.$from->id.DIRECTORY_SEPARATOR;
+    # determine storage directory
+    $dir = $groupId
+      ? $bot->dir->group.$groupId.DIRECTORY_SEPARATOR
+      : $bot->dir->user.$userId.DIRECTORY_SEPARATOR;
     if (!file_exists($dir) && !@mkdir($dir))
     {
       $log->error("failed to create: $dir");
       return null;
     }
     # construct
-    $user = new static([
-      'bot'      => $bot,
-      'request'  => $req,
-      'log'      => $log,
-      'id'       => $from->id,
-      'name'     => $user,
-      'isGroup'  => !!$group,
-      'isAdmin'  => $isAdmin,
-      'lang'     => $lang,
-      'dir'      => $dir,
-      'messages' => &$bot->text->msg[$lang],
-      'config'   => null,
-      'item'     => null,
-      'changed'  => false,
-    ]);
-    # attach configuration
-    if (!($user->config = BotUserConfig::construct($user))) {
-      return null;
-    }
-    # complete
-    return $user;
+    return new self(
+      $up, $userId, $groupId, $log,
+      $admin, $lang, $dir, $bot->text->msg[$lang]
+    );
   }
   # }}}
-  function reply(): bool # {{{
+  function __construct(# {{{
+    public ?object  $upd,
+    public int      $id,
+    public int      $gid,
+    public ?object  $log,
+    public bool     $admin,
+    public string   $lang,
+    public string   $dir,
+    public array    &$msg,
+    public ?object  $cfg = null
+  ) {}
+  # }}}
+  function init(): bool # {{{
   {
-    $res = $this->request->reply($this);
-    $this->config->destruct();
-    return $res;
+    # attach configuration
+    return ($this->cfg = BotUserConfig::construct($this))
+      ? true : false;
   }
   # }}}
+  function destruct(bool $ok): void # {{{
+  {
+    if ($this->upd)
+    {
+      $this->cfg && $this->cfg->destruct($ok);
+      $this->upd = $this->log = $this->cfg = null;
+    }
+  }
+  # }}}
+  ###
+  ###
   function render(object $item, string $func, string $data): ?object # {{{
   {
     # attach configuration and root
@@ -2304,31 +2667,31 @@ class BotUser extends StasisConstruct # {{{
     # }}}
     /***/
     # attach language specific texts
-    $s = &$item->struct;
-    if (isset($s['text'][$this->lang])) {
-      $item->text = &$s['text'][$this->lang];
+    $skel = &$item->skel;
+    if (isset($skel['text'][$this->lang])) {
+      $item->text = &$skel['text'][$this->lang];
     }
     else {
-      $item->text = &$s['text']['en'];
+      $item->text = &$skel['text']['en'];
     }
     # attach datafile
     $file = '';
-    if ($s['datafile'])
+    if ($skel['datafile'])
     {
       $file = $item->id.'.json';
-      $file = $s['datafile'] === 1
+      $file = $skel['datafile'] === 1
         ? $this->dir.$file
         : $this->bot->dir->data.$file;
       ###
-      $item->data = BotFiles::get_json($file);
+      $item->data = BotFiles::getJSON($file);
     }
-    # render messages
-    $item->msg = $item->render($this, $func, $data);
+    # render item messages
+    $item->render($this, $func, $data);
     # detach datafile
     if ($file && ($item->changed & 1) &&
-        !BotFiles::set_json($file, $item->data))
+        !BotFiles::setJSON($file, $item->data))
     {
-      $this->log->warn("set_json($file) failed");
+      $this->log->error("failed to save: $file");
     }
     # complete
     return $item;
@@ -2496,7 +2859,7 @@ class BotUser extends StasisConstruct # {{{
       return false;
     }
     # create new root
-    $root = BotUserConfigRoot::construct($this, $item);
+    $root = BotUserRoot::constructNew($this, $item);
     # send rendered messages
     foreach ($item->msg as &$a)
     {
@@ -2509,7 +2872,6 @@ class BotUser extends StasisConstruct # {{{
     $item->root && $this->delete($item->root);
     $this->config->setRoot($item->root = $root);
     # complete
-    $this->bot->log($item->id, 0, ['send']);
     return true;
   }
   # }}}
@@ -2575,93 +2937,31 @@ class BotUser extends StasisConstruct # {{{
     return false;
   }
   # }}}
-}
-# }}}
-class BotUserConfig extends StasisConstruct # {{{
-{
-  static function construct(object $user): ?self # {{{
-  {
-    # aquire a forced lock
-    if (!BotFiles::lock($file = $user->dir.'config.json', true))
-    {
-      $user->log->error("failed to lock: $file");
-      return null;
-    }
-    # construct
-    $conf = new static([
-      'user'  => $user,
-      'file'  => $file,
-      'roots' => [],
-      'items' => [],
-    ]);
-    # initialize
-    if ($data = BotFiles::get_json($file))
-    {
-      # load root descriptors
-      foreach ($data['/'] as &$v)
-      {
-        if ($k = BotUserConfigRoot::load($user, $v)) {
-          $conf->roots[] = $k;
-        }
-        else {# remove incorrect
-          $user->changed = true;
-        }
-      }
-      # load item configs
-      foreach ($data['*'] as $k => &$v) {
-        $conf->items[$k] = new BotUserConfigItem($user, $v);
-      }
-      unset($v);
-    }
-    else {# create empty file
-      $user->changed = true;
-    }
-    return $conf;
-  }
-  # }}}
-  function destruct(): void # {{{
-  {
-    if ($this->user)
-    {
-      if ($this->user->changed)
-      {
-        $this->user->changed = false;
-        BotFiles::set_json($this->file, [
-          '/' => $this->roots,
-          '*' => $this->items,
-        ]);
-      }
-      BotFiles::unlock($this->file);
-      $this->user = null;
-    }
-  }
-  function __destruct() {
-    $this->destruct();
-  }
-  # }}}
-  # api {{{
-  function getRoot(object $item): ?object
+  # [root] access
+  function getItemRoot(object $item): ?object # {{{
   {
     while (($root = $item)->parent) {}
-    foreach ($this->roots as $a)
+    foreach ($this->roots as $o)
     {
-      if ($a->root === $root) {
-        return $a;
+      if ($o->root === $root) {
+        return $o;
       }
     }
     return null;
   }
-  function getMessageRoot(int $msg): ?object
+  # }}}
+  function getMessageRoot(int $msgId): ?object # {{{
   {
-    foreach ($this->roots as $a)
+    foreach ($this->roots as $o)
     {
-      if (($b = array_search($msg, $a->msg, true)) !== false) {
-        return $a;
+      if (($i = array_search($msgId, $o->msg, true)) !== false) {
+        return $o;
       }
     }
     return null;
   }
-  function unsetRoot(object $root): void
+  # }}}
+  function unsetRoot(object $root): void # {{{
   {
     if (($a = array_search($root, $this->roots, true)) !== false)
     {
@@ -2669,58 +2969,153 @@ class BotUserConfig extends StasisConstruct # {{{
       $this->user->changed = true;
     }
   }
-  function setRoot(object $root): void
+  # }}}
+  function setRoot(object $root): void # {{{
   {
     array_unshift($this->roots, $root);
-    $this->user->changed = true;
-  }
-  function getItem(object $item): object
-  {
-    # create item configuration when accessed
-    if (!isset($this->items[$k = $item->id]))
-    {
-      $this->items[$k] = new BotUserConfigItem($this);
-      $this->user->changed = true;
-    }
-    return $this->items[$k];
-  }
-  function setItem(object $item, array $v): void
-  {
-    $this->items[$item->id] = new BotUserConfigItem($this, $v);
     $this->user->changed = true;
   }
   # }}}
 }
 # }}}
-class BotUserConfigRoot implements \JsonSerializable # {{{
+class BotUserConfig implements \ArrayAccess # {{{
 {
-  function __construct(
-    public object  $user, # BotUser
-    public array   &$msg, # message identifiers
-    public array   &$hash,# message hashes
-    public int     $time, # creation timestamp (seconds)
-    public object  $root, # root item
-    public object  $item  # current item
-  ) {}
-  static function construct(object $user, object $item): self # {{{
+  const FILE = 'config.json';
+  static function construct(object $user): ?self # {{{
   {
+    # try to lock:
+    # group is forced to retry, single user is not
+    $k = $user->gid ? strval($user->id) : '';
+    if (!BotFiles::lock($file = $user->dir.self::FILE, $k))
+    {
+      $user->log->error("failed to lock: $file");
+      return null;
+    }
     # prepare
-    while (($root = $item)->parent) {}
-    $msg  = [];
-    $hash = [];
+    $roots = [];
+    $items = [];
+    $changed = false;
+    $map = $user->upd->bot->cmd->map;
+    # load configuration data
+    if ($data = BotFiles::getJSON($file))
+    {
+      # item roots queue
+      foreach ($data['/'] as &$v)
+      {
+        if ($k = BotUserRoot::construct($user, $v)) {
+          $roots[] = $k;
+        }
+        else {
+          $changed = true;
+        }
+      }
+      # items map
+      foreach ($data['*'] as $k => &$v)
+      {
+        if (isset($map[$k])) {
+          $items[$k] = new BotUserConfigItem($user, $v);
+        }
+        else
+        {
+          $user->log->warn("item not found: $k");
+          $changed = true;
+        }
+      }
+    }
     # construct
     return new self(
-      $user, $msg, $hash, time(),
-      $root, $item
+      $user, $file, $roots, $items, $changed
     );
   }
   # }}}
-  static function load(object $user, array &$data): ?self # {{{
+  function __construct(# {{{
+    public ?object  $user,
+    public string   $file,
+    public array    $roots,
+    public array    $items,
+    public bool     $changed
+  ) {}
+  # }}}
+  function destruct(bool $save): void # {{{
+  {
+    if ($this->user)
+    {
+      if ($save && $this->changed)
+      {
+        $data = [
+          '/' => $this->roots,
+          '*' => $this->items,
+        ];
+        if (!BotFiles::setJSON($this->file, $data)) {
+          $this->user->log->error('failed to save: '.$this->file);
+        }
+      }
+      BotFiles::unlock($this->file);
+      $this->user = null;
+    }
+  }
+  # }}}
+  # [item] access  {{{
+  function offsetExists(mixed $item): bool {
+    return isset($this->items[$item->id]);
+  }
+  function offsetGet(mixed $item): mixed
+  {
+    if (!isset($this->items[$id = $item->id]))
+    {
+      $this->items[$id] = new BotUserConfigItem($this);
+      $this->changed = true;
+    }
+    return $this->items[$id];
+  }
+  function offsetSet(mixed $item, mixed $config): void
+  {
+    $this->items[$item->id] = $config;
+    $this->changed = true;
+  }
+  function offsetUnset(mixed $item): void
+  {
+    unset($this->items[$item->id]);
+    $this->changed = true;
+  }
+  # }}}
+}
+# }}}
+class BotUserConfigItem implements \ArrayAccess, \JsonSerializable # {{{
+{
+  function __construct(
+    public object $cfg,
+    public array  &$data = []
+  ) {}
+  function jsonSerialize(): array {
+    return $this->data;
+  }
+  function offsetExists(mixed $k): bool {
+    return isset($this->data[$k]);
+  }
+  function offsetGet(mixed $k): mixed {
+    return isset($this->data[$k]) ? $this->data[$k] : null;
+  }
+  function offsetSet(mixed $k, mixed $v): void
+  {
+    $this->data[$k] = $v;
+    $this->cfg->changed = true;
+  }
+  function offsetUnset(mixed $k): void
+  {
+    unset($this->data[$k]);
+    $this->cfg->changed = true;
+  }
+}
+# }}}
+class BotUserRoot implements \JsonSerializable # {{{
+{
+  static function construct(object $user, array &$data): ?self # {{{
   {
     # prepare
     $map  = $user->bot->cmd->map;
-    $root = $data[3];
-    $item = $data[4];
+    $root = $data[0];
+    $item = $data[1];
     # check
     if (!isset($map[$root]))
     {
@@ -2734,353 +3129,438 @@ class BotUserConfigRoot implements \JsonSerializable # {{{
     }
     # construct
     return new self(
-      $user, $data[0], $data[1], $data[2],
-      $map[$root], $map[$item],
+      $user, $map[$root], $map[$item],
+      $data[2], $data[3], $data[4]
     );
   }
+  # }}}
+  static function constructNew(object $user, object $item): self # {{{
+  {
+    # prepare
+    while (($root = $item)->parent) {}
+    $msg  = [];
+    $hash = [];
+    # construct
+    return new self(
+      $user, $root, $item, $msg, $hash, time()
+    );
+  }
+  # }}}
+  function __construct(# {{{
+    public object  $user, # BotUser
+    public object  $root, # root item
+    public object  $item, # current item
+    public array   &$msg, # message identifiers
+    public array   &$hash,# message hashes
+    public int     $time  # creation timestamp (seconds)
+  ) {}
   # }}}
   function jsonSerialize(): array # {{{
   {
     return [
-      $this->msg, $this->hash, $this->time,
-      $this->root->id, $this->item->id
+      $this->root->id, $this->item->id,
+      $this->msg, $this->hash, $this->time
     ];
   }
   # }}}
 }
 # }}}
-class BotUserConfigItem implements \ArrayAccess, \JsonSerializable # {{{
+# item (response handlers)
+abstract class BotItem implements \JsonSerializable # {{{
 {
-  function __construct(
-    public object $user,
-    public array  &$data = []
-  )
-  {}
-  function jsonSerialize(): array {
-    return $this->data;
-  }
-  function offsetExists(mixed $k): bool {
-    return isset($this->data[$k]);
-  }
-  function offsetGet(mixed $k): mixed {
-    return isset($this->data[$k]) ? $this->data[$k] : null;
-  }
-  function offsetSet(mixed $k, mixed $v): void
+  const DATAFILE = 0;# 0=none,1=private,2=public
+  static function construct(array $skel, ?object $parent): object # {{{
   {
-    # ...
-    #$this->user->changed = true;
-  }
-  function offsetUnset(mixed $k): void
-  {
-    unset($this->data[$k]);
-    $this->user->changed = true;
-  }
-}
-# }}}
-###
-abstract class BotItem extends StasisConstruct implements \JsonSerializable # {{{
-{
-  static $DATAFILE = 0;# 0=none, 1=private, 2=public
-  static $ERROR = null;# exception
-  static function construct(# {{{
-    object  $bot,
-    string  $name,
-    array   &$struct,
-    ?object $parent,
-    bool    $isRefined
-  ):?self
-  {
-    # prepare
-    $id = $parent ? $parent->id.$name : $name;
-    $base = '\\'.__NAMESPACE__.'\\BotItem';
-    $type = $base.'_'.$id;
-    # initialize item structure
-    # {{{
-    if (!$isRefined)
-    {
-      # initialize texts
-      # correct empty or primary language
-      if (!isset($struct['text'])) {
-        $struct['text'] = ['en'=>[]];
-      }
-      elseif (!isset($struct['text']['en'])) {
-        $struct['text'] = ['en'=>$struct['text']];
-      }
-      # correct absent languages (copy primary)
-      foreach ($bot->text->msg as $a => &$b)
-      {
-        if (!isset($struct['text'][$a])) {
-          $struct['text'][$a] = $struct['text']['en'];
-        }
-      }
-      unset($b);
-      # render emojis and captions
-      foreach ($struct['text'] as &$a)
-      {
-        foreach ($a as &$b)
-        {
-          if (strpos($b, "\r") !== false) {
-            $b = str_replace("\r\n", "\n", $b);
-          }
-          $b = $bot->tp->render($b, '{: :}', BotTexts::$EMOJI);
-          $b = $bot->tp->render($b, '{! !}', $bot->text->btn);
-        }
-      }
-      unset($a, $b);
-      # initialize other props
-      $struct[$a = 'datafile'] = isset($struct[$a])
-        ? $struct[$a]
-        : self::$DATAFILE;
-      $struct[$a = 'handler'] = $b = isset($struct[$a])
-        ? $struct[$a]
-        : 0;
-      # check handler
-      if ($b && !function_exists($type))
-      {
-        $bot->logWarn("handler function not found: $type");
-        return null;
-      }
+    # construct self
+    $item = new static($skel['id'], $skel, $parent);
+    if (!isset($skel[$a = 'items'])) {
+      return $item;
     }
-    # }}}
-    # construct
-    $item = new static([
-      'parent'  => $parent,
-      'id'      => $id,
-      'name'    => $name,
-      'struct'  => $struct,
-      'handler' => ($struct['handler'] ? $type : ''),
-      'items'   => null,
-      'config'  => null,
-      'root'    => null,
-      'text'    => null,
-      'data'    => null,
-      'msg'     => null,
-      'changed' => 0,# bitmask: 1=data,2=struct
-    ]);
     # construct children
-    if (isset($struct['items']))
+    foreach ($skel[$a] as &$child)
     {
-      foreach ($struct['items'] as $a => &$b)
-      {
-        $type = $base.(isset($b['type']) ? ucfirst($b['type']) : 'Img');
-        if (!$isRefined && !class_exists($type, false))
-        {
-          $bot->log->warn("class not found: $type");
-          return null;
-        }
-        if (($b = $type::construct($bot, $a, $b, $item, $isRefined)) === null)
-        {
-          $bot->log->warn("failed to construct $type::$a");
-          return null;
-        }
-      }
-      unset($b);
-      $item->items = &$struct['items'];
+      $class = BotCommands::NS.$child['type'];
+      $child = $class::construct($child, $item);
     }
+    # complete
+    $item->items = &$skel[$a];
     return $item;
   }
   # }}}
+  function __construct(# {{{
+    public string   $id,
+    public array    &$skel,
+    public ?object  $parent,
+    public ?array   $items   = null,
+    public ?object  $user    = null,
+    public ?object  $config  = null,
+    public ?object  $root    = null,
+    public ?array   $text    = null,
+    public ?array   $data    = null,
+    public ?array   $msg     = null,
+    public int      $changed = 0 # bitmask:1=data,2=skel
+  ) {}
+  # }}}
   function jsonSerialize(): array # {{{
   {
-    return $this->struct;
+    return $this->skel;
   }
   # }}}
-  function breadcrumb(): string # {{{
+  ###
+  function set(object $user): void # {{{
   {
-    $bread = '/'.$this->name;
-    while ($crumb = $this->parent) {
-      $bread = '/'.$crumb->name.$bread;
+    # attach base
+    $this->user   = $user;
+    $this->config = $user->config->getItem($this);
+    $this->root   = $user->config->getRoot($this);
+    $this->text   = &$this->skel['text'][$user->lang];
+    #$this->log    = $user->log->new();
+  }
+  # }}}
+  function rrrender(string $func, string $args): ?object # {{{
+  {
+    /***
+    # {{{
+    switch ($func) {
+    case 'inject':
+      # {{{
+      # remove current item
+      $this->itemDetach($item);
+      # check injection origin
+      if (!isset($args['root']) ||
+          !($a = $args['root']) ||
+          !isset($a['config']['_msg']) ||
+          !$a['config']['_msg'])
+      {
+        $this->logError('no injection origin');
+        return 0;
+      }
+      # copy origin configuration
+      $b = &$a['config'];
+      $c = &$root['config'];
+      $c['_from'] = $args['id'];
+      $c['_msg']  = $b['_msg'];
+      $c['_time'] = $b['_time'];
+      $c['_item'] = $c['_hash'] = '';# not the same item
+      # clear origin
+      $b['_msg']  = 0;
+      $b['_time'] = 0;
+      $b['_hash'] = '';
+      unset($b, $c);
+      # replace active root
+      $b = &$this->user->config['/'];
+      if (($c = array_search($a['id'], $b, true)) !== false) {
+        $b[$c] = $item['root']['id'];
+      }
+      unset($b, $c);
+      # set changed
+      $this->user->changed = true;
+      # cleanup
+      $func = '';
+      # }}}
+      break;
+    case 'up':
+      # {{{
+      # check
+      if ($item['parent'])
+      {
+        # CLIMB UP THE TREE (replace with parent)
+        return $this->itemRender($item = $item['parent']);
+      }
+      if (isset($root['config']['_from']))
+      {
+        # EJECT BACK TO THE ORIGIN
+        # copy root parameters
+        $a = &$root['config'];
+        $b = $a['_from'];
+        $c = &$this->user->config[$b];
+        $c['_msg']  = $a['_msg'];
+        $c['_time'] = $a['_time'];
+        $c['_item'] = $c['_hash'] = '';# not the same item
+        $a['_msg']  = $a['_time'] = 0;
+        unset($a['_from']);
+        unset($a, $c);
+        # rename active root
+        $c = &$this->user->config['/'];
+        if (($a = array_search($root['id'], $c, true)) !== false) {
+          $c[$a] = $b;
+        }
+        unset($a, $c);
+        # set changed
+        $this->user->changed = true;
+        # replace item and recurse
+        return $this->itemRender($item = $this->itemGet($b));
+      }
+      # }}}
+      # fallthrough otherwise..
+    case 'close':
+      $this->itemDetach($item);
+      # fallthrough..
+    case 'nop':
+      return -1;
     }
-    return $bread;
+    # }}}
+    /***/
+    # attach datafile
+    $file = '';
+    if ($skel['datafile'])
+    {
+      $file = $item->id.'.json';
+      $file = $skel['datafile'] === 1
+        ? $this->dir.$file
+        : $this->bot->dir->data.$file;
+      ###
+      $item->data = BotFiles::getJSON($file);
+    }
+    # render item messages
+    $item->render($func, $args);
+    # detach datafile
+    if ($file && ($item->changed & 1) &&
+        !BotFiles::setJSON($file, $item->data))
+    {
+      $this->log->error("failed to save: $file");
+    }
+    # complete
+    return $item;
   }
   # }}}
 }
 # }}}
 class BotItemImg extends BotItem # {{{
 {
-  function render(object $user, string $func, ?array $args): ?array # {{{
+  const TITLE_DEFS = [
+    640, 160, # width,height
+    64,       # maximal header font-size
+    16,       # breadcrumb font-size
+    140, 32,  # breadcrumb coordinates
+  ];
+  function render(object $user, string $func, string $args): bool # {{{
   {
     # prepare
     $bot = $user->bot;
-    $log = $user->log;
+    $log = $user->log->new('img');
     $cfg = $bot->cfg;
-    $s   = &$this->struct;
-    $msg = [];
-    # invoke handler
-    if (($a = $this->handler) &&
+    $sty = $cfg->style;
+    # invoke custom handler
+    if (($a   = $this->handler) &&
         ($msg = $a($user, $this, $func, $args)) === null)
     {
-      $bot->logWarn("handler failed: $a");
-      return null;
+      $log->error("$a() failed");
+      return false;
     }
-    # determine image
+    else {
+      $msg = [];
+    }
+    # do standard rendering
+    # set image
     if (!($b = isset($msg[$a = 'imageId']))) {
       $msg[$a] = $user->lang.'-'.$this->id;
     }
     while (!isset($msg[$c = 'image']))
     {
-      # check cached
+      # check cache
       if ($d = $bot->file->getId($a = $msg[$a]))
       {
         $msg[$c] = $d;
         break;
       }
-      # check file specified by handler
-      if ($b)
+      # check dynamic file
+      if ($b && ($d = $bot->file->getImage($a)))
       {
-        foreach ($bot->dir->img as &$d)
-        {
-          if (file_exists($e = "$d$a.jpg"))
-          {
-            $msg[$c] = BotApiFile::construct($e, false);
-            break 2;
-          }
-        }
-      }
-      # check title
-      if (isset($this->text['@']))
-      {
-        if (!($msg[$c] = self::title(
-          $this->text['@'],
-          $cfg->showBreadcrumb ? $this->breadcrumb() : '',
-          $cfg->colors[$a = 'title'],
-          $cfg->fonts[$a]
-        )))
-        {
-          $bot->logException(self::$ERROR);
-          return null;
-        }
+        $msg[$c] = BotApiFile::construct($d, false);
         break;
       }
-      # check file
-      if (!$b)
+      # check item title
+      if (isset($this->text['@']))
       {
-        foreach ($user->bot->dir->img as &$d)
-        {
-          if (file_exists($e = "$d$a.jpg") ||
-              file_exists($e = "$d$b.jpg"))
-          {
-            $msg[$c] = BotApiFile::construct($e, false);
-            break 2;
-          }
+        # create styled texts
+        if (!($a = $style->text($this->text['@'], 0))) {
+          return false;
         }
+        $b = $cfg->useBreadcrumb
+          ? $style->text($this->skel['path'], 1)
+          : null;
+        # create temporary image file
+        $d = self::title($style->background, $a, $b);
+        if ($d instanceof BotError)
+        {
+          $log->exception($d);
+          return false;
+        }
+        # done
+        $msg[$c] = $d;
+        break;
       }
-      # use item name as title
-      if (!($msg[$c] = self::title(
-        $this->name,
-        $cfg->showBreadcrumb ? $this->breadcrumb() : '',
-        $cfg->colors[$a = 'title'],
-        $cfg->fonts[$a]
-      )))
+      # check static file
+      if (!$b && ($d = $bot->file->getImage($a)))
       {
-        $bot->logException(self::$ERROR);
-        return null;
+        $msg[$c] = BotApiFile::construct($d, false);
+        break;
       }
+      # render item name
+      # create styled texts
+      if (!($a = $style->text($this->name, 0))) {
+        return false;
+      }
+      $b = $cfg->useBreadcrumb
+        ? $style->text($this->skel['path'], 1)
+        : null;
+      # create temporary image file
+      $d = self::title($style->background, $a, $b);
+      if ($d instanceof BotError)
+      {
+        $log->exception($d);
+        return false;
+      }
+      # done
+      $msg[$c] = $d;
       break;
     }
-    # determine content and inline markup
+    # set content
     if (!isset($msg[$a = 'text'])) {
       $msg[$a] = isset($this->text['.']) ? $this->text['.'] : '';
     }
-    if (!isset($msg[$a = 'markup'])) {
-      $msg[$a] = isset($s[$a]) ? $user->markup($this, $s[$a]) : '';
+    # set inline markup
+    if (!isset($msg[$a = 'markup']))
+    {
+      $msg[$a] = isset($this->skel[$a])
+        ? $user->markup($this, $this->skel[$a])
+        : '';
     }
     # complete
     return [$msg];
   }
   # }}}
-  static function title( # {{{
-    string  $header,
-    string  $bread,
-    array   $color, # [foreground<RGB>,background<RGB>]
-    array   $font,  # [header,breadcrumb]
-    int     $asFile = 1 # 0=<image>,1=BotApiFile(temporary),2=BotApiFile(persistent)
-  ):?object
+  function title(string $text): object # {{{
   {
-    static $MAX_FONTSIZE = 64;#72;
+    # 
+    # create styled texts
+    if (!($a = $style->text($text, 0))) {
+      return false;
+    }
+    $b = $cfg->useBreadcrumb
+      ? $style->text($this->skel['path'], 1)
+      : null;
+    # create temporary image file
+    $d = self::title($style->background, $a, $b);
+    if ($d instanceof BotError)
+    {
+      $log->exception($d);
+      return false;
+    }
+    # create file
+    if ($asFile)
+    {
+      if (!($a = tempnam(sys_get_temp_dir(), 'img')) ||
+          !imagejpeg($img, $a))
+      {
+        throw BotError::text("imagejpeg($a) failed");
+      }
+      imagedestroy($img);
+      $img = BotApiFile::construct($a, ($asFile === 1));
+    }
+    # complete
+    return $img;
+  }
+  # }}}
+  static function titleNew(array $c): object # {{{
+  {
     try
     {
-      # prepare {{{
       # create image
-      if (($img = @imagecreatetruecolor(640, 160)) === false) {
-        throw Bot::error('imagecreatetruecolor() failed');
+      $x = self::TITLE_DEFS[0];
+      $y = self::TITLE_DEFS[1];
+      if (($img = @imagecreatetruecolor($x, $y)) === false) {
+        throw BotError::text('imagecreatetruecolor() failed');
       }
-      # allocate colors
-      $fg = $color[0];
-      $bg = $color[1];
-      if (($fg = imagecolorallocate($img, $fg[0], $fg[1], $fg[2])) === false ||
-          ($bg = imagecolorallocate($img, $bg[0], $bg[1], $bg[2])) === false)
-      {
-        throw Bot::error('imagecolorallocate() failed');
+      # allocate color
+      if (($c = imagecolorallocate($img, $c[0], $c[1], $c[2])) === false) {
+        throw BotError::text("imagecolorallocate() failed");
       }
       # fill the background
-      if (!imagefill($img, 0, 0, $bg)) {
-        throw Bot::error('imagefill() failed');
+      if (!imagefill($img, 0, 0, $c)) {
+        throw BotError::text('imagefill() failed');
       }
-      # }}}
-      # draw header {{{
-      if ($header)
-      {
-        # header should fit into x:140-500,y:0-160 area, so
-        # determine optimal font size (in points not pixels? -seems not)
-        $size = $MAX_FONTSIZE;
-        while ($size > 6)
-        {
-          # determine bounding box
-          if (!($a = imageftbbox($size, 0, $font[0], $header))) {
-            throw Bot::error('imageftbbox() failed');
-          }
-          # check it fits width and height
-          if ($a[2] - $a[0] <= 360 &&
-              $a[1] - $a[7] <= 160)
-          {
-            break;
-          }
-          # reduce and retry
-          $size -= 2;
-        }
-        # determine start coordinates (center align)
-        $x = 140 + intval((360 - $a[2]) / 2);
-        #$y = 160 / 2 + intval(($a[1] - $a[7]) / 2) - 8;
-        $y = 160 / 2 + 24;
-        # draw
-        if (!imagefttext($img, $size, 0, $x, $y, $fg, $font[0], $header)) {
-          throw Bot::error('imagefttext() failed');
-        }
-      }
-      # }}}
-      # draw breadcrumb {{{
-      if ($bread)
-      {
-        $a = (count($font) > 1) ? $font[1] : $font[0];
-        $x = 140;
-        $y = 32;
-        if (!imagefttext($img, 16, 0, $x, $y, $fg, $a, $bread)) {
-          throw Bot::error('imagefttext() failed');
-        }
-      }
-      # }}}
-      # create file {{{
-      if ($asFile)
-      {
-        if (!($a = tempnam(sys_get_temp_dir(), 'img')) ||
-            !imagejpeg($img, $a))
-        {
-          throw Bot::error("imagejpeg($a) failed");
-        }
-        imagedestroy($img);
-        $img = BotApiFile::construct($a, ($asFile === 1));
-      }
-      # }}}
     }
-    catch (\Exception|\Error $e)
+    catch (\Throwable $e)
     {
-      self::$ERROR = $e;
-      if ($img)
+      $img && imagedestroy($img);
+      $img = BotError::from($e);
+    }
+    return $img;
+  }
+  # }}}
+  static function titleDrawHeader(object $img, array $text): object # {{{
+  {
+    try
+    {
+      # prepare
+      $color = $text[2];
+      $font  = $text[1];
+      $size  = self::TITLE_DEFS[2];
+      $text  = $text[0];
+      # header should fit into x:140-500,y:0-160 area, so
+      # determine optimal font size (in points not pixels? -seems not)
+      while ($size > 6)
       {
-        imagedestroy($img);
-        $img = null;
+        # determine bounding box
+        if (!($a = imageftbbox($size, 0, $font, $text))) {
+          throw BotError::text('imageftbbox() failed');
+        }
+        # check it fits width and height
+        if ($a[2] - $a[0] <= 360 &&
+            $a[1] - $a[7] <= 160)
+        {
+          break;
+        }
+        # reduce and retry
+        $size -= 2;
       }
+      # allocate color
+      if (($color = imagecolorallocate($img, $color[0], $color[1], $color[2])) === false) {
+        throw BotError::text("imagecolorallocate() failed");
+      }
+      # determine start coordinates (center align)
+      $x = 140 + intval((360 - $a[2]) / 2);
+      #$y = 160 / 2 + intval(($a[1] - $a[7]) / 2) - 8;
+      $y = 160 / 2 + 24;
+      # draw
+      if (!imagefttext($img, $size, 0, $x, $y, $color, $font, $text)) {
+        throw BotError::text('imagefttext() failed');
+      }
+    }
+    catch (\Throwable $e)
+    {
+      $img && imagedestroy($img);
+      $img = BotError::from($e);
+    }
+    return $img;
+  }
+  # }}}
+  static function titleDrawText(object $img, array $text): object # {{{
+  {
+    try
+    {
+      # prepare
+      $color = $text[2];
+      $font  = $text[1];
+      $size  = self::TITLE_DEFS[3];
+      $text  = $text[0];
+      # allocate color
+      if (($color = imagecolorallocate($img, $color[0], $color[1], $color[2])) === false) {
+        throw BotError::text("imagecolorallocate() failed");
+      }
+      # draw text
+      $x = 140;
+      $y = 32;
+      if (!imagefttext($img, $size, 0, $x, $y, $color, $font, $text)) {
+        throw BotError::text('imagefttext() failed');
+      }
+    }
+    catch (\Throwable $e)
+    {
+      $img && imagedestroy($img);
+      $img = BotError::from($e);
     }
     return $img;
   }
@@ -3480,9 +3960,9 @@ class BotItemTxt extends BotItem # {{{
 # }}}
 class BotItemList extends BotItem # {{{
 {
-  static $DATAFILE = 1;
+  const DATAFILE = 1;
   # data {{{
-  static public $template = [
+  static $template = [
     'en' => # {{{
     '
 page <b>{{page}}</b> of {{page_count}} ({{item_count}})
@@ -3710,7 +4190,7 @@ page <b>{{page}}</b> of {{page_count}} ({{item_count}})
 # }}}
 class BotItemForm extends BotItem # {{{
 {
-  static $DATAFILE = 1;
+  const DATAFILE = 1;
   static function render($bot, &$item, $func, $args) # {{{
   {
     # prepare {{{

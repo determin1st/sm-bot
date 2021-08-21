@@ -1,6 +1,6 @@
 <?php
 namespace SM;
-function BotItem_startbots( # {{{
+function BotItem_zzz(# {{{
   object $user,
   object $item,
   string $func,
