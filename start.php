@@ -12,7 +12,7 @@ elseif (isset($argc) && isset($argv))
     SM\Bot::start();# master
   }
   elseif ($argc === 2) {
-    SM\Bot::start($argv[1]);# slave
+    SM\Bot::start(intval($argv[1]));# slave
   }
   elseif ($argc === 3) {
     # TODO: task
