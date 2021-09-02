@@ -18,5 +18,5 @@ elseif (isset($argc) && isset($argv))
     # TODO: task
   }
 }
-exit(10);
+exit(5);# not handled
 ?>
