@@ -15,11 +15,13 @@
       'bots' => # {{{
       [
         'type' => 'list',
-        'opts' => [
+        'config' => [
           'rows'  => 4,
-          'cols'  => 1,
           'order' => 'order',
           'desc'  => true,
+          'title' => [
+            'color' => [40,40,80],
+          ],
         ],
         'markup' => [
           '.' => [['!prev','!add','!next'],['!up']],
