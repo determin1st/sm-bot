@@ -43,8 +43,25 @@
       # }}}
       'tests' =>
       [
-        'markup' => [['!up']],
-        'text'   => ['@'=>'simple tests'],
+        'markup' => [['t1','t2','t3'],['!up']],
+        'text' => ['@'=>'simple tests'],
+        'items' => [
+          't1' =>
+          [
+            'title' => ['color' => [40,40,80]],
+            'markup' => [['!up']],
+          ],
+          't2' =>
+          [
+            'image' => ['file' => 'logo.jpg'],
+            'markup' => [['!up']],
+          ],
+          't3' =>
+          [
+            'title' => ['file' => 'block-640x160.jpg'],
+            'markup' => [['!up']],
+          ],
+        ],
       ],
     ],
   ],
