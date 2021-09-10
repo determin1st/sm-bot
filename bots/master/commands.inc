@@ -14,24 +14,33 @@
     'items' => [
       'bots' => # {{{
       [
-        'type' => 'list',
+        'type' => 'List',
         'config' => [
-          'rows'  => 4,
+          #'rows'  => 4,
           'order' => 'order',
-          'desc'  => true,
-          'title' => [
-            'color' => [40,40,80],
-          ],
+          #'desc'  => true,
         ],
         'markup' => [
-          '.' => [['!prev','!add','!next'],['!up']],
+          'head' => [['!create','!refresh']],
+        ],
+        'caps' => [
+          'listItem' => '
+          {{#isRunning}}{:zap:}{{/isRunning}}
+          {{type}}
+          {:white_small_square:}
+          {{name}}
+          ',
         ],
         'text' => [
-          'add' => 'add',
-          'name' =>
-          '{{bot}}{{#up}}{:zap:}{{|}}{:white_small_square:}{{/up}}{{name}}',
+          'en' => [
+            '@'   => 'bots',
+          ],
+          'ru' => [
+            '@'   => 'боты',
+          ],
         ],
-        'items' => [
+        'items' =>
+        [
           'bot' => [
             'markup'=> [['!kek'],[' '],['!up']],
             'text'=> [

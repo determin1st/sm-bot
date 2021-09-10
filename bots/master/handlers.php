@@ -1,56 +1,58 @@
 <?php
 namespace SM;
-function BotItem_zzz(# {{{
-  object $user,
-  object $item,
-  string $func,
-  ?array $args,
-):?array
+function BotItem_startbots(object $item): ?array # {{{
 {
-  return null;
   # prepare
-  $lang = $bot->user->lang;
-  $text = &$item['text'][$lang];
-  $datadir = $bot->datadir.'..'.DIRECTORY_SEPARATOR;
-  # get directory list
-  if (($a = @scandir($datadir, SCANDIR_SORT_DESCENDING)) === false)
+  $bot  = $item->bot;
+  $data = [];
+  # determine data root
+  $dir = $bot->dir->data;
+  $dir = substr($dir, 0, 1 + strrpos($dir, DIRECTORY_SEPARATOR, -2));
+  # get bot directories
+  if (($list = @scandir($dir, SCANDIR_SORT_DESCENDING)) === false)
   {
-    $bot->logError("scandir($datadir) failed");
-    return false;
+    $item->log->error("scandir($dir) failed");
+    return null;
   }
-  # refine
-  $c = [];
-  $i = 0;
-  foreach ($a as $b)
+  # iterate and create data
+  foreach ($list as $id)
   {
-    if ($b[0] !== '.')
-    {
-      $file0 = $datadir.$b.DIRECTORY_SEPARATOR;
-      $file1 = $file0.'o.json';
-      $file0 = $file0.'o.lock';
-      $name = trim($text['name']);
-      $isUp = file_exists($file0);
-      if (!($info = json_decode(file_get_contents($file1), true))) {
-        continue;
-      }
-      $name = $bot->tp->render($name, [
-        'up'   => $isUp,
-        'id'   => $b,
-        'name' => $info['name'],
-        'bot'  => (isset($info['bot']) ? $info['bot'] : $b),
-      ]);
-      $c[] = [
-        'id'    => $b,
-        'type'  => 'bot',
-        'order' => ($isUp ? 1000+$i : $i),
-        'name'  => $name,
-      ];
-      $i++;
+    # skip special directories ('.' or '..')
+    if ($id[0] === '.') {
+      continue;
     }
+    # determine config file path
+    $dirData = $dir.$id.DIRECTORY_SEPARATOR;
+    $fileCfg = $dirData.BotConfig::FILE_JSON;
+    # read bot configuration
+    if (!($cfg = $bot->file->getJSON($fileCfg))) {
+      continue;
+    }
+    # determine masterbot
+    if ($isMaster = ($id === 'master'))
+    {
+      $id = $cfg['token'];
+      $id = substr($id, 0, strpos($id, ':'));
+    }
+    # to determine if bot is running,
+    # check configuration is locked
+    $isRunning = file_exists($fileCfg.'.lock');
+    # create ascending order index:
+    # master => running => type => name
+    $order  = $isMaster ? '0' : '1';
+    $order .= $isRunning ? '0' : '1';
+    $order .= $cfg['source'].$cfg['name'];
+    # create element
+    $data[] = [
+      'id'    => $id,
+      'name'  => $cfg['name'],
+      'order' => $order,
+      'type'  => $cfg['source'],
+      'isRunning' => $isRunning,
+    ];
   }
   # done
-  $item['data'] = &$c;
-  return true;
+  return $data;
 }
 # }}}
 ?>

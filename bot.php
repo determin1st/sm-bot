@@ -400,9 +400,9 @@ class BotConfig # {{{
       #'replyFailed' => false,
     ],
     'BotRequestCallback' => [
-      'replyBad'     => true,# incorrect data
-      'replyUnknown' => true,# item not found
-      'replyFast'    => true,# reply before rendered
+      'replyBad'         => true,# incorrect data
+      'replyUnknown'     => true,# item not found
+      'replyFast'        => true,# reply before rendered
     ],
     'BotImgMessage' => [
       'placeholder' => [
@@ -434,11 +434,18 @@ class BotConfig # {{{
       ],
     ],
     'BotListItem' => [
-      'cols'  => 1,
-      'rows'  => 8,
-      'flexy' => true,
-      'order' => 'id',
-      'desc'  => false,
+      'cols'      => 1,# columns in markup
+      'rows'      => 8,# rows in markup
+      'flexy'     => true,# hide empty rows
+      'order'     => 'id',# order tag name
+      'desc'      => false,# descending order
+      'cmd'       => '',# nop, display only
+      'timeout'   => 0,# data refresh timeout (sec), 0=always
+      'markup'    => [
+        'head'    => [],
+        'foot'    => [['!prev','!next'],['!up']],
+        'empty'   => [['!up']],
+      ],
     ],
     # }}}
   ];
@@ -1315,8 +1322,8 @@ class BotApiFile extends \CURLFile # {{{
 # }}}
 class BotText implements \ArrayAccess # {{{
 {
-  const FILE_JSON = ['messages.json', 'buttons.json'];
-  const FILE_INC  = ['messages.inc',  'buttons.inc'];
+  const FILE_INC  = ['texts.inc','captions.inc'];
+  const FILE_JSON = ['texts.json','captions.json'];
   const EMOJI = [
     # {{{
     'arrow_up'         => "\xE2\xAC\x86",
@@ -1376,322 +1383,114 @@ class BotText implements \ArrayAccess # {{{
     'up'               => "\xF0\x9F\x86\x99",
     'vs'               => "\xF0\x9F\x86\x9A",
     'zap'              => "\xE2\x9A\xA1",
-    # }}}
-  ];
-  static $MESSAGES = [
-    'en' => [# {{{
-      'play'      => 'play',
-      'close'     => 'close',
-      'op-fail'   => '{:exclamation:} operation failed',
-      'cmd-fail'  => '{:exclamation:} command failed',
-      'no-game'   => '{:no_entry_sign:} game not available',
-      'not-found' => 'not found',
-      'add'       => 'add',
-      'empty'     => 'empty',
-      6 => # FORM template {{{
-      '
-{{#desc}}
-<i>Description:</i>{{br}}
-{{desc}}{{br}}
-{{br}}
-{{/desc}}
-<i>Parameters:</i>{{br}}
-{{#fields}}
-{{#s0}}
-  {{#before}}
-    {{#valueLen}}
-      {:green_circle:} {{name}}: {{value}}
-    {{/valueLen}}
-    {{^valueLen}}
-      {{#required}}{:yellow_circle:} {{/required}}
-      {{^required}}{:green_circle:} {{/required}}
-      {{name}} -
-    {{/valueLen}}
-  {{/before}}
-  {{#current}}
-    {:white_small_square:} <b>{{name}}: </b>
-    {{#valueLen}}<code>&lt;</code>{{value}}<code>&gt;</code>{{/valueLen}}
-    {{^valueLen}}<code>&lt;{{hint}}&gt;</code>{{/valueLen}}
-  {{/current}}
-  {{#after}}
-    {:black_small_square:} {{name}}
-    {{#valueLen}}: {{value}}{{/valueLen}}
-  {{/after}}
-  {{br}}
-{{/s0}}
-{{#s1}}
-  {:green_circle:} {{name}}
-  {{#valueLen}}: <b>{{value}}</b>{{/valueLen}}
-  {{^valueLen}} -{{/valueLen}}
-  {{br}}
-{{/s1}}
-{{#s2}}
-  {{#required}}
-    {{#valueLen}}{:green_circle:} {{/valueLen}}
-    {{^valueLen}}{:yellow_circle:} {{/valueLen}}
-  {{/required}}
-  {{^required}}
-    {:green_circle:} 
-  {{/required}}
-  {{#valueLen}}{{name}}: {{value}}{{/valueLen}}
-  {{^valueLen}}{{name}} -{{/valueLen}}
-  {{br}}
-{{/s2}}
-{{#s3s4s5}}
-  {{#valueLen}}
-    {:green_circle:} {{name}}: <b>{{value}}</b>
-    {{br}}
-  {{/valueLen}}
-{{/s3s4s5}}
-{{/fields}}
-{{br}}
-{{^s0}}
-<i>Status:</i>{{br}}
-{{/s0}}
-{{#s1}}
-{:blue_circle:} confirm operation
-{{/s1}}
-{{#s2}}
-{:yellow_circle:} missing required parameter
-{{/s2}}
-{{#s3}}
-{{^info.0}}{:blue_circle:} {{/info.0}}
-{{#info.0}}{:purple_circle:} {{/info.0}}
-processing{{#info.0}}..{{/info.0}}
-{{/s3}}
-{{#s4}}
-{:red_circle:} <b>failure</b>{{#info.1}}: {{info.1}}{{/info.1}}
-{{/s4}}
-{{#s5}}
-{:green_circle:} <b>complete</b>{{#info.1}}: {{info.1}}{{/info.1}}
-{{/s5}}
-{{br}}
-      ',# }}}
-      7 => 'string ({{max}})',
-      8 => 'number [{{min}}..{{max}}]',
-      11 => '{:exclamation:} task failed to start',
-      12 => 'complete',
-      13 => 'select option',
-      14 => 'refresh',
-      15 => 'reset',
-      16 => 'previous',
-      17 => 'next',
-      18 => 'repeat',
-      19 => '',
-    ],
-    # }}}
-    'ru' => [# {{{
-      'play'      => 'играть',
-      'close'     => 'закрыть',
-      'op-fail'   => '{:exclamation:} сбой операции',
-      'cmd-fail'  => '{:exclamation:} сбой комманды',
-      'no-game'   => '{:no_entry_sign:} игра не доступна',
-      'not-found' => 'не найден',
-      'add'       => 'добавить',
-      'empty'     => 'пусто',
-      6 => # FORM template {{{
-      '
-{{#desc}}
-<i>Описание:</i>{{br}}
-{{desc}}{{br}}
-{{br}}
-{{/desc}}
-<i>Параметры:</i>{{br}}
-{{#fields}}
-{{#s0}}
-  {{#before}}
-    {{#valueLen}}
-      {:green_circle:} {{name}}: {{value}}
-    {{/valueLen}}
-    {{^valueLen}}
-      {{#required}}{:yellow_circle:} {{/required}}
-      {{^required}}{:green_circle:} {{/required}}
-      {{name}} -
-    {{/valueLen}}
-  {{/before}}
-  {{#current}}
-    {:white_small_square:} <b>{{name}}: </b>
-    {{#valueLen}}<code>&lt;</code>{{value}}<code>&gt;</code>{{/valueLen}}
-    {{^valueLen}}<code>&lt;{{hint}}&gt;</code>{{/valueLen}}
-  {{/current}}
-  {{#after}}
-    {:black_small_square:} {{name}}
-    {{#valueLen}}: {{value}}{{/valueLen}}
-  {{/after}}
-  {{br}}
-{{/s0}}
-{{#s1}}
-  {:green_circle:} {{name}}
-  {{#valueLen}}: <b>{{value}}</b>{{/valueLen}}
-  {{^valueLen}} -{{/valueLen}}
-  {{br}}
-{{/s1}}
-{{#s2}}
-  {{#required}}
-    {{#valueLen}}{:green_circle:} {{/valueLen}}
-    {{^valueLen}}{:yellow_circle:} {{/valueLen}}
-  {{/required}}
-  {{^required}}
-    {:green_circle:} 
-  {{/required}}
-  {{#valueLen}}{{name}}: {{value}}{{/valueLen}}
-  {{^valueLen}}{{name}} -{{/valueLen}}
-  {{br}}
-{{/s2}}
-{{#s3s4s5}}
-  {{#valueLen}}
-    {:green_circle:} {{name}}: <b>{{value}}</b>
-    {{br}}
-  {{/valueLen}}
-{{/s3s4s5}}
-{{/fields}}
-{{br}}
-{{^s0}}
-<i>Статус:</i>{{br}}
-{{/s0}}
-{{#s1}}
-{:blue_circle:} подтвердите действие
-{{/s1}}
-{{#s2}}
-{:yellow_circle:} не задан обязательный параметр
-{{/s2}}
-{{#s3}}
-{{^info.0}}{:blue_circle:} {{/info.0}}
-{{#info.0}}{:purple_circle:} {{/info.0}}
-обработка{{#info.0}}..{{/info.0}}
-{{/s3}}
-{{#s4}}
-{:red_circle:} <b>ошибка</b>{{#info.1}}: {{info.1}}{{/info.1}}
-{{/s4}}
-{{#s5}}
-{:green_circle:} <b>выполнено</b>{{#info.1}}: {{info.1}}{{/info.1}}
-{{/s5}}
-{{br}}
-      ',# }}}
-      7 => 'строка ({{max}})',
-      8 => 'число [{{min}},{{max}}]',
-      11 => '{:exclamation:} не удалось запустить задачу',
-      12 => 'завершить',
-      13 => 'выберите опцию',
-      14 => 'обновить',
-      15 => 'сброс',
-      16 => 'предыдущий',
-      17 => 'далее',
-      18 => 'повторить',
-      19 => '',
-    ],
-    # }}}
-  ];
-  static $BUTTONS = [
-    # {{{
-    'play'     => '{:arrow_forward:} {{.}}',
-    'up'       => '{:eject_symbol:} {{.}}',
-    'close'    => '{:stop_button:} {{.}}',
-    'open'     => '{{.}} {:arrow_forward:}',
-    'prev'     => '{:rewind:} {{.}}',
-    'next'     => '{{.}} {:fast_forward:}',
-    'first'    => '{:previous_track:} {{.}}',
-    'last'     => '{{.}} {:next_track:}',
-    'refresh'  => '{{.}} {:arrows_counterclockwise:}',
-    'reset'    => '{:arrows_counterclockwise:} {{.}}',
-    'retry'    => '{:arrow_right_hook:} {{.}}',
-    'ok'       => 'OK',
-    'add'      => '{{.}} {:new:}',
-    ###
-    'select0'  => '{{.}}',
-    'select1'  => '{:green_circle:} {{.}}',
-    'fav_on'   => '{:star:}',
-    'fav_off'  => '{:sparkles:}{:star:}{:sparkles:}',
+    'small_blue_diamond'   => "\xF0\x9F\x94\xB9",
+    'small_orange_diamond' => "\xF0\x9F\x94\xB8",
+    'large_blue_diamond'   => "\xF0\x9F\x94\xB7",
+    'large_orange_diamond' => "\xF0\x9F\x94\xB6",
+    'small_red_triangle'   => "\xF0\x9F\x94\xBA",
+    'small_red_triangle_down' => "\xF0\x9F\x94\xBB",
     # }}}
   ];
   static function construct(object $bot): ?self # {{{
   {
     # prepare
-    $dirJson = $bot->dir->data;
-    $dirInc  = $bot->dir->src;
-    # load messages
-    if (file_exists($fileJson = $dirJson.self::FILE_JSON[0]))
+    $dir = $bot->dir;
+    # load texts
+    if (file_exists($fileJson = $dir->data.self::FILE_JSON[0]))
     {
       # precompiled
-      if (($msgs = $bot->file->getJSON($fileJson)) === null) {
+      if (($texts = $bot->file->getJSON($fileJson)) === null) {
         return null;
       }
     }
     else
     {
-      # bot source (merge over defaults)
-      $msgs = file_exists($fileInc = $dirInc.self::FILE_INC[0])
-        ? array_merge(self::$MESSAGES, (include $fileInc))
-        : self::$MESSAGES;
-      # render emojis for each language
-      foreach ($msgs as &$a)
+      # load defaults
+      $texts = require $dir->inc.self::FILE_INC[0];
+      # merge bot source
+      if (file_exists($fileInc = $dir->inc.self::FILE_INC[0])) {
+        $texts = array_merge($texts, (require $fileInc));
+      }
+      # refine and render emojis for each language
+      foreach ($texts as &$a)
       {
-        foreach ($a as &$b) {
+        foreach ($a as &$b)
+        {
+          $b = BotText::refineTemplate($b);
           $b = $bot->tp->render($b, '{: :}', self::EMOJI);
         }
       }
       unset($a, $b);
       # store
-      if (!$bot->file->setJSON($fileJson, $msgs)) {
+      if (!$bot->file->setJSON($fileJson, $texts)) {
         return null;
       }
     }
-    # load button captions
-    if (file_exists($fileJson = $dirJson.self::FILE_JSON[1]))
+    # load captions
+    if (file_exists($fileJson = $dir->data.self::FILE_JSON[1]))
     {
       # precompiled
-      if (($btns = $bot->file->getJSON($fileJson)) === null) {
+      if (($caps = $bot->file->getJSON($fileJson)) === null) {
         return null;
       }
     }
     else
     {
-      # bot source (merge over defaults)
-      $btns = file_exists($fileInc = $dirInc.self::FILE_INC[1])
-        ? array_merge(self::$BUTTONS, (include $fileInc))
-        : self::$BUTTONS;
+      # load defaults
+      $caps = require $dir->inc.self::FILE_INC[1];
+      # merge bot source
+      if (file_exists($fileInc = $dir->inc.self::FILE_INC[1])) {
+        $caps = array_merge($caps, (require $fileInc));
+      }
       # render emojis
-      foreach ($btns as &$a) {
+      foreach ($caps as &$a) {
         $a = $bot->tp->render($a, '{: :}', self::EMOJI);
       }
       unset($a);
       # store
-      if (!$bot->file->setJSON($fileJson, $btns)) {
+      if (!$bot->file->setJSON($fileJson, $caps)) {
         return null;
       }
     }
     # construct
-    return new self($bot, $msgs, $btns);
+    return new self($bot, $texts, $caps);
   }
   # }}}
   function __construct(# {{{
     public object $bot,
-    public array  &$msg,
-    public array  &$btn
+    public array  &$texts,
+    public array  &$caps
   ) {}
   # }}}
-  # [msg] access {{{
+  # [texts] access {{{
   function offsetExists(mixed $k): bool {
     return true;
   }
   function offsetGet(mixed $k): mixed
   {
-    $lang = $this->bot->user?->lang ?: 'en';
-    return isset($this->msg[$lang][$k])
-      ? $this->msg[$lang][$k]
-      : '';
+    $lang = $this->bot->user?->lang ?? 'en';
+    return $this->texts[$lang][$k] ?? '';
   }
   function offsetSet(mixed $k, mixed $v): void
   {}
   function offsetUnset(mixed $k): void
   {}
   # }}}
+  static function refineTemplate(string $text): string # {{{
+  {
+    $t = trim($text);
+    if (strpos($t, "\n") !== false) {
+      $t = preg_replace('/\n\s+/', '', str_replace("\r", '', $t));
+    }
+    return $t;
+  }
+  # }}}
 }
 # }}}
 class BotCommands implements \ArrayAccess # {{{
 {
-  const FILE_JSON = 'commands.json';
   const FILE_INC  = 'commands.inc';
+  const FILE_JSON = 'commands.json';
   static function construct(object $bot): ?self # {{{
   {
     # prepare
@@ -1767,41 +1566,47 @@ class BotCommands implements \ArrayAccess # {{{
         $bot->log->error("class not found: $class");
         return false;
       }
-      # determine datafile option
-      $skel[$a = 'datafile'] = isset($skel[$a])
-        ? $skel[$a]
-        : $class::DATAFILE;
-      # determine custom handler
+      # determine item handler
       $skel['handler'] = function_exists($a = Bot::NS.'BotItem_'.$id)
         ? $a : '';
+      # refine captions
+      # set entry
+      if (!isset($skel[$a = 'caps'])) {
+        $skel[$a] = [];
+      }
+      # set content
+      foreach ($skel[$a] as &$b)
+      {
+        $b = BotText::refineTemplate($b);
+        $b = $bot->tp->render($b, '{: :}', BotText::EMOJI);
+      }
+      unset($b);
       # refine texts
       # set primary language
-      if (!isset($skel['text'])) {
-        $skel['text'] = ['en'=>[]];
+      if (!isset($skel[$a = 'text'])) {
+        $skel[$a] = ['en'=>[]];
       }
-      elseif (!isset($skel['text']['en'])) {
-        $skel['text'] = ['en'=>$skel['text']];
+      elseif (!isset($skel[$a]['en'])) {
+        $skel[$a] = ['en'=>$skel[$a]];
       }
       # set secondary languages
-      foreach (array_keys($bot->text->msg) as $a)
+      foreach (array_keys($bot->text->texts) as $b)
       {
-        if (!isset($skel['text'][$a])) {
-          $skel['text'][$a] = $skel['text']['en'];
+        if (!isset($skel[$a][$b])) {
+          $skel[$a][$b] = $skel[$a]['en'];
         }
       }
       # set contents
-      foreach ($skel['text'] as &$a)
+      foreach ($skel[$a] as &$b)
       {
-        foreach ($a as &$b)
+        foreach ($b as &$c)
         {
-          if (strpos($b, "\r") !== false) {
-            $b = str_replace("\r\n", "\n", $b);
-          }
-          $b = $bot->tp->render($b, '{: :}', BotText::EMOJI);
-          $b = $bot->tp->render($b, '{! !}', $bot->text->btn);
+          $c = BotText::refineTemplate($c);
+          $c = $bot->tp->render($c, '{: :}', BotText::EMOJI);
+          $c = $bot->tp->render($c, '{! !}', $bot->text->caps);
         }
       }
-      unset($a, $b);
+      unset($b, $c);
       # recurse
       if (isset($skel[$a = 'items']) &&
           !self::refineTree($bot, $skel[$a], $skel))
@@ -2632,7 +2437,7 @@ class BotUser implements \ArrayAccess # {{{
     if (!($lang = $bot->cfg->lang) &&
         (!isset($from->language_code) ||
          !($lang = $from->language_code) ||
-         !isset($bot->text->msg[$lang])))
+         !isset($bot->text->texts[$lang])))
     {
       $lang = 'en';
     }
@@ -2903,8 +2708,7 @@ class BotUserChat # {{{
 # item (rendering)
 abstract class BotItem implements \ArrayAccess, \JsonSerializable # {{{
 {
-  const DATAFILE = 0;# 0=none,1=private,2=public
-  public $root,$id,$text,$items,$log,$cfg,$data;
+  public $root,$id,$text,$caps,$items,$log,$cfg,$data;
   function __construct(# {{{
     public object   $bot,
     public array    $skel,
@@ -2915,6 +2719,7 @@ abstract class BotItem implements \ArrayAccess, \JsonSerializable # {{{
     $this->root = $parent ? $parent->root : $this;
     $this->id   = $skel['id'];
     $this->text = new BotItemText($this);
+    $this->caps = new BotItemCaptions($this);
     # set children (recurse)
     if (isset($skel[$a = 'items']))
     {
@@ -2944,48 +2749,53 @@ abstract class BotItem implements \ArrayAccess, \JsonSerializable # {{{
     if (!isset($this->cfg->items[$this->id])) {
       $this->cfg->items[$this->id] = [];
     }
-    /***
-    # attach item's data
-    $file = '';
-    if ($skel['datafile'])
-    {
-      $file = $item->id.'.json';
-      $file = $skel['datafile'] === 1
-        ? $this->dir.$file
-        : $this->bot->dir->data.$file;
-      ###
-      $item->data = $user->bot->file->getJSON($file);
+    # check no query
+    if (!$q) {
+      return null;
     }
-    /***/
-    # complete with rendering (when necessary)
-    return $q ? $this->render($q) : null;
+    # attach data
+    if ($a = $this->skel['datafile'] ?? 0)
+    {
+      # determine storage source
+      $a = ($a === 1)
+        ? $user->dir
+        : $this->bot->dir->data;
+      $a = $a.$this->id.'.json';
+      # load and attach
+      $this->data = $this->bot->file->getJSON($a);
+    }
+    # render and complete
+    return $this->render($q);
   }
   # }}}
   function finit(bool $ok): bool # {{{
   {
-    /***
-    # detach item's data
-    if ($file && ($item->changed & 1) &&
-        !BotFile::setJSON($file, $item->data))
+    # detach data
+    if ($ok && ($a = $this->skel['datafile'] ?? 0) &&
+        $this->data !== null)
     {
-      $this->log->error("failed to save: $file");
+      # determine destination
+      $a = ($a === 1)
+        ? $this->bot->user->dir
+        : $this->bot->dir->data;
+      $a = $a.$this->id.'.json';
+      # store
+      $this->bot->file->setJSON($a, $this->data);
     }
-    /***/
     # cleanup
-    $this->log = $this->cfg = null;
+    $this->log  = $this->cfg =
+    $this->data = null;
     # complete
     return $ok;
   }
   # }}}
-  function markup(array &$mkup, ?array &$ext = null): string # {{{
+  function markup(array &$mkup, ?array &$flags = null): string # {{{
   {
     # prepare
     static $NOP = ['text'=>' ','callback_data'=>'!'];
-    $id   = $this->id;
-    $bot  = $this->bot;
-    $text = $bot->text;
-    $cmd  = $bot->cmd;
-    $res  = [];
+    $id  = $this->id;
+    $bot = $this->bot;
+    $res = [];
     # iterate
     foreach ($mkup as &$a)
     {
@@ -3018,15 +2828,25 @@ abstract class BotItem implements \ArrayAccess, \JsonSerializable # {{{
           $d = ($d = strpos($b, ' '))
             ? substr($b, 1, $d)
             : substr($b, 1);
-          # get caption template
-          if (!($c = $this->text["!$d"])) {
-            $c = isset($text->btn[$d]) ? $text->btn[$d] : $d;
+          # check control flags
+          if ($flags && isset($flags[$d]))
+          {
+            if (!($c = $flags[$d])) {
+              continue;
+            }
+            if ($c === -1)
+            {
+              $row[] = $NOP;
+              continue;
+            }
           }
+          # get caption template
+          $c = $this->caps[$d];
           # check specific
           if ($d === 'play')
           {
             # game button
-            $d = $this->text[$d] ?: $text[$d];
+            $d = $this->text[$d] ?: $bot->text[$d];
             $row[] = [
               'text' => $bot->tp->render($c, $d),
               'callback_game' => null
@@ -3044,8 +2864,8 @@ abstract class BotItem implements \ArrayAccess, \JsonSerializable # {{{
             else
             {
               # close
-              $e = $text[$d = 'close'];
-              $c = $this->text["!$d"] ?: $text->btn[$d];
+              $c = $this->caps[$d = 'close'];
+              $e = $bot->text[$d];
             }
             $row[] = [
               'text' => $bot->tp->render($c, $e),
@@ -3053,22 +2873,8 @@ abstract class BotItem implements \ArrayAccess, \JsonSerializable # {{{
             ];
             continue;
           }
-          # check extras and determine caption
-          if ($ext && array_key_exists($d, $ext))
-          {
-            # set and check
-            if (($e = $ext[$d]) === null) {
-              continue;
-            }
-            elseif ($e === false)
-            {
-              $row[] = $NOP;
-              continue;
-            }
-          }
-          else {
-            $e = $this->text[$d];
-          }
+          # determine caption
+          $e = $this->text[$d] ?: ($bot->text[$d] ?? '');
           # compose
           $row[] = [
             'text' => $bot->tp->render($c, $e),
@@ -3095,15 +2901,16 @@ abstract class BotItem implements \ArrayAccess, \JsonSerializable # {{{
           ? substr($d, 1) # exact
           : "$id$d";      # child
         # get item
-        if (!($e = $cmd[$d])) {
+        if (!($item = $bot->cmd[$d])) {
           continue;
         }
-        # get template/caption
-        $c = $this->text[$d] ?: $text->btn['open'];
-        $e = $e->text['@'] ?: $e->skel['name'];
+        # determine caption
+        ($c = $item->text['@']) ||
+        ($c = $this->text[$d])  ||
+        ($c = $item->skel['name']);
         # compose
         $row[] = [
-          'text' => $bot->tp->render($c, $e),
+          'text' => $bot->tp->render($this->caps['open'], $c),
           'callback_data' => "/$d$b"
         ];
         # }}}
@@ -3154,11 +2961,8 @@ abstract class BotItem implements \ArrayAccess, \JsonSerializable # {{{
   function offsetExists(mixed $k): bool {
     return true;
   }
-  function offsetGet(mixed $k): mixed
-  {
-    return isset($this->cfg->items[$id][$k])
-      ? $this->cfg->items[$id][$k]
-      : null;
+  function offsetGet(mixed $k): mixed {
+    return $this->cfg->items[$this->id][$k] ?? null;
   }
   function offsetSet(mixed $k, mixed $v): void
   {
@@ -3166,10 +2970,7 @@ abstract class BotItem implements \ArrayAccess, \JsonSerializable # {{{
     $this->cfg->changed = true;
   }
   function offsetUnset(mixed $k): void
-  {
-    unset($this->cfg->items[$this->id][$k]);
-    $this->cfg->changed = true;
-  }
+  {}
   # }}}
   function create(object $q): bool # {{{
   {
@@ -3295,15 +3096,48 @@ class BotItemText implements \ArrayAccess # {{{
   {
     $this->text = &$item->skel['text'];
   }
-  function offsetExists(mixed $k): bool
-  {
+  function offsetExists(mixed $k): bool {
     return isset($this->text[$this->lang][$k]);
   }
-  function offsetGet(mixed $k): mixed
+  function offsetGet(mixed $k): mixed {
+    return $this->text[$this->lang][$k] ?? '';
+  }
+  function offsetSet(mixed $k, mixed $v): void
+  {}
+  function offsetUnset(mixed $k): void
+  {}
+  function render(array $o): string
   {
-    return isset($this->text[$this->lang][$k])
-      ? $this->text[$this->lang][$k]
-      : '';
+    # prepare
+    $bot  = $this->item->bot;
+    $lang = $this->lang;
+    # check local
+    if (isset($this->text[$lang]['#'])) {
+      return $bot->tp->render($this->text[$lang]['#'], $o);
+    }
+    # check global
+    $t = $this->item->skel['type'];
+    if (isset($bot->text->texts[$lang][$t])) {
+      return $bot->tp->render($bot->text->texts[$lang][$t], $o);
+    }
+    # nothing
+    return '';
+  }
+}
+# }}}
+class BotItemCaptions implements \ArrayAccess # {{{
+{
+  public $caps,$botCaps;
+  function __construct(public object $item)
+  {
+    $this->caps = &$item->skel['caps'];
+    $this->botCaps = &$item->bot->text->caps;
+  }
+  function offsetExists(mixed $k): bool {
+    return true;
+  }
+  function offsetGet(mixed $k): mixed {
+    return $this->caps[$k] ?? $this->botCaps[$k];
   }
   function offsetSet(mixed $k, mixed $v): void
   {}
@@ -3884,237 +3718,268 @@ class BotImgItem extends BotItem # {{{
 # }}}
 class BotListItem extends BotImgItem # {{{
 {
-  const DATAFILE = 1;
-  const TEMPLATE = [
-    'en' => # {{{
-    '
-page <b>{{page}}</b> of {{page_count}} ({{item_count}})
-    ',
-    # }}}
-    'ru' => # {{{
-    '
-страница <b>{{page}}</b> из {{page_count}} ({{item_count}})
-    ',
-    # }}}
-  ];
   function render(object $q): ?array # {{{
   {
-    # prepare
-    $conf = &$item['config'];
-    $data = &$item['data'];
-    $lang = $bot->user->lang;
-    $text = &$item['text'][$lang];
-    if (!isset($item['opts']) || !isset($item['markup'])) {
-      return 0;
+    # prepare {{{
+    $bot  = $this->bot;
+    $cfg  = $this->config();
+    $mkup = [];
+    $msg  = [];
+    $data = &$this->data;
+    # refresh data
+    if (($hand = $this->skel['handler']) &&
+        (!($a = $cfg['timeout'])    ||
+         !($b = $this['time'] ?? 0) ||
+         ($c = time()) - $b > $a))
+    {
+      # fetch with handler
+      if (($data = $hand($this)) === null)
+      {
+        $this->log->warn("$hand() failed");
+        return null;
+      }
+      # set order
+      self::sort($data, $cfg['order'], $cfg['desc']);
+      # set update time
+      $a && ($this['time'] = $c);
     }
-    $opts  = $item['opts'];
-    $rows  = isset($opts['rows']) ? $opts['rows'] : 8;
-    $cols  = isset($opts['cols']) ? $opts['cols'] : 1;
-    $flexy = isset($opts['flexy']) ? $opts['flexy'] : true;
-    $size  = $rows * $cols;
-    $count = $data ? count($data) : 0;
+    # determine page size and total records count
+    $size = $cfg['rows'] * $cfg['cols'];
+    $cnt  = $data ? count($data) : 0;
     # determine total page count
-    if (!($total = intval(ceil($count / $size)))) {
+    if (!($total = intval(ceil($cnt / $size)))) {
       $total = 1;
     }
     # determine current page
-    if (!isset($conf['page']))
-    {
-      $conf['page'] = $page = 0;
-      $bot->user->changed = true;
+    if (($page = $this['page'] ?? 0) >= $total) {
+      $page = $total - 1;
     }
-    elseif (($page = $conf['page']) >= $total)
-    {
-      $conf['page'] = $page = $total - 1;
-      $bot->user->changed = true;
-    }
-    # determine prev/next pages
-    $nextPage = ($page > 0) ? $page - 1 : $total - 1;
+    # determine last/prev/next pages
+    $lastPage = $total - 1;
+    $nextPage = ($page > 0) ? $page - 1 : $lastPage;
     $prevPage = ($page < $total - 1) ? $page + 1 : 0;
-    ###
-    ###
-    ###
-    # handle list operation {{{
-    switch ($func) {
+    # }}}
+    # operate {{{
+    switch ($func = $q->func) {
+    case '':
+    case 'refresh':
+      break;
     case 'first':
       $page = 0;
       break;
     case 'last':
-      $page = $total - 1;
+      $page = $lastPage;
       break;
     case 'prev':
+    case 'back':
       $page = $prevPage;
       break;
     case 'next':
+    case 'forward':
       $page = $nextPage;
       break;
-    #case 'add':
-    case 'item':
+    #case 'select':
+    case 'open':
       # check identifier
-      if (!$args || !isset($args[0]))
+      if (!($id = $q->args) || !ctype_alnum($id) || ($id = intval($id)) < 0)
       {
-        $this->log('no arguments');
-        return -1;
+        $this->log->error("$func: incorrect id=$id");
+        return null;
       }
-      if (!($a = $args[0]) || !ctype_alnum($a) || strlen($a) > 32)
+      # locate item
+      for ($i = 0; $i < $cnt; ++$i)
       {
-        $this->log('incorrect identifier');
-        return -1;
-      }
-      # get the item for the list
-      $b = null;
-      foreach ($data as &$c) {
-        if ($c['id'] === $a) {$b = $c; break;}
-      }
-      unset($c);
-      if (!$b)
-      {
-        $this->log('list item "'.$a.'" not found');
-        break;# refresh the list
-      }
-      # check child
-      if (isset($b['type']) && ($c = $b['type']) &&
-          isset($item['items'][$c]))
-      {
-        # re-attach to the child
-        $item = $item['items'][$c];
-        return $bot->itemRender($item, 'list', $b);
-      }
-      return -1;
-    }
-    # }}}
-    # set markup {{{
-    if ($count)
-    {
-      # NON-EMPTY
-      # sort list items
-      $a = isset($opts['order']) ? $opts['order'] : 'id';
-      $b = isset($opts['desc']) ? $opts['desc'] : false;
-      if (!self::sort($data, $a, $b))
-      {
-        $bot->logError('failed to sort');
-        return 0;
-      }
-      # extract records from the ordered data set
-      $a = $page * $size;
-      $d = array_slice($data, $a, $size);
-      $e = count($d);
-      # create list
-      $mkup = [];
-      for ($a = 0, $c = 0; $a < $rows; ++$a)
-      {
-        $mkup[$a] = [];
-        for ($b = 0; $b < $cols; ++$b)
-        {
-          if ($c < $e)
-          {
-            $mkup[$a][$b] = [
-              'text'=>$d[$c]['name'],
-              'callback_data'=>'/'.$item['id'].'!item '.$d[$c]['id']
-            ];
-          }
-          else {
-            $mkup[$a][$b] = ['text'=>' ','callback_data'=>'!'];
-          }
-          $c++;
-        }
-        if ($flexy && $c >= $e) {
+        if ($data[$i]['id'] === $id) {
           break;
         }
       }
-      # add controls
-      $a = isset($item['markup']['.'])
-        ? $item['markup']['.'] : [['_up']];
-      foreach ($a as $b) {
-        $mkup[] = $b;
+      # check not found
+      if ($i === $cnt)
+      {
+        $this->log->warn("$func: id=$id not found");
+        break;# refresh the list
       }
+      # TODO
+      # ...
+      # ...
+      break;
+    case 'add':
+    case 'create':
+      break;
+    default:
+      $this->log->error("$func: unknown");
+      return null;
+    }
+    # }}}
+    # render markup {{{
+    if ($cnt)
+    {
+      # non-empty,
+      # add top controls
+      $list = (isset($this->skel[$a = 'markup'][$b = 'head']))
+        ? ($this->skel[$a][$b] ?? [])
+        : $cfg[$a][$b];
+      foreach ($list as &$c) {
+        $mkup[] = $c;
+      }
+      # extract items from the data set and
+      # create list markup
+      $list = array_slice($data, $page * $size, $size);
+      $list = $this->renderListMarkup($list, $cfg);
+      foreach ($list as &$c) {
+        $mkup[] = $c;
+      }
+      # add bottom controls
+      $list = (isset($this->skel[$a][$b = 'foot']))
+        ? ($this->skel[$a][$b] ?? [])
+        : $cfg[$a][$b];
+      foreach ($list as &$c) {
+        $mkup[] = $c;
+      }
+      unset($c);
+      # determine control flags
+      $a = ($total === 1) ? -1 : 1;
+      $b = ($total === 1) ?  0 : 1;
+      $list = [
+        'prev'    => $a,
+        'back'    => $a,
+        'next'    => $a,
+        'forward' => $a,
+        'first'   => $b,
+        'last'    => $b,
+      ];
     }
     else
     {
-      # EMPTY
-      $mkup = isset($item['markup']['-'])
-        ? $item['markup']['-']
-        : [['_up']];
+      # empty,
+      # add controls
+      $list = (isset($this->skel[$a = 'markup'][$b = 'empty']))
+        ? ($this->skel[$a][$b] ?? [])
+        : $cfg[$a][$b];
+      foreach ($list as &$c) {
+        $mkup[] = $c;
+      }
+      unset($c);
+      # determine no flags
+      $list = null;
     }
-    # determine control extras
-    $a = $count <= $size;
-    $a = [
-      'prev' => ($a ? null : strval($prevPage)),
-      'next' => ($a ? null : strval($nextPage)),
-      'add'  => $bot->messages[$lang][4],
-    ];
-    # parse and set
-    $item['inlineMarkup'] = $bot->itemInlineMarkup($item, $mkup, $text, $a);
+    $msg['markup'] = $this->markup($mkup, $list);
     # }}}
-    # set content {{{
-    if ($count)
-    {
-      # NON-EMPTY
-      $a = ($item['content'] ?: self::$template[$lang]);
-      $item['textContent'] = $bot->tp->render($a, [
-        'item_count'   => $count,
-        'page'         => 1 + $page,
-        'page_count'   => $total,
-        'not_one_page' => ($total > 1),
-      ]);
-    }
-    else
-    {
-      # EMPTY
-      $item['textContent'] = isset($text['-'])
-        ? $text['-'] : '';
-    }
+    # render text {{{
+    $msg['text'] = $this->text->render([
+      'cnt'   => $cnt,
+      'page'  => 1 + $page,
+      'total' => $total,
+    ]);
     # }}}
-    # complete
+    # store {{{
+    /***
     if ($page !== $conf['page'])
     {
       $conf['page'] = $page;
       $bot->user->changed = true;
     }
-    return 1;
+    /***/
+    # }}}
+    # complete
+    return $this->image($msg);
   }
   # }}}
-  static function sort(&$list, $k, $desc = false) # {{{
+  function renderListMarkup(# {{{
+    array &$list,
+    array &$cfg
+  ):array
   {
-    if (!isset($list[0][$k])) {
-      return false;
+    # prepare
+    $bot  = $this->bot;
+    $mkup = [];
+    $size = count($list);
+    $rows = $cfg['rows'];
+    $cols = $cfg['cols'];
+    $tpl  = $this->caps['listItem'];
+    # determine callback command
+    if (($cmd = $cfg['cmd']) && $cmd[0] !== '/') {
+      $cmd = '/'.$this->id.$cmd;
     }
-    if (is_int($list[0][$k]))
+    # iterate rows
+    for ($i = 0, $a = 0; $a < $rows; ++$a)
     {
-      # sort numbers
-      $c = usort($list, function($a, $b) use ($k, $desc) {
-        # check equal and resolve by identifier
-        if ($a[$k] === $b[$k]) {
+      # create row
+      $mkup[$a] = [];
+      # iterate columns
+      for ($b = 0; $b < $cols; ++$b, ++$i)
+      {
+        # determine caption and data
+        if ($i < $size)
+        {
+          $c = $tpl
+            ? $bot->tp->render($tpl, $list[$i])
+            : $list[$i]['name'];
+          $d = $cmd
+            ? $cmd.' '.$list[$i]['id']
+            : '!';
+        }
+        else
+        {
+          $c = ' ';
+          $d = '!';
+        }
+        # create callback button
+        $mkup[$a][$b] = ['text'=>$c,'callback_data'=>$d];
+      }
+      # check no more items left and
+      # stop creating new rows when flexy option set
+      if ($i >= $size && $cfg['flexy']) {
+        break;
+      }
+    }
+    # complete
+    return $mkup;
+  }
+  # }}}
+  static function sort(array &$data, string $tag, bool $desc): bool # {{{
+  {
+    if (is_int($data[0][$tag]))
+    {
+      # integers
+      $res = usort($data, function($a, $b) use ($tag, $desc)
+      {
+        # resolve equal by identifier
+        if ($a[$tag] === $b[$tag]) {
           return ($a['id'] > $b['id']) ? 1 : -1;
         }
-        # operate
+        # compare
         return $desc
-          ? (($a[$k] > $b[$k]) ? -1 :  1)
-          : (($a[$k] > $b[$k]) ?  1 : -1);
+          ? (($a[$tag] > $b[$tag]) ? -1 :  1)
+          : (($a[$tag] > $b[$tag]) ?  1 : -1);
       });
     }
     else
     {
-      # sort strings
-      $c = usort($list, function($a, $b) use ($k, $desc) {
-        # check equal and resolve by identifier
-        if (($c = strcmp($a[$k], $b[$k])) === 0) {
+      # strings
+      $res = usort($data, function($a, $b) use ($tag, $desc)
+      {
+        # resolve equal by identifier
+        if (($c = strcmp($a[$tag], $b[$tag])) === 0) {
           return ($a['id'] > $b['id']) ? 1 : -1;
         }
-        # operate
+        # compare
         return $desc
           ? (($c > 0) ? -1 :  1)
           : (($c > 0) ?  1 : -1);
       });
     }
-    return $c;
+    return $res;
   }
   # }}}
 }
 # }}}
+#####
+# TODO: check old message callback action does ZAP? or.. PROPER UPDATE?!
+# TODO: check file_id stores oke
+#####
 class BotFormItem extends BotItem # {{{
 {
-  const DATAFILE = 1;
   function render(object $q): ?array # {{{
   {
     # prepare {{{
