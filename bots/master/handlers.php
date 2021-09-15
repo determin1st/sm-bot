@@ -1,13 +1,12 @@
 <?php
-namespace SM;
-function BotItem_startbots(object $item): ?array # {{{
+namespace SM\BotItem;
+use SM\BotConfig;
+function startbots(object $item): ?array # {{{
 {
   # prepare
   $bot  = $item->bot;
+  $dir  = $bot->dir->dataRoot;
   $data = [];
-  # determine data root
-  $dir = $bot->dir->data;
-  $dir = substr($dir, 0, 1 + strrpos($dir, DIRECTORY_SEPARATOR, -2));
   # get bot directories
   if (($list = @scandir($dir, SCANDIR_SORT_DESCENDING)) === false)
   {
@@ -18,41 +17,108 @@ function BotItem_startbots(object $item): ?array # {{{
   foreach ($list as $id)
   {
     # skip special directories ('.' or '..')
-    if ($id[0] === '.') {
-      continue;
+    if ($id[0] !== '.' && ($a = getBotInfo($bot, $id))) {
+      $data[] = $a;
     }
-    # determine config file path
-    $dirData = $dir.$id.DIRECTORY_SEPARATOR;
-    $fileCfg = $dirData.BotConfig::FILE_JSON;
-    # read bot configuration
-    if (!($cfg = $bot->file->getJSON($fileCfg))) {
-      continue;
-    }
-    # determine masterbot
-    if ($isMaster = ($id === 'master'))
-    {
-      $id = $cfg['token'];
-      $id = substr($id, 0, strpos($id, ':'));
-    }
-    # to determine if bot is running,
-    # check configuration is locked
-    $isRunning = file_exists($fileCfg.'.lock');
-    # create ascending order index:
-    # master => running => type => name
-    $order  = $isMaster ? '0' : '1';
-    $order .= $isRunning ? '0' : '1';
-    $order .= $cfg['source'].$cfg['name'];
-    # create element
-    $data[] = [
-      'id'    => $id,
-      'name'  => $cfg['name'],
-      'order' => $order,
-      'type'  => $cfg['source'],
-      'isRunning' => $isRunning,
-    ];
   }
   # done
   return $data;
+}
+# }}}
+function startbotsbot(object $item, string $func, string $args): ?array # {{{
+{
+  # prepare
+  # determine data identifier
+  $id = (!$func && $args)
+    ? $args
+    : ($item['id'] ?? '');
+  # get information
+  if (!$id || !($data = getBotInfo($item->bot, $id, true)))
+  {
+    $item->log->warn($id
+      ? "failed to get info: $id"
+      : "no identifier specified"
+    );
+    return null;
+  }
+  # operate
+  if ($func)
+  {
+    $item->log->out(0, 0, $func, $data['name']);
+    switch ($func) {
+    case 'start':
+      break;
+    case 'stop':
+      break;
+    }
+  }
+  # render markup
+  $mkup = $data['isMaster']
+    ? [['!up']]
+    : $item->skel['markup'];
+  $mkup = $item->markup($mkup, [
+    'start' => $data['isRunning'] ? 0 : 1,
+    'stop'  => $data['isRunning'] ? 1 : 0,
+  ]);
+  # store identifier
+  $item['id'] = $id;
+  # complete
+  return [
+    'id'     => $data['id'],
+    'file'   => '',# dynamic title, no cache
+    'title'  => $data['name'],
+    'text'   => $item->bot->tp->render($item->text['#'], $data),
+    'markup' => $mkup,
+  ];
+}
+# }}}
+###
+function getBotInfo(# {{{
+  object  $bot,
+  string  $id,
+  bool    $extra = false
+):?array
+{
+  # determine config file path
+  $dirData = $bot->dir->dataRoot.$id.DIRECTORY_SEPARATOR;
+  $fileCfg = $dirData.BotConfig::FILE_JSON;
+  # read bot configuration
+  if (!($cfg = $bot->file->getJSON($fileCfg))) {
+    return null;
+  }
+  # to determine if bot is running,
+  # check configuration is locked
+  $isRunning = file_exists($fileCfg.'.lock');
+  # determine identifier
+  if ($isMaster = ($id === 'master'))
+  {
+    $botId = $cfg['token'];
+    $botId = substr($botId, 0, strpos($botId, ':'));
+  }
+  else {
+    $botId = $id;
+  }
+  # determine ascending order index:
+  # master => running => type => name
+  $order  = $isMaster  ? '0' : '1';
+  $order .= $isRunning ? '0' : '1';
+  $order .= $cfg['source'].$cfg['name'];
+  # create base
+  $info = [
+    'id'    => $id,
+    'botId' => $botId,
+    'name'  => $cfg['name'],
+    'order' => $order,
+    'type'  => $cfg['source'],
+    'isMaster'  => $isMaster,
+    'isRunning' => $isRunning,
+  ];
+  if (!$extra) {
+    return $info;
+  }
+  # determine extra information
+  # ...
+  return $info;
 }
 # }}}
 ?>

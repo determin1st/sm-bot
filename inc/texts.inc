@@ -108,6 +108,8 @@
     'select'    => 'select',
     'type-str'  => 'string ({{max}})',
     'type-num'  => 'number [{{min}}..{{max}}]',
+    'start'     => 'start',
+    'stop'      => 'stop',
   ],
   # }}}
   'ru' => [# {{{
@@ -219,6 +221,8 @@
     'select'    => 'выбрать',
     'type-str'  => 'строка ({{max}})',
     'type-num'  => 'число [{{min}},{{max}}]',
+    'start'     => 'запустить',
+    'stop'      => 'остановить',
   ],
   # }}}
 ];

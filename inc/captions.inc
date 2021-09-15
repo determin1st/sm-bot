@@ -15,6 +15,8 @@
   'ok'       => 'OK',
   'add'      => '{:new:} {{.}}',
   'create'   => '{:new:} {{.}}',
+  'start'    => '{:arrow_forward:} {{.}}',
+  'stop'     => '{:double_vertical_bar:} {{.}}',
   ###
   'listItem' => '{{id}}:{{name}}',
   ###

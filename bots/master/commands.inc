@@ -1,5 +1,4 @@
-<?php return
-[
+<?php return [
   'start' => # {{{
   [
     'markup' => [
@@ -16,9 +15,8 @@
       [
         'type' => 'List',
         'config' => [
-          #'rows'  => 4,
           'order' => 'order',
-          #'desc'  => true,
+          'item'  => 'bot',
         ],
         'markup' => [
           'head' => [['!create','!refresh']],
@@ -32,19 +30,23 @@
           ',
         ],
         'text' => [
-          'en' => [
-            '@'   => 'bots',
-          ],
-          'ru' => [
-            '@'   => 'боты',
-          ],
+          'en' => ['@' => 'bots'],
+          'ru' => ['@' => 'боты'],
         ],
         'items' =>
         [
           'bot' => [
-            'markup'=> [['!kek'],[' '],['!up']],
+            'markup'=> [['!start','!stop','!refresh'],[' '],['!up']],
             'text'=> [
-              'kek' => 'kek test',
+              '!kek' => 'kek test',
+              '#' => '
+              {{BEG}}
+              {:black_medium_small_square:} <b>class</b>: {{type}}{{BR}}
+              {:black_medium_small_square:} <b>id</b>: <code>{{botId}}</code>{{BR}}
+              {:black_medium_small_square:} <b>state</b>: 
+              {{#isRunning}}{:zap:}started{{|}}──{{/isRunning}}{{BR}}
+              {{END}}
+              ',
             ],
           ],
         ],
