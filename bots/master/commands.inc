@@ -23,10 +23,14 @@
         ],
         'caps' => [
           'listItem' => '
-          {{#isRunning}}{:zap:}{{/isRunning}}
-          {{type}}
-          {:white_small_square:}
-          {{name}}
+          {{#isMaster}}
+            {{name}}
+          {{|}}
+            {{#isRunning}}{:zap:}{{/isRunning}}
+            {{type}}
+            {:white_small_square:}
+            {{name}}
+          {{/isMaster}}
           ',
         ],
         'text' => [
@@ -36,23 +40,37 @@
         'items' =>
         [
           'bot' => [
-            'markup'=> [['!start','!stop','!refresh'],[' '],['!up']],
+            'markup'=> [
+              ['!start','!stop','!refresh'],
+              ['!dropCache'],
+              ['!up'],
+            ],
             'text'=> [
-              '!kek' => 'kek test',
-              '#' => '
-              {{BEG}}
-              {:black_medium_small_square:} <b>class</b>: {{type}}{{BR}}
-              {:black_medium_small_square:} <b>id</b>: <code>{{botId}}</code>{{BR}}
-              {:black_medium_small_square:} <b>state</b>: 
-              {{#isRunning}}{:zap:}started{{|}}──{{/isRunning}}{{BR}}
-              {{END}}
-              ',
+              'en' => [
+                '#' => '
+                {{BEG}}
+                {:black_medium_small_square:} <b>class</b>: {{type}}{{BR}}
+                {:black_medium_small_square:} <b>id</b>: <code>{{botId}}</code>{{BR}}
+                {:black_medium_small_square:} <b>state</b>: 
+                {{#isRunning}}{:zap:}started{{|}}──{{/isRunning}}{{BR}}
+                {{#message}}
+                  {{BR}}
+                  {{#isError}}{:red_circle:}{{|}}{:green_circle:}{{/isError}}
+                  {{message}}
+                {{/message}}
+                {{END}}
+                ',
+                'dropCache' => 'reset cache',
+              ],
+              'ru' => [
+                'dropCache' => 'сбросить кэш',
+              ],
             ],
           ],
         ],
       ],
       # }}}
-      'tests' =>
+      'tests' => # {{{
       [
         'markup' => [['t1','t2','t3'],['!up']],
         'text' => ['@'=>'simple tests'],
@@ -74,6 +92,7 @@
           ],
         ],
       ],
+      # }}}
     ],
   ],
   # }}}

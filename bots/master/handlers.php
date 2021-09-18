@@ -28,10 +28,10 @@ function startbots(object $item): ?array # {{{
 function startbotsbot(object $item, string $func, string $args): ?array # {{{
 {
   # prepare
-  # determine data identifier
+  # determine bot identifier
   $id = (!$func && $args)
-    ? $args
-    : ($item['id'] ?? '');
+    ? $args # take from request
+    : ($item['id'] ?? '');# take from config
   # get information
   if (!$id || !($data = getBotInfo($item->bot, $id, true)))
   {
@@ -47,8 +47,21 @@ function startbotsbot(object $item, string $func, string $args): ?array # {{{
     $item->log->out(0, 0, $func, $data['name']);
     switch ($func) {
     case 'start':
+      # recurse upon success
+      if ($item->bot->proc->start($id)) {
+        return startbotsbot($item, '', $id);
+      }
+      # set error
+      $data['isError'] = true;
+      $data['message'] = $item->bot->text['op-fail'];
       break;
     case 'stop':
+      # same logic
+      if ($item->bot->proc->stop($id)) {
+        return startbotsbot($item, '', $id);
+      }
+      $data['isError'] = true;
+      $data['message'] = $item->bot->text['op-fail'];
       break;
     }
   }
@@ -116,8 +129,10 @@ function getBotInfo(# {{{
   if (!$extra) {
     return $info;
   }
-  # determine extra information
-  # ...
+  # set extra information
+  $info['isError'] = false;
+  $info['message'] = '';
+  # complete
   return $info;
 }
 # }}}

@@ -4,6 +4,8 @@ namespace SM;
 class Bot # {{{
 {
   const NS = '\\'.__NAMESPACE__.'\\';
+  const PROCESS_TICK  = 200000;# 1/5 sec
+  const PROCESS_CHUNK = 8000;# bytes
   const MESSAGE_LIFETIME = 48*60*60;
   static function start(int $id = 0): never # {{{
   {
@@ -1153,8 +1155,8 @@ class BotApi # {{{
         }
         while (($b = curl_multi_select($this->murl, 0.5)) === 0)
         {
-          usleep(300000);# 300ms
-          if (!$this->bot->check()) {
+          usleep(Bot::PROCESS_TICK);
+          if (!$this->bot->proc->check()) {
             return null;
           }
         }
@@ -1684,19 +1686,44 @@ class BotMaster # {{{
     public array  $map = []
   ) {}
   # }}}
-  function start($id): bool # {{{
+  function start(string $id): bool # {{{
   {
-    # check
-    if (isset($this->map[$id])) {
-      return true;
+    if ($this->get($id))
+    {
+      $this->log->warn(__FUNCTION__."($id): is already started");
+      return false;
     }
-    # start new process
     if (!($slave = BotMasterSlave::construct($this, $id))) {
       return false;
     }
-    # store
     $this->map[$id] = $slave;
     return true;
+  }
+  # }}}
+  function stop(string $id): bool # {{{
+  {
+    if (!($slave = $this->get($id)))
+    {
+      $this->log->warn(__FUNCTION__."($id): is not started");
+      return false;
+    }
+    $slave->destruct();
+    unset($this->map[$id]);
+    return true;
+  }
+  # }}}
+  function get(string $id): ?object # {{{
+  {
+    if (!isset($this->map[$id])) {
+      return null;
+    }
+    if (!($slave = $this->map[$id])->check())
+    {
+      $slave->destruct();
+      unset($this->map[$id]);
+      return null;
+    }
+    return $slave;
   }
   # }}}
   function check(): bool # {{{
@@ -1731,7 +1758,10 @@ class BotMasterSlave # {{{
   static function construct(object $master, string $id): ?self # {{{
   {
     # prepare
-    static $DESC = [['pipe','r'],['pipe','w']];# STDIN/OUT
+    static $DESC = [
+      ['pipe','r'],   # 0:input
+      ['pipe','w']    # 1:output
+    ];
     static $OPTS = [
       'suppress_errors' => false,
       'bypass_shell'    => true,
@@ -1745,8 +1775,9 @@ class BotMasterSlave # {{{
     $cmd  = $master->cmd.$id;
     $pipe = null;
     $home = $bot->dir->home;
-    $out  = $bot->dir->data."$id.proc";
-    $log->info('start');
+    $in   = $bot->dir->data."$id.out";
+    $out  = $bot->dir->data."$id.in";
+    # operate
     try
     {
       # execute
@@ -1756,87 +1787,60 @@ class BotMasterSlave # {{{
         throw BotError::text("proc_open($cmd) failed");
       }
       # initiate sync protocol
-      # set master lockfile
+      # create output lockfile
       if (!touch($out)) {
         throw BotError::text("touch($out) failed");
       }
-      if (fwrite($pipe[0], $out) === false) {
+      # pass paths to the process input
+      if (fwrite($pipe[0], "$out,$in") === false) {
         throw BotError::text('fwrite() failed');
       }
-      # wait
-      while (file_exists($out))
+      # wait output lock removed and input created by the process
+      while (file_exists($out) && !file_exists($in))
       {
-        usleep(200000);
-        if (!($a = proc_get_status($proc)) || !$a['running']) {
-          throw BotError::text('exited('.$a['exitcode'].')');
+        usleep(Bot::PROCESS_TICK);
+        if (!($a = proc_get_status($proc))['running']) {
+          throw BotError::text('process escaped, exitcode='.$a['exitcode']);
         }
       }
-      # get slave lockfile
-      stream_set_blocking($pipe[1], true);
-      if (($in = fread($pipe[1], 300)) === false) {
-        throw BotError::text('fread() failed');
-      }
-      if (!file_exists($in)) {
-        throw BotError::text("file not found: $in");
-      }
-      # unlock slave
-      @unlink($in);
+      # report success
+      $log->info('ok');
     }
     catch (\Throwable $e)
     {
-      # report
+      # report failure
       $log->exception($e);
-      # cleanup
-      if (file_exists($out)) {
-        @unlink($out);
-      }
+      # remove output lockfile
+      file_exists($out) && @unlink($out);
+      # close pipes
       if ($pipe)
       {
         is_resource($pipe[0]) && fclose($pipe[0]);
         if (is_resource($pipe[1]))
         {
-          ($a = fread($pipe[1], 2000)) && fwrite(STDOUT, $a);
+          # read any output left
+          ($a = fread($pipe[1], Bot::PROCESS_CHUNK)) && fwrite(STDOUT, $a);
           fclose($pipe[1]);
         }
       }
       return null;
     }
     # construct
-    return new self($log, $proc, [$in, $out], $pipe);
+    return new self($proc, $log, [$in, $out], $pipe);
   }
   # }}}
   function __construct(# {{{
+    public $proc,
     public object $log,
-    public object $proc,
     public array  $lock,
     public array  $pipe
   ) {}
-  # }}}
-  function check(): bool # {{{
-  {
-    # read slave output
-    $in = $this->lock[0];
-    while (file_exists($in))
-    {
-      @unlink($in);
-      if ($a = fread($this->pipe[1], 8000)) {
-        fwrite(STDOUT, $a);
-      }
-    }
-    # check process state
-    if (!($a = proc_get_status($this->proc)) || !$a['running'])
-    {
-      $this->log->info('exited('.$a['exitcode'].')');
-      return false;
-    }
-    return true;
-  }
   # }}}
   function destruct(): void # {{{
   {
     # prepare
     $pipe = $this->pipe;
-    # check
+    # check running
     if ($this->check())
     {
       # process is still running,
@@ -1846,22 +1850,51 @@ class BotMasterSlave # {{{
       touch($out = $this->lock[1]);
       # wait
       while (file_exists($out)) {
-        usleep(200000);
+        usleep(Bot::PROCESS_TICK);
       }
-      while (($a = proc_get_status($this->proc)) && $a['running']) {
-        usleep(200000);
+      while (proc_get_status($this->proc)['running']) {
+        usleep(Bot::PROCESS_TICK);
       }
       # read final output
-      if (file_exists($a = $this->lock[0])) {
-        @unlink($a);
-      }
-      if ($a = fread($pipe[1], 8000)) {
-        fwrite(STDOUT, $a);
-      }
+      $this->readPipe(true);
     }
     # cleanup
     fclose($pipe[0]);
     fclose($pipe[1]);
+  }
+  # }}}
+  function check(): bool # {{{
+  {
+    $this->readPipe();
+    return $this->checkProc();
+  }
+  # }}}
+  function readPipe(bool $force = false): bool # {{{
+  {
+    try
+    {
+      if ((file_exists($this->lock[0]) && unlink($this->lock[0])) ||
+          $force)
+      {
+        fwrite(STDOUT, fread($this->pipe[1], Bot::PROCESS_CHUNK));
+      }
+    }
+    catch (\Throwable $e)
+    {
+      $this->log->exception($e);
+      return false;
+    }
+    return true;
+  }
+  # }}}
+  function checkProc(): bool # {{{
+  {
+    if (!($a = proc_get_status($this->proc))['running'])
+    {
+      $this->log->info('process escaped, exitcode='.$a['exitcode']);
+      return false;
+    }
+    return true;
   }
   # }}}
 }
@@ -1872,45 +1905,43 @@ class BotSlave # {{{
   {
     # prepare
     $log = $bot->log->new('proc');
-    # initiate sync protocol
-    # get master lockfile
-    stream_set_blocking(STDIN, true);
-    if (($in = fread(STDIN, 300)) === false)
+    # sync with the master
+    try
     {
-      $log->error('fread() failed');
-      return null;
+      # do a blocking read of master input
+      stream_set_blocking(STDIN, true);
+      if (($a = fread(STDIN, Bot::PROCESS_CHUNK)) === false) {
+        throw BotError::text('fread(STDIN) failed');
+      }
+      # parse and check it
+      if (!($lock = explode(',', $a)) || count($lock) !== 2) {
+        throw BotError::text("incorrect master input: $a");
+      }
+      # check and remove master lock
+      if (!file_exists($lock[0]) || !unlink($lock[0])) {
+        throw BotError::text('failed to remove: '.$lock[0]);
+      }
+      # create slave lock
+      if (!touch($lock[1]) || !file_exists($lock[1])) {
+        throw BotError::text('failed to touch: '.$lock[1]);
+      }
+      # wait unlocked
+      for ($a = 0, $b = 10; $a < $b && file_exists($lock[1]); ++$a) {
+        usleep(Bot::PROCESS_TICK);
+      }
+      if ($a === $b)
+      {
+        unlink($lock[1]);
+        throw BotError::text('master timed out');
+      }
     }
-    # check
-    if (!file_exists($in))
+    catch (\Throwable $e)
     {
-      $log->error("file not found: $in");
-      return null;
-    }
-    # set slave lockfile
-    if (!touch($out = $bot->dir->data.'proc.out'))
-    {
-      $log->error("touch($out) failed");
-      return null;
-    }
-    if (fwrite(STDOUT, $out) === false)
-    {
-      $log->error("fwrite() failed");
-      return null;
-    }
-    # unlock master
-    @unlink($in);
-    # wait
-    for ($a = 0, $b = 10; $a < $b && file_exists($out); ++$a) {
-      usleep(200000);
-    }
-    if ($a === $b)
-    {
-      @unlink($out);
-      $log->error('master timed out');
+      $log->exception($e);
       return null;
     }
     # complete
-    return new self($log, [$in, $out]);
+    return new self($log, $lock);
   }
   # }}}
   function __construct(# {{{
@@ -3400,7 +3431,7 @@ abstract class BotItem implements \ArrayAccess, \JsonSerializable # {{{
           $e = $this->text[$d] ?: ($bot->text[$d] ?? '');
           # compose
           $row[] = [
-            'text' => $bot->tp->render($c, $e),
+            'text' => $c ? $bot->tp->render($c, $e) : $e,
             'callback_data' => "/$id$b"
           ];
           # }}}
@@ -3641,8 +3672,10 @@ class BotItemCaptions implements \ArrayAccess # {{{
   function offsetExists(mixed $k): bool {
     return true;
   }
-  function offsetGet(mixed $k): mixed {
-    return $this->caps[$k] ?? $this->botCaps[$k] ?? $k;
+  function offsetGet(mixed $k): mixed
+  {
+    return $this->caps[$k] ?? $this->botCaps[$k] ??
+           $this->item->text[$k] ?? $k;
   }
   function offsetSet(mixed $k, mixed $v): void
   {}
@@ -4021,6 +4054,7 @@ class BotListItem extends BotImgItem # {{{
 ###
 # TODO: check old message callback action does ZAP? or.. PROPER UPDATE?!
 # TODO: check file_id stores oke
+# TODO: make rendering safe
 ###
 class BotFormItem extends BotItem # {{{
 {
