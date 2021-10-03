@@ -1,6 +1,6 @@
 <?php
 namespace SM\BotItem;
-use SM\BotConfig;
+use SM\{BotConfig, BotText, BotFile, BotCommands};
 function startbots(object $item): ?array # {{{
 {
   # prepare
@@ -63,6 +63,10 @@ function startbotsbot(object $item, string $func, string $args): ?array # {{{
       $data['isError'] = true;
       $data['message'] = $item->bot->text['op-fail'];
       break;
+    case 'dropCache':
+      # invoke handler
+      dropCache($item, $data);
+      break;
     }
   }
   # render markup
@@ -72,6 +76,7 @@ function startbotsbot(object $item, string $func, string $args): ?array # {{{
   $mkup = $item->markup($mkup, [
     'start' => $data['isRunning'] ? 0 : 1,
     'stop'  => $data['isRunning'] ? 1 : 0,
+    'dropCache' => $data['isRunning'] ? 0 : 1,
   ]);
   # store identifier
   $item['id'] = $id;
@@ -83,6 +88,16 @@ function startbotsbot(object $item, string $func, string $args): ?array # {{{
     'text'   => $item->bot->tp->render($item->text['#'], $data),
     'markup' => $mkup,
   ];
+}
+# }}}
+function startbotscreate(object $item, string $func, string $args = ''): ?array # {{{
+{
+  switch ($func) {
+  case 'options':
+    $item->log->warn("$func: aaaaaaaaaaaaaaaa");
+    return null;
+  }
+  return null;
 }
 # }}}
 ###
@@ -134,6 +149,42 @@ function getBotInfo(# {{{
   $info['message'] = '';
   # complete
   return $info;
+}
+# }}}
+function dropCache(object $item, array &$data): bool # {{{
+{
+  # prepare
+  $bot = $item->bot;
+  $dir = $bot->dir->dataRoot.$data['id'].DIRECTORY_SEPARATOR;
+  $cnt = 0;
+  # operate
+  try
+  {
+    # remove texts cache
+    foreach (BotText::FILE_JSON as $a) {
+      file_exists($a = $dir.$a) && unlink($a) && ++$cnt;
+    }
+    # remove files cache
+    foreach (BotFile::FILE_JSON as $a) {
+      file_exists($a = $dir.$a) && unlink($a) && ++$cnt;
+    }
+    # remove command tree cache
+    file_exists($a = $dir.BotCommands::FILE_JSON) &&
+    unlink($a) && ++$cnt;
+    # success
+    $data['message'] = sprintf(
+      $item->text['cacheDropped'], $cnt
+    );
+  }
+  catch (\Throwable $e)
+  {
+    # failure
+    $item->log->exception($e);
+    $data['message'] = $bot->text['op-fail'];
+    $data['isError'] = true;
+    return false;
+  }
+  return true;
 }
 # }}}
 ?>

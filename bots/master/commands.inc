@@ -13,7 +13,7 @@
     'items' => [
       'bots' => # {{{
       [
-        'type' => 'List',
+        'type' => 'list',
         'config' => [
           'order' => 'order',
           'item'  => 'bot',
@@ -39,7 +39,26 @@
         ],
         'items' =>
         [
-          'bot' => [
+          'create' => [# {{{
+            'type' => 'form',
+            'datafile' => 1,
+            'markup' => [
+            ],
+            'fields'  => [# bits: required+persistent+nullable
+              'name'  => [1+2+0, 'string', 40],
+              'token' => [1+2+0, 'string', 46],
+              'class' => [1+0+4, 'select', 1, ['a','b','c','d','e']],
+            ],
+            'text' => [
+              '@' => 'new bot',
+              '.' => '
+              To obtain <b>username</b> and <b>token</b> for a new bot,
+              navigate to @BotFather and follow instructions.
+              ',
+            ],
+          ],
+          # }}}
+          'bot' => [# {{{
             'markup'=> [
               ['!start','!stop','!refresh'],
               ['!dropCache'],
@@ -55,18 +74,21 @@
                 {{#isRunning}}{:zap:}started{{|}}──{{/isRunning}}{{BR}}
                 {{#message}}
                   {{BR}}
-                  {{#isError}}{:red_circle:}{{|}}{:green_circle:}{{/isError}}
+                  {{#isError}}{:red_circle:}{{|}}{:green_circle:}{{/isError}} 
                   {{message}}
                 {{/message}}
                 {{END}}
                 ',
                 'dropCache' => 'reset cache',
+                'cacheDropped' => 'cache dropped (%s)',
               ],
               'ru' => [
                 'dropCache' => 'сбросить кэш',
+                'cacheDropped' => 'кэш сброшен (%s)',
               ],
             ],
           ],
+          # }}}
         ],
       ],
       # }}}

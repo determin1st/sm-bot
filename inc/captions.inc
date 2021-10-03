@@ -10,18 +10,19 @@
   'first'    => '{:previous_track:} {{.}}',
   'last'     => '{{.}} {:next_track:}',
   'refresh'  => '{{.}} {:arrows_counterclockwise:}',
-  'reset'    => '{:arrows_counterclockwise:} {{.}}',
-  'retry'    => '{:arrow_right_hook:} {{.}}',
+  'reset'    => '{:arrow_right_hook:} {{.}}',
+  'retry'    => '{:arrows_counterclockwise:} {{.}}',
+  'repeat'   => '{{.}} {:repeat:}',
   'ok'       => 'OK',
   'add'      => '{:new:} {{.}}',
   'create'   => '{:new:} {{.}}',
   'start'    => '{:arrow_forward:} {{.}}',
   'stop'     => '{:double_vertical_bar:} {{.}}',
+  'clear'    => '{{.}} {:leftwards_arrow_with_hook:}',
   ###
   'listItem' => '{{id}}:{{name}}',
+  'select'   => '{{#v}}{:green_circle:}{{/v}} {{x}}',
   ###
-  'select0'  => '{{.}}',
-  'select1'  => '{:green_circle:} {{.}}',
   'fav_on'   => '{:star:}',
   'fav_off'  => '{:sparkles:}{:star:}{:sparkles:}',
 ];
