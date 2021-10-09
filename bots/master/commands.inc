@@ -40,21 +40,34 @@
         'items' =>
         [
           'create' => [# {{{
-            'type' => 'form',
+            'type'     => 'form',
             'datafile' => 1,
-            'markup' => [
+            'config'   => [
             ],
-            'fields'  => [# bits: required+persistent+nullable
-              'name'  => [1+2+0, 'string', 40],
-              'token' => [1+2+0, 'string', 46],
-              'class' => [1+0+4, 'select', 1, ['a','b','c','d','e']],
+            'markup'   => [],
+            'fields'   => [# bits: 1:required+2:persistent+4:nullable+8:hidden+16:auto
+              'class'  => [1+4, 'select', 1],
+              'token'  => [1+8, 'string', 46, \SM\Bot::TOKEN_EXP],
+              'id'     => [16,  'string'],
+              'name'   => [16,  'string'],
             ],
-            'text' => [
-              '@' => 'new bot',
-              '.' => '
-              To obtain <b>username</b> and <b>token</b> for a new bot,
-              navigate to @BotFather and follow instructions.
-              ',
+            'text'  => [
+              'en'  => [
+                '@' => 'new bot',
+                '#desc' => '
+                To obtain <b>username</b> and <b>token</b> for a new bot,
+                navigate to @BotFather and follow instructions.
+                ',
+              ],
+              'en'  => [
+                '@' => 'новый бот',
+                '#desc' => '
+                ',
+                '.class' => 'класс',
+                '.token' => 'токен',
+                '.id'    => 'идентификатор',
+                '.name'  => 'имя',
+              ],
             ],
           ],
           # }}}

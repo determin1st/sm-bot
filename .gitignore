@@ -4,7 +4,6 @@
 /data/*
 !/data/master
 /data/master/*
-!/data/master/config.example
 *.vim
 *.swp
 

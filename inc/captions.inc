@@ -14,6 +14,7 @@
   'retry'    => '{:arrows_counterclockwise:} {{.}}',
   'repeat'   => '{{.}} {:repeat:}',
   'ok'       => 'OK',
+  'submit'   => '{{.}} {:record_button:}',
   'add'      => '{:new:} {{.}}',
   'create'   => '{:new:} {{.}}',
   'start'    => '{:arrow_forward:} {{.}}',
@@ -21,7 +22,7 @@
   'clear'    => '{{.}} {:leftwards_arrow_with_hook:}',
   ###
   'listItem' => '{{id}}:{{name}}',
-  'select'   => '{{#v}}{:green_circle:}{{/v}} {{x}}',
+  'select'   => '{{#v}}{:ballot_box_with_check:}{{/v}} {{x}}',
   ###
   'fav_on'   => '{:star:}',
   'fav_off'  => '{:sparkles:}{:star:}{:sparkles:}',

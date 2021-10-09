@@ -1,6 +1,9 @@
 <?php
 namespace SM\BotItem;
-use SM\{BotConfig, BotText, BotFile, BotCommands};
+use SM\{# {{{
+  BotError, BotConfig, BotText, BotFile, BotCommands
+};
+# }}}
 function startbots(object $item): ?array # {{{
 {
   # prepare
@@ -92,10 +95,27 @@ function startbotsbot(object $item, string $func, string $args): ?array # {{{
 # }}}
 function startbotscreate(object $item, string $func, string $args = ''): ?array # {{{
 {
+  static $NEWBOT_EXP = '/^.+ t\.me\/([^.]{5,32})\..+ HTTP API:\n([^\n]{44,46})\n.+$/s';
+  ###
   switch ($func) {
   case 'options':
-    $item->log->warn("$func: aaaaaaaaaaaaaaaa");
-    return null;
+    # there is only one field with options,
+    # get and return available bot classes
+    return getBotClassMap($item);
+  case 'input':
+    # parse forwarded BotFather message
+    if (!isset(($a = $item->input)->forward_from) ||
+        !($b = $a->forward_from)->is_bot || $b->username !== 'BotFather' ||
+        !isset($a->text) ||
+        !preg_match($NEWBOT_EXP, $a->text, $a))
+    {
+      break;
+    }
+    # store data
+    $item->data['name']  = $a[1];
+    $item->data['token'] = $a[2];
+    # complete
+    return [1, $item->bot->text['msg-parsed']];
   }
   return null;
 }
@@ -185,6 +205,34 @@ function dropCache(object $item, array &$data): bool # {{{
     return false;
   }
   return true;
+}
+# }}}
+function getBotClassMap(object $item): ?array # {{{
+{
+  # prepare
+  $bot = $item->bot;
+  $dir = $bot->dir->srcRoot;
+  $map = [];
+  # operate
+  try
+  {
+    if (!($a = scandir($dir))) {
+      throw BotError::text("scandir($dir) failed");
+    }
+    foreach ($a as $b)
+    {
+      if ($b[0] !== '.' && $b !== 'master') {
+        $map[$b] = $b;
+      }
+    }
+  }
+  catch (\Throwable $e)
+  {
+    # failure
+    $item->log->exception($e);
+    return null;
+  }
+  return $map;
 }
 # }}}
 ?>
