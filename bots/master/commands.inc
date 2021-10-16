@@ -44,12 +44,10 @@
             'datafile' => 1,
             'config'   => [
             ],
-            'markup'   => [],
-            'fields'   => [# bits: 1:required+2:persistent+4:nullable+8:hidden+16:auto
-              'class'  => [1+4, 'select', 1],
-              'token'  => [1+8, 'string', 46, \SM\Bot::TOKEN_EXP],
-              'id'     => [16,  'string'],
-              'name'   => [16,  'string'],
+            'markup'  => [],
+            'fields'  => [# bits: 1:required+2:persistent+4:nullable+8:hidden
+              'class' => [1, 'select', 1],
+              'token' => [1+8, 'string', 46, \SM\Bot::TOKEN_EXP],
             ],
             'text'  => [
               'en'  => [
@@ -57,6 +55,9 @@
                 '#desc' => '
                 To obtain <b>username</b> and <b>token</b> for a new bot,
                 navigate to @BotFather and follow instructions.
+                ',
+                'in-use' => '
+                identifier is already in use by @{{name}}
                 ',
               ],
               'en'  => [
@@ -67,6 +68,9 @@
                 '.token' => 'токен',
                 '.id'    => 'идентификатор',
                 '.name'  => 'имя',
+                'in-use' => '
+                идентификатор уже используется ботом @{{name}}
+                ',
               ],
             ],
           ],
@@ -128,6 +132,26 @@
         ],
       ],
       # }}}
+    ],
+  ],
+  # }}}
+  'test' => [# {{{
+    'type'     => 'form',
+    'datafile' => 1,
+    'config'   => [
+    ],
+    'markup'  => [],
+    'fields'  => [# bits: 1:required+2:persistent+4:nullable+8:hidden
+      'phone' => [1+2, 'string', 89031234567, '/^\+{0,1}\d{11}$/'],
+      'city'  => [1+8, 'string', 46],
+    ],
+    'text'  => [
+      'en'  => [
+        '@' => 'taxi',
+      ],
+      'en'  => [
+        '@' => 'taxi',
+      ],
     ],
   ],
   # }}}

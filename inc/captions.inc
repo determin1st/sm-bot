@@ -11,8 +11,8 @@
   'last'     => '{{.}} {:next_track:}',
   'refresh'  => '{{.}} {:arrows_counterclockwise:}',
   'reset'    => '{:arrow_right_hook:} {{.}}',
-  'retry'    => '{:arrows_counterclockwise:} {{.}}',
-  'repeat'   => '{{.}} {:repeat:}',
+  'retry'    => '{{.}} {:arrows_counterclockwise:}',
+  'repeat'   => '{:repeat:} {{.}}',
   'ok'       => 'OK',
   'submit'   => '{{.}} {:record_button:}',
   'add'      => '{:new:} {{.}}',
@@ -22,7 +22,7 @@
   'clear'    => '{{.}} {:leftwards_arrow_with_hook:}',
   ###
   'listItem' => '{{id}}:{{name}}',
-  'select'   => '{{#v}}{:ballot_box_with_check:}{{/v}} {{x}}',
+  'select'   => '{{#v}}{:green_circle:}{{/v}} {{x}}',
   ###
   'fav_on'   => '{:star:}',
   'fav_off'  => '{:sparkles:}{:star:}{:sparkles:}',

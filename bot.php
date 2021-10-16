@@ -3,13 +3,18 @@ declare(strict_types=1);
 namespace SM;
 class Bot # {{{
 {
-  const NS = '\\'.__NAMESPACE__.'\\';
-  const PROCESS_TICK  = 200000;# 1/5 sec
-  const PROCESS_CHUNK = 8000;# bytes
-  const MESSAGE_LIFETIME = 48*60*60;
-  const USERNAME_EXP = '/^[a-z]\w{4,32}$/i';
-  const BOTNAME_EXP  = '/^[a-z]\w{1,29}bot$/i';
-  const TOKEN_EXP    = '/^\d{8,10}:[a-z0-9_-]{35}$/i';
+  # {{{
+  const
+    NS               = '\\'.__NAMESPACE__.'\\',
+    PROCESS_TICK     = 200000,# 1/5 sec
+    PROCESS_CHUNK    = 8000,# bytes
+    MESSAGE_LIFETIME = 48*60*60,
+    USERNAME_EXP     = '/^[a-z]\w{4,32}$/i',
+    BOTNAME_EXP      = '/^[a-z]\w{1,29}bot$/i',
+    TOKEN_EXP        = '/^\d{8,10}:[a-z0-9_-]{35}$/i';
+  public
+    $dir,$cfg,$log,$file,$api,$tp,$text,$cmd,$proc,$user;
+  # }}}
   static function start(int $id = 0): never # {{{
   {
     # check requirements
@@ -82,7 +87,8 @@ class Bot # {{{
       # create instance
       $bot = new self($id, ($id === 0), $isConsole);
       # initialize
-      if (!$bot->cfg->init() ||
+      if (!$bot->api->init() ||
+          !$bot->cfg->init() ||
           !$bot->log->init() ||
           !$bot->dir->init() ||
           !$bot->file->init())
@@ -90,7 +96,7 @@ class Bot # {{{
         throw BotError::skip();
       }
       # set masterbot identifier or
-      # check/match identifiers
+      # make sure identifiers match
       if ($bot->isMaster) {
         $bot->id = $bot->cfg->id;
       }
@@ -100,11 +106,7 @@ class Bot # {{{
       # load dependencies
       require_once $bot->dir->inc.'sm-mustache'.DIRECTORY_SEPARATOR.'mustache.php';
       require_once $bot->dir->src.'handlers.php';
-      # set telegram api
-      if (!($bot->api = BotApi::construct($bot))) {
-        throw BotError::skip();
-      }
-      # set template parser
+      # create template parser
       $o = [
         'logger'  => \Closure::fromCallable([
           $bot->log->new('mustache'), 'errorOnly'
@@ -146,7 +148,6 @@ class Bot # {{{
     return $bot;
   }
   # }}}
-  public $dir,$cfg,$log,$file,$api,$tp,$text,$cmd,$proc,$user;
   function __construct(# {{{
     public int  $id,
     public bool $isMaster,
@@ -158,6 +159,7 @@ class Bot # {{{
     $this->cfg  = new BotConfig($this);
     $this->log  = new BotLog($this, "$id");
     $this->file = new BotFile($this);
+    $this->api  = new BotApi($this);
   }
   # }}}
   function destruct(): void # {{{
@@ -166,7 +168,7 @@ class Bot # {{{
     {
       $this->user?->destruct();
       $this->proc?->destruct();
-      $this->api?->destruct();
+      $this->api?->finit();
       $this->cfg?->destruct();
       $this->log->info('stopped');
       $this->log = null;
@@ -385,26 +387,27 @@ class BotDir # {{{
 # }}}
 class BotConfig # {{{
 {
+  const FILE_INC  = 'config.inc';
   const FILE_JSON = 'config.json';
-  const DEFS = [
+  const PROPS = [
     # {{{
     'source' => '',
     'token'  => '',
-    'name'   => '',
     'admins' => [],
+    'id'     => 0,
+    'name'   => '',
     'lang'   => '',
-    'useFileIds'  => false,
-    ###
-    'BotLog' => [
-      'debug'     => true,# show dumps/debug output
+    'useFileIds' => false,
+    'BotLog'      => [
+      'debug'     => true,# display debug output?
       'infoFile'  => '',
       'errorFile' => '',
     ],
     'BotRequestInput' => [
-      'wipeInput' => true,
+      'wipeInput'     => true,
     ],
     'BotRequestCommand' => [
-      'wipeInput' => true,
+      'wipeInput'       => true,
       #'replyFailed' => false,
     ],
     'BotRequestCallback' => [
@@ -470,24 +473,28 @@ class BotConfig # {{{
       'okWhenReady'    => true,# ok only when all required fields filled
       'okDisable'      => true,# disable ok when missing required
       'okConfirm'      => true,# enable confirmation step
+      'retryFailed'    => true,# allow to retry failed submission
+      'retryDisable'   => true,# disable retry rather than hide
       'clearSolid'     => true,# show empty bar when clearing is not feasible
       'selectDeselect' => true,# allow to de-select selected option
       'hiddenValue'    => '✶✶✶',
       'markup'         => [
-        'failure'      => [['!retry'],['!up']],
+        'failure'      => [['!back','!retry'],['!up']],
         'inputHead'    => [],
         'inputFoot'    => [['!back','!ok','!forward'],['!up']],
         'confirm'      => [['!back','!submit'],['!up']],
-        'success'      => [['!reset','!repeat'],['!up']],
+        'success'      => [['!repeat'],['!up']],
       ],
     ],
     # }}}
   ];
-  public $id,$file;
-  function __construct(public ?object $bot) # {{{
+  function __construct(# {{{
+    public ?object  $bot,
+    public string   $file = ''
+  )
   {
-    # set defaults
-    foreach (self::DEFS as $k => $v) {
+    # create properties dynamically
+    foreach (self::PROPS as $k => $v) {
       $this->$k = $v;
     }
   }
@@ -495,56 +502,45 @@ class BotConfig # {{{
   function init(): bool # {{{
   {
     # prepare
-    $bot = $this->bot;
-    # load bot configuration
-    if (!file_exists($file = $bot->dir->data.self::FILE_JSON) ||
-        !($o = $bot->file->getJSON($file))   ||
-        !isset($o[$k = 'source']) || !$o[$k] ||
-        !isset($o[$k = 'token'])  || !($token = $o[$k]))
+    $bot      = $this->bot;
+    $dir      = $bot->dir->data;
+    $fileInc  = $dir.self::FILE_INC;
+    $fileJson = $dir.self::FILE_JSON;
+    $lock     = "$fileJson.lock";
+    # setup
+    if (!file_exists($fileJson) &&
+        !self::setup($dir, $bot))
     {
-      $bot->log->error("failed to load: $file");
       return false;
     }
-    # parse token (extract identifier)
-    if (!($k = strpos($token, ':')) ||
-        !ctype_digit($id = substr($token, 0, $k)))
-    {
-      $bot->log->error("incorrect token: $token");
+    # load configuration
+    if (!($o = $bot->file->getJSON($fileJson))) {
       return false;
     }
-    # cast to integer
-    $id = intval($id);
-    # match against slavebot
-    if (!$bot->isMaster && $id !== $bot->id)
-    {
-      $bot->log->error("identifier mismatch: $id");
-      return false;
+    foreach ($o as $k => $v) {
+      isset($this->$k) && ($this->$k = $v);
     }
-    # replace defaults
-    foreach (self::DEFS as $k => &$v)
-    {
-      if (isset($o[$k])) {
-        $this->$k = $o[$k];
-      }
-    }
-    # check mode
+    # set or check lock
     if ($bot->isConsole)
     {
-      # lock
-      if (!BotFile::lock($file))
+      if (file_exists($lock))
       {
-        $bot->log->warn('bot has already started');
+        $bot->log->warn('configuration is already locked');
+        return false;
+      }
+      if (!BotFile::lock($fileJson))
+      {
+        $bot->log->warn("failed to lock: $fileJson");
         return false;
       }
     }
-    elseif (!file_exists("$file.lock"))
+    elseif (!file_exists($lock))
     {
-      $bot->log->warn('bot is disabled');
+      $bot->log->warn('configuration is not locked');
       return false;
     }
     # complete
-    $this->id   = $id;
-    $this->file = $file;
+    $this->file = $fileJson;
     return true;
   }
   # }}}
@@ -558,6 +554,67 @@ class BotConfig # {{{
       # cleanup
       $this->bot = null;
     }
+  }
+  # }}}
+  static function setup(string $dir, object $bot): bool # {{{
+  {
+    # prepare
+    $log = $bot->log->new('setup');
+    $fileInc  = $dir.self::FILE_INC;
+    $fileJson = $dir.self::FILE_JSON;
+    # check files
+    if (file_exists($fileJson))
+    {
+      $log->error("configuration already exists: $fileJson");
+      return false;
+    }
+    if (!file_exists($fileInc))
+    {
+      $log->error("initial configuration not found: $fileInc");
+      return false;
+    }
+    # load source
+    if (!($o = require $fileInc)  || !is_array($o) ||
+        !isset($o[$k = 'source']) || !$o[$k] ||
+        !isset($o[$k = 'token'])  || !$o[$k] ||
+        !isset($o[$k = 'admins']))
+    {
+      $log->error("incorrect data: $fileInc");
+      return false;
+    }
+    # check source
+    if (!file_exists($k = $bot->dir->srcRoot.DIRECTORY_SEPARATOR.$o['source']))
+    {
+      $log->error("source directory not found: $k");
+      return false;
+    }
+    # check token
+    if (!preg_match(Bot::TOKEN_EXP, $v = $o['token']))
+    {
+      $log->error("incorrect token: $token");
+      return false;
+    }
+    # extract and set identifier
+    $k = substr($v, 0, strpos($v, ':'));
+    $o['id'] = intval($k);
+    # request bot information
+    if (!($v = $bot->api->send('getMe', null, null, $o['token'])) ||
+        !isset($v->username))
+    {
+      $log->error("failed to get bot information: ".$bot->api->error);
+      return false;
+    }
+    # set name
+    $o['name'] = $v->username;
+    # save new configuration
+    if (!$bot->file->setJSON($fileJson, $o))
+    {
+      $log->error("failed to store: $fileJson");
+      return false;
+    }
+    # complete
+    $log->info($k.'@'.$v->username);
+    return true;
   }
   # }}}
 }
@@ -626,9 +683,9 @@ class BotLog extends BotConfigAccess # {{{
     $this->out(0, 1, $msg);
   }
   # }}}
-  function error(string $msg): void # {{{
+  function error(string ...$msg): void # {{{
   {
-    $this->out(1, 0, $msg);
+    $this->out(1, 0, ...$msg);
   }
   # }}}
   function errorOnly(string $msg, int $level): void # {{{
@@ -636,9 +693,9 @@ class BotLog extends BotConfigAccess # {{{
     $level && $this->out(1, 0, $msg);
   }
   # }}}
-  function warn(string $msg): void # {{{
+  function warn(string ...$msg): void # {{{
   {
-    $this->out(2, 0, $msg);
+    $this->out(2, 0, ...$msg);
   }
   # }}}
   function warnInput(string $msg): void # {{{
@@ -868,7 +925,7 @@ class BotFile # {{{
     }
     if (!is_array($data))
     {
-      $this->log->error(__FUNCTION__."($file): incorrect data");
+      $this->log->error(__FUNCTION__."($file): incorrect data type");
       return null;
     }
     return $data;
@@ -1049,22 +1106,25 @@ class BotApi # {{{
     #CURLOPT_TCP_FASTOPEN   => true,
     ###
     CURLOPT_HTTP_VERSION   => CURL_HTTP_VERSION_1_1,
-    #CURLOPT_HTTP_VERSION   => CURL_HTTP_VERSION_2TLS,
     CURLMOPT_PIPELINING    => 0,
     CURLOPT_PIPEWAIT       => false,
     CURLOPT_FOLLOWLOCATION => false,
     #CURLOPT_NOSIGNAL       => true,
     #CURLOPT_VERBOSE        => true,
-    #CURLOPT_SSL_VERIFYHOST => 0,
-    #CURLOPT_SSL_VERIFYPEER => false,
+    CURLOPT_SSL_VERIFYSTATUS => false,# require OCSP during the TLS handshake?
+    CURLOPT_SSL_VERIFYHOST   => 0,# are you afraid of MITM?
+    CURLOPT_SSL_VERIFYPEER   => false,# diallow self-signed certs?
     # }}}
   ];
-  static function construct(object $bot): ?self # {{{
+  public $log,$curl,$murl,$error = '';
+  function __construct(public object $bot)# {{{
   {
-    # prepare
-    $log  = $bot->log->new('api');
-    $api  = null;
-    $curl = $murl = false;
+    $this->log = $bot->log->new('api');
+  }
+  # }}}
+  function init(): bool # {{{
+  {
+    $curl = $murl = null;
     try
     {
       # create curl instance
@@ -1079,41 +1139,32 @@ class BotApi # {{{
       if (!($murl = curl_multi_init())) {
         throw BotError::text('curl_multi_init() failed');
       }
-      # construct
-      $api = new self(
-        $bot, $log, self::URL.$bot->cfg->token, $curl, $murl
-      );
+      # complete
+      $this->curl = $curl;
+      $this->murl = $murl;
     }
     catch (\Throwable $e)
     {
-      $log->exception($e);
+      $this->log->exception($e);
       $curl && curl_close($curl);
       $murl && curl_multi_close($murl);
+      return false;
     }
-    return $api;
+    return true;
   }
   # }}}
-  function __construct(# {{{
-    public ?object  $bot,
-    public ?object  $log,
-    public string   $url,
-    public ?object  $curl,
-    public ?object  $murl
-  ) {}
-  # }}}
-  function destruct(): void # {{{
+  function finit(): void # {{{
   {
-    if ($this->bot)
+    if ($this->murl)
     {
-      if ($this->murl)
-      {
-        $this->getUpdates(true);
-        curl_multi_close($this->murl);
-      }
-      if ($this->curl) {
-        curl_close($this->curl);
-      }
-      $this->bot = $this->log = $this->curl = $this->murl = null;
+      $this->getUpdates(true);
+      curl_multi_close($this->murl);
+      $this->murl = null;
+    }
+    if ($this->curl)
+    {
+      curl_close($this->curl);
+      $this->curl = null;
     }
   }
   # }}}
@@ -1133,8 +1184,9 @@ class BotApi # {{{
         'limit'   => 100,
         'timeout' => self::POLLING_TIMEOUT
       ];
+      $q = self::URL.$this->bot->cfg->token;
       $q = [
-        CURLOPT_URL  => $this->url.'/getUpdates',
+        CURLOPT_URL  => $q.'/getUpdates',
         CURLOPT_POST => true,
         CURLOPT_POSTFIELDS => &$o
       ];
@@ -1250,7 +1302,12 @@ class BotApi # {{{
     return $b->result;
   }
   # }}}
-  function send(string $method, array $req, ?object $file = null): object|bool # {{{
+  function send(# {{{
+    string  $method,
+    ?array  $req,
+    ?object $file  = null,
+    string  $token = ''
+  ):object|bool
   {
     static $FILE_METHOD = [
       'sendPhoto'     => 'photo',
@@ -1263,8 +1320,7 @@ class BotApi # {{{
     ];
     try
     {
-      # set file attachment or
-      # determine already set file
+      # determine file attachment
       if ($file !== null) {
         $req[$file->postname] = $file;
       }
@@ -1274,30 +1330,39 @@ class BotApi # {{{
       {
         $file = $req[$a];
       }
+      # determine token
+      $token || ($token = $this->bot->cfg->token);
       # set request parameters
       $req = [
-        CURLOPT_URL  => $this->url.'/'.$method,
+        CURLOPT_URL => self::URL.$token.'/'.$method,
         CURLOPT_POST => true,
         CURLOPT_POSTFIELDS => $req,
       ];
       if (!curl_setopt_array($this->curl, $req)) {
-        throw BotError::text('failed to set request');
+        throw BotError::text('failed to setup the request');
       }
       # send
-      if (($a = curl_exec($this->curl)) === false) {
-        throw BotError::text('curl_exec('.curl_errno($this->curl).'): '.curl_error($this->curl));
+      if (($x = curl_exec($this->curl)) === false) {
+        throw BotError::text('curl failed('.curl_errno($this->curl).'): '.curl_error($this->curl));
       }
       # decode response
-      if (!($res = json_decode($a, false))) {
-        throw BotError::text("incorrect response\n█{$a}█\n");
+      if (!($res = json_decode($x, false))) {
+        throw BotError::text("incorrect response JSON: █$x█");
       }
-      # check result flag
-      if (!$res->ok || !isset($res->result))
+      # check response result
+      if (!($res->ok ?? false) || !isset($res->result))
       {
-        throw BotError::text(isset($res->description)
-          ? $res->description
-          : "incorrect response\n█{$a}█\n"
-        );
+        # compose error message
+        if (isset($res->description))
+        {
+          $x = isset($res->error_code)
+            ? '('.$res->error_code.') '.$res->description
+            : $res->description;
+        }
+        else {
+          $x = "incorrect response: █$x█";
+        }
+        throw BotError::text($x);
       }
       # success
       $res = $res->result;
@@ -1306,15 +1371,14 @@ class BotApi # {{{
     {
       # report error
       $this->log->exception($e);
+      $this->error = $e->getMessage();
       $res = false;
     }
-    finally
-    {
-      # remove temporary file
-      if ($file !== null) {
-        $file->destruct();
-      }
+    # remove temporary file (if any)
+    if ($file !== null) {
+      $file->destruct();
     }
+    # complete
     return $res;
   }
   # }}}
@@ -1423,6 +1487,7 @@ class BotText implements \ArrayAccess # {{{
     'small_red_triangle'   => "\xF0\x9F\x94\xBA",
     'small_red_triangle_down' => "\xF0\x9F\x94\xBB",
     'information_source'   => "\xE2\x84\xB9",
+    'repeat'           => "\xF0\x9F\x94\x81",
     # }}}
   ];
   static function construct(object $bot): ?self # {{{
@@ -3618,11 +3683,11 @@ abstract class BotItem implements \ArrayAccess, \JsonSerializable # {{{
     ?array $data = null
   ):?object
   {
-    # initialize
+    # prepare
     $this->user = $user;
     $this->text->lang = $user->lang;
     $this->log  = $user->log->new($this->skel['path']);
-    $this->data = $data;
+    $this->data = null;
     $this->msgs = [];
     # check common operations
     switch ($func) {
@@ -3641,48 +3706,43 @@ abstract class BotItem implements \ArrayAccess, \JsonSerializable # {{{
       return $this;
     }
     # attach configuration
-    if (!isset($user->cfg->items[$a = $this->id])) {
-      $user->cfg->items[$a] = [];
+    if (!isset($user->cfg->items[$this->id])) {
+      $user->cfg->items[$this->id] = [];
     }
-    $this->cfg = &$user->cfg->items[$a];
+    $this->cfg = &$user->cfg->items[$this->id];
     # attach data
-    if ($a = $this->skel['datafile'] ?? 0)
+    if (($this->data = BotItemData::construct($this, $data)) === null)
     {
-      # determine storage source
-      $a = ($a === 1)
-        ? $user->dir
-        : $this->bot->dir->data;
-      $a = $a.$this->id.'.json';
-      # load
-      if (($this->data = $this->bot->file->getJSON($a)) === null) {
-        return null;
+      $this->log->error('failed to attach data');
+      $this->detach(false);
+      return null;
+    }
+    # operate
+    try
+    {
+      # render and check redirected or failed
+      if (($item = $this->render($func, $args)) !== $this) {
+        $this->detach($item !== null);
       }
     }
-    # render item messages and
-    # check redirected or failed
-    if (($a = $this->render($func, $args)) !== $this)
+    catch (\Throwable $e)
     {
-      $this->detach($a !== null);
-      return $a;
+      # report
+      $this->log->exception($e);
+      # prevent data from being saved
+      $this->data && ($this->data->changed = false);
+      # cleanup
+      $this->detach(false);
+      $item = null;
     }
-    return $this;
+    return $item;
   }
   # }}}
   function detach(bool $ok): bool # {{{
   {
     static $NULL = null;
     # detach data
-    if ($ok && ($a = $this->skel['datafile'] ?? 0) &&
-        $this->data !== null)
-    {
-      # determine destination
-      $a = ($a === 1)
-        ? $this->user->dir
-        : $this->bot->dir->data;
-      $a = $a.$this->id.'.json';
-      # store
-      $this->bot->file->setJSON($a, $this->data);
-    }
+    $this->data?->destruct();
     # detach configuration
     if ($ok && !$this->cfg && $this->cfg !== null) {
       unset($this->user->cfg->items[$this->id]);
@@ -3773,6 +3833,131 @@ class BotItemCaptions implements \ArrayAccess # {{{
   {}
   function offsetUnset(mixed $k): void
   {}
+}
+# }}}
+class BotItemData implements \ArrayAccess # {{{
+{
+  static function construct(object $item, ?array &$data): ?self # {{{
+  {
+    # determine storage source
+    if ($file = $item->skel['datafile'] ?? 0)
+    {
+      $file = ($file === 1)
+        ? $item->user->dir # private
+        : $item->bot->dir->data; # public
+      $file = $file.$item->id.'.json';
+    }
+    else {
+      $file = '';
+    }
+    # check no data specified
+    if ($data === null)
+    {
+      # load from storage or create blank
+      if ($file)
+      {
+        if (($data = $item->bot->file->getJSON($file)) === null) {
+          return null;
+        }
+      }
+      else {
+        $data = [];
+      }
+    }
+    # complete
+    return new self($item, $file, $data, count($data));
+  }
+  # }}}
+  function __construct(# {{{
+    public object   $item,
+    public string   $file,
+    public array    &$data,
+    public int      $count,
+    public bool     $changed = false
+  ) {}
+  # }}}
+  function destruct(): void # {{{
+  {
+    if ($this->file && $this->changed)
+    {
+      $this->item->bot->file->setJSON($this->file, $this->data);
+      $this->changed = false;
+    }
+  }
+  # }}}
+  function load(array &$data): bool # {{{
+  {
+    if ($data === $this->data) {
+      return false;
+    }
+    $this->count = count($this->data = $data);
+    return $this->changed = true;
+  }
+  # }}}
+  function indexOf(string $k, string|int $v): int # {{{
+  {
+    # search index
+    for ($i = 0, $j = $this->count; $i < $j; ++$i)
+    {
+      if ($this->data[$i][$k] === $v) {
+        return $i;
+      }
+    }
+    # not found
+    return -1;
+  }
+  # }}}
+  function slice(int $from, int $to): ?array # {{{
+  {
+    return array_slice($this->data, $from, $to);
+  }
+  # }}}
+  function arrayPush(string $k, ...$v): void # {{{
+  {
+    if (isset($this->data[$k]))
+    {
+      array_push($this->data[$k], ...$v);
+      $this->changed = true;
+    }
+  }
+  # }}}
+  # data access {{{
+  function offsetExists(mixed $k): bool {
+    return isset($this->data[$k]);
+  }
+  function offsetGet(mixed $k): mixed {
+    return $this->data[$k] ?? null;
+  }
+  function offsetSet(mixed $k, mixed $v): void
+  {
+    if (!isset($this->data[$k]))
+    {
+      $this->data[$k] = $v;
+      $this->count++;
+      $this->changed = true;
+    }
+    elseif ($v === null)
+    {
+      unset($this->data[$k]);
+      $this->count--;
+      $this->changed = true;
+    }
+    elseif ($v !== $this->data[$k])
+    {
+      $this->data[$k] = $v;
+      $this->changed = true;
+    }
+  }
+  function offsetUnset(mixed $k): void
+  {
+    if (isset($this->data[$k]))
+    {
+      unset($this->data[$k]);
+      $this->count--;
+      $this->changed = true;
+    }
+  }
+  # }}}
 }
 # }}}
 ###
@@ -3886,9 +4071,9 @@ class BotListItem extends BotImgItem # {{{
   {
     # prepare {{{
     $cfg  = $this->config();
+    $data = $this->data;
     $mkup = [];
     $msg  = [];
-    $data = &$this->data;
     # refresh data
     if (($hand = $this->skel['handler']) &&
         (!($a = $cfg['timeout'])    ||
@@ -3896,21 +4081,22 @@ class BotListItem extends BotImgItem # {{{
          ($c = time()) - $b > $a))
     {
       # fetch with handler
-      if (($data = $hand($this)) === null)
+      if (($b = $hand($this)) === null)
       {
         $this->log->warn(__METHOD__.":$hand: failed");
         return null;
       }
       # set order
-      self::sort($data, $cfg['order'], $cfg['desc']);
+      self::sort($b, $cfg['order'], $cfg['desc']);
       # set update time
       $a && ($this['time'] = $c);
+      # store
+      $data->load($b);
     }
-    # determine page size and total records count
+    # determine page size
     $size = $cfg['rows'] * $cfg['cols'];
-    $cnt  = $data ? count($data) : 0;
     # determine total page count
-    if (!($total = intval(ceil($cnt / $size)))) {
+    if (!($total = intval(ceil($data->count / $size)))) {
       $total = 1;
     }
     # determine current page
@@ -3949,21 +4135,14 @@ class BotListItem extends BotImgItem # {{{
       }
       break;
     case 'id':
-      # check
-      if (!$args)
+      # check empty
+      if ($args === '')
       {
         $this->log->error(__METHOD__.":$func: no argument");
         return null;
       }
-      # locate data
-      for ($i = 0; $i < $cnt; ++$i)
-      {
-        if ($data[$i]['id'] === $args) {
-          break;
-        }
-      }
-      # check not found
-      if ($i === $cnt)
+      # locate item index
+      if (($i = $data->indexOf('id', $args)) === -1)
       {
         $this->log->warn(__METHOD__.":$func:$args: item not found");
         break;# refresh the list
@@ -3984,7 +4163,7 @@ class BotListItem extends BotImgItem # {{{
     # sync
     $this['page'] = $page;
     # render markup {{{
-    if ($cnt)
+    if ($data->count)
     {
       # non-empty,
       # add top controls
@@ -3994,9 +4173,8 @@ class BotListItem extends BotImgItem # {{{
       foreach ($list as &$c) {
         $mkup[] = $c;
       }
-      # extract items from the data set and
-      # create list markup
-      $list = array_slice($data, $page * $size, $size);
+      # extract items from the data set and create markup
+      $list = $data->slice($page * $size, $size);
       $list = $this->renderListMarkup($list, $cfg);
       foreach ($list as &$c) {
         $mkup[] = $c;
@@ -4039,7 +4217,7 @@ class BotListItem extends BotImgItem # {{{
     # }}}
     # render text {{{
     $msg['text'] = $this->text->render([
-      'cnt'   => $cnt,
+      'cnt'   => $data->count,
       'page'  => 1 + $page,
       'total' => $total,
     ]);
@@ -4151,36 +4329,36 @@ class BotFormItem extends BotImgItem # {{{
     $info   = '';
     $fields = &$this->skel['fields'];
     $hand   = $this->skel['handler'];
-    $entry  = ($this->user->cfg->queueSearch($this, true) === -1);
-    $data   = &$this->data;
-    $dataChanged = false;
+    if (($data = $this->data) === null)
+    {
+      $this->log->warn(__CLASS__.' must have data');
+      return null;
+    }
     # get currents
     $status = $this['status'] ?? 0;
     $field  = $this['field']  ?? 0;
-    # initialize data and state
-    if ($data === null)
-    {
-      # hard reset (first time)
-      $dataChanged = $this->initData($cfg, false);
-      $status = $field = 0;
-    }
-    elseif ($entry)
+    # check item entry (initial render)
+    if ($this->user->cfg->queueSearch($this, true) === -1)
     {
       # soft reset,
       # a form with at least one non-persistent field
       # should reset its data on each entry,
-      # except it is in confirmation or in progress states
+      # except it is in confirmation or in progress state
       if (~($a = $this->findFirstField(-2)) &&
           $status !== 1 && abs($status) !== 3)
       {
         # resetting completed and failed states
-        # is allowed by options which are on by default
-        if (($status !== -2 || $cfg['resetFailed']) &&
-            ($status !==  2 || $cfg['resetCompleted']))
+        # is optionated and on by default
+        $b = ($status === -2);
+        $c = ($status ===  2);
+        if ((!$b || $cfg['resetFailed']) &&
+            (!$c || $cfg['resetCompleted']))
         {
-          $dataChanged = $this->initData($cfg, true);
-          if ($status) {
+          $this->resetData($cfg, true);
+          if ($status)
+          {
             $status = 0;
+            ($b || $c) && ($field = 0);
           }
           else {
             $field = $a;
@@ -4213,9 +4391,9 @@ class BotFormItem extends BotImgItem # {{{
         }
         $this->log->info($func, "$fieldCurrent => ".$fieldNames[$field]);
       }
-      elseif ($status === 1)
+      elseif ($status === 1 || $status === -2)
       {
-        # back from confirmation
+        # back from confirmation/failure
         $this->log->info($func, "$status");
         $status = 0;
       }
@@ -4224,8 +4402,8 @@ class BotFormItem extends BotImgItem # {{{
     case 'forward':
     case 'next':
       # {{{
-      # check move allowed
-      if ($status !== 0 || ($field === $fieldLast && !$cfg['moveAround'])) {
+      # check in input state
+      if ($status !== 0) {
         break;
       }
       # check required skip allowed
@@ -4233,6 +4411,10 @@ class BotFormItem extends BotImgItem # {{{
           ($fields[$fieldCurrent][0] & 1))
       {
         $info = $bot->text['req-field'];
+        break;
+      }
+      # check last => first jump allowed
+      if ($field === $fieldLast && !$cfg['moveAround']) {
         break;
       }
       # increment
@@ -4299,20 +4481,17 @@ class BotFormItem extends BotImgItem # {{{
                 array_splice($data[$fieldCurrent], $b, 1);
                 $this->log->info($func, "[-]$fieldCurrent.$args");
               }
-              $dataChanged = true;
             }
           }
           elseif (count($data[$fieldCurrent]) >= $a)
           {
             $data[$fieldCurrent][] = $args;
             array_splice($data[$fieldCurrent], 0, 1);
-            $dataChanged = true;
             $this->log->info($func, "[~]$fieldCurrent.$args");
           }
           else
           {
             $data[$fieldCurrent][] = $args;
-            $dataChanged = true;
             $this->log->info($func, "[+]$fieldCurrent.$args");
           }
         }
@@ -4325,14 +4504,12 @@ class BotFormItem extends BotImgItem # {{{
             if ($cfg['selectDeselect'])
             {
               unset($data[$fieldCurrent]);
-              $dataChanged = true;
               $this->log->info($func, "[-]$fieldCurrent.$args");
             }
           }
           else
           {
             $data[$fieldCurrent] = $args;
-            $dataChanged = true;
             $this->log->info($func, "[~]$fieldCurrent.$args");
           }
         }
@@ -4343,7 +4520,6 @@ class BotFormItem extends BotImgItem # {{{
         $data[$fieldCurrent] = ($fields[$fieldCurrent][2] > 1)
           ? [$args]
           : $args;
-        $dataChanged = true;
         $this->log->info($func, "[+]$fieldCurrent.$args");
       }
       # }}}
@@ -4354,7 +4530,6 @@ class BotFormItem extends BotImgItem # {{{
           isset($data[$fieldCurrent]))
       {
         unset($data[$fieldCurrent]);
-        $dataChanged = true;
         $this->log->info($func, "[-]$fieldCurrent");
       }
       # }}}
@@ -4363,49 +4538,36 @@ class BotFormItem extends BotImgItem # {{{
       # {{{
       # check
       if ($status !== 0) {
-        return $data = null;
+        return null;
       }
       # invoke handler
       if (!($hand && ($a = $hand($this, $func, $fieldCurrent))) &&
           !($a = $this->acceptInput($fieldCurrent)))
       {
-        $this->log->warn('input is not accepted');
-        return $data = null;
+        return null;
       }
       # check handled
       if (~$a[0])
       {
-        # check modified
-        if ($a[0])
-        {
+        # log success
+        if ($a[0]) {
           $this->log->info($func, "[~]$fieldCurrent");
-          $dataChanged = true;
         }
         # set info
         isset($a[1]) && ($info = $a[1]);
       }
       # }}}
       break;
-    case 'reset':
-      # {{{
-      # check allowed
-      if (($status < 0 && !$cfg['resetFailed']) ||
-          ($status > 0 && !$cfg['resetCompleted']))
-      {
-        return $data = null;
-      }
-      # hard reset
-      $this->log->info($func, "$status");
-      $dataChanged = $this->initData($cfg);
-      $status = $field = 0;
-      # }}}
-      break;
     case 'ok':
     case 'submit':
+    case 'retry':
       # {{{
       # check in proper state
-      if ($status !== 0 && $status !== 1) {
-        return $data = null;
+      if (($status !== 0 && $status !== 1 && $status !== -2) ||
+          ($status === -2 && !$cfg['retryFailed']))
+      {
+        $this->log->error($func, "($status)");
+        return null;
       }
       # act as forward before last field reached
       if ($status === 0 && $cfg['okIsForward'] && $field < $fieldLast)
@@ -4431,24 +4593,66 @@ class BotFormItem extends BotImgItem # {{{
         $field  = $this->findFirstField(1, 1);
         break;
       }
+      # report
+      $this->log->info($func, "($status)");
+      # determine confirmation step requirement
+      $a = (
+        $cfg['okConfirm'] &&
+        ($status === 0 || $status === -2)
+      );
+      # invoke handler
+      if ($hand && ($b = $hand($this, ($a ? 'ok' : 'submit'))))
+      {
+        # get info message
+        isset($b[1]) && ($info = $b[1]);
+        # check failure
+        if ($b[0] === 0)
+        {
+          $status = -2;
+          break;
+        }
+        # check task startup
+        if (!$a && $b[0] === -1)
+        {
+          $this->log->warn('TODO');
+          break;
+        }
+      }
       # proceed to confirmation
-      if ($status === 0 && $cfg['okConfirm'])
+      if ($a)
       {
         $status = 1;
         break;
       }
-      # proceed to submition
-      # ...
-      $this->log->info('aaaaaaaaaaaaa');
+      # proceed to completion
+      $status = 2;
       break;
       # }}}
       break;
-    case 'retry':
+    case 'reset':
       # {{{
-      if ($status === 0 || $status === 1) {
-        break;
+      # check allowed
+      if (($status < 0 && $status > -3 && !$cfg['resetFailed']) ||
+          ($status > 0 && $status <  3 && !$cfg['resetCompleted']))
+      {
+        $this->log->error($func, "($status)");
+        return null;
       }
-      $this->log->info($func, "$status");
+      # hard reset
+      $this->log->info($func, "($status)");
+      $this->resetData($cfg);
+      $status = $field = 0;
+      # }}}
+      break;
+    case 'repeat':
+      # {{{
+      # check in correct state
+      if (abs($status) !== 2)
+      {
+        $this->log->error($func, "($status)");
+        return null;
+      }
+      $this->log->info($func, "($status)");
       if ($status < 0)
       {
         # back to normal (failure => input)
@@ -4457,13 +4661,12 @@ class BotFormItem extends BotImgItem # {{{
       else
       {
         # soft reset (success => input)
-        $dataChanged = $this->initData($cfg, true);
+        $this->resetData($cfg, true);
         $status = 0;
         $field  = ~($a = $this->findFirstField(-2)) ? $a : 0;
       }
       # }}}
       break;
-    ###
     ###
     ###
     case '.done':
@@ -4486,16 +4689,8 @@ class BotFormItem extends BotImgItem # {{{
       # }}}
       break;
     default:
-      # try to handle custom function
-      if (!$hand || !($a = $hand($this, $func, $args)))
-      {
-        $this->log->error($func);
-        return $data = null;
-      }
-      # ...
-      # ...
-      # ...
-      break;
+      $this->log->error($func);
+      return null;
     }
     # }}}
     # sync {{{
@@ -4512,7 +4707,7 @@ class BotFormItem extends BotImgItem # {{{
         : '';
     }
     # check data
-    if ($dataChanged) {
+    if ($data->changed) {
       $fieldMissing = $this->getMissingFieldsCnt();
     }
     # }}}
@@ -4535,12 +4730,18 @@ class BotFormItem extends BotImgItem # {{{
         $mkup[] = $b;
       }
       unset($b);
-      # determine no flags
-      $a = null;
+      # determine flags
+      $a = [
+        'retry' => $cfg['retryFailed']
+          ? (($status === -2)
+            ? 1
+            : ($cfg['retryDisable'] ? -1 : 0))
+          : 0,
+      ];
     }
     else
     {
-      # input
+      # input mode
       # header
       $a = isset($this->skel[$a = 'markup'][$b = 'inputHead'])
         ? $this->skel[$a][$b]
@@ -4611,25 +4812,221 @@ class BotFormItem extends BotImgItem # {{{
     $msg['markup'] = $this->markup($mkup, $a);
     # }}}
     # render text {{{
+    # determine fields data (base and extended)
+    $a = $this->getFieldsInfo($cfg, $field, $status);
+    $hand && ($b = $hand($this, 'fields', $a)) && ($a = $b);
+    # determine status information
+    $b = 0;
+    if (!$info)
+    {
+      if ($status === -1) {
+        $info = $bot->text['req-miss'];
+      }
+      elseif ($status < -1 && $hand)
+      {
+        $info = ($b = $hand($this, 'info', $status))
+          ? $b[0]
+          : ($status === -3
+            ? $bot->text['task-await']
+            : $bot->text['op-fail']);
+        $b = ($b && isset($b[1]))
+          ? $b[1]
+          : 0;
+      }
+    }
+    # compose
     $msg['text'] = $this->text->render([
-      'fields' => $this->getFieldsInfo($cfg, $field, $status),
-      'status' => $status,
-      'info'   => $info ?: (
-        ($status === -1)
-          ? $bot->text['req-miss']
-          : ''
-      ),
+      'fields'   => $a,
+      'status'   => $status,
+      'info'     => $info,
+      'progress' => $b,
     ]);
     # }}}
     # complete
-    # clear data if not changed (to prevent file save)
-    $dataChanged || ($data = null);
-    # create message
     if (!($a = $this->image($msg))) {
       return null;
     }
     $this->msgs[] = $a;
     return $this;
+  }
+  # }}}
+  function acceptInput(string $fieldName): ?array # {{{
+  {
+    # prepare
+    $bot   = $this->bot;
+    $field = &$this->skel['fields'][$fieldName];
+    # get text
+    if (($inp = $this->input->text ?? null) === null) {
+      return null;
+    }
+    # operate
+    switch ($field[1]) {
+    case 'string':
+      # validate string size
+      if (isset($field[2]) && strlen($inp) > $field[2])
+      {
+        # hidden data is considered fragile, so,
+        # instead of cutting, discard and report
+        if ($field[0] & 8)
+        {
+          unset($this->data[$fieldName]);
+          return [0, $bot->text['oversized']];
+        }
+        else {
+          $inp = substr($inp, 0, $field[2]);
+        }
+      }
+      # check syntax
+      if (isset($field[3]) && !preg_match($field[3], $inp))
+      {
+        if ($field[0] & 8) {
+          unset($this->data[$fieldName]);
+        }
+        return [0, $bot->text['bad-data']];
+      }
+      break;
+    case 'int':
+      # validate integer[-2147483648..2147483648] or long[0..4294967295]
+      # extract sign
+      $a = ($inp[0] === '-');
+      $a && ($inp = substr($inp, 1));
+      # check length and digits
+      if (!($b = strlen($inp)) || $b > 10 || !ctype_digit($inp)) {
+        return [0, $bot->text['bad-data']];
+      }
+      # cast
+      $inp = intval($inp);
+      $a && ($inp = -$inp);
+      # check minimum and maximum
+      if (isset($field[2]) && $inp < $field[2]) {
+        $inp = $field[2];
+      }
+      elseif (isset($field[3]) && $inp > $field[3]) {
+        $inp = $field[3];
+      }
+      break;
+    default:
+      return null;
+    }
+    # check equal
+    if ($inp === $this->data[$fieldName]) {
+      return [-1];
+    }
+    # complete
+    $this->data[$fieldName] = $inp;
+    return [1];
+  }
+  # }}}
+  function findFirstField(# {{{
+    int $bit   = 0,# 0=any,1=required,2=persistent,4=nullable
+    int $empty = 0 # 0=any,1=yes,-1=nope
+  ):int
+  {
+    # prepare
+    $fields = &$this->skel['fields'];
+    $count  = count($fields);
+    if ($bit < 0)
+    {
+      $not = true;
+      $bit = -$bit;
+    }
+    else {
+      $not = false;
+    }
+    # search
+    reset($fields);
+    for ($a = 0; $a < $count; ++$a, next($fields))
+    {
+      # get field name
+      $b = key($fields);
+      # check
+      if ($bit)
+      {
+        $c = $fields[$b][0];
+        if ($not)
+        {
+          if (!($c & $bit))
+          {
+            if ($empty)
+            {
+              $d = isset($this->data[$b]);
+              if ($empty > 0)
+              {
+                if (!$d) {
+                  break;
+                }
+              }
+              elseif ($d) {
+                break;
+              }
+            }
+            else {
+              break;
+            }
+          }
+        }
+        elseif ($c & $bit)
+        {
+          if ($empty)
+          {
+            $d = isset($this->data[$b]);
+            if ($empty > 0)
+            {
+              if (!$d) {
+                break;
+              }
+            }
+            elseif ($d) {
+              break;
+            }
+          }
+          else {
+            break;
+          }
+        }
+      }
+      elseif ($empty)
+      {
+        $d = isset($this->data[$b]);
+        if ($empty > 0)
+        {
+          if (!$d) {
+            break;
+          }
+        }
+        elseif ($d) {
+          break;
+        }
+      }
+      else {
+        break;
+      }
+    }
+    # complete
+    return ($a < $count) ? $a : -1;
+  }
+  # }}}
+  function resetData(array &$cfg, bool $persistent = false): bool # {{{
+  {
+    # prepare
+    $fields = &$this->skel['fields'];
+    $data   = isset($this->skel['defs'])
+      ? $this->skel['defs']
+      : (($hand = $this->skel['handler'])
+        ? ($hand($this, 'defs') ?? [])
+        : []);
+    # keep persistent fields (replace defaults)
+    if ($persistent && $this->data)
+    {
+      foreach ($fields as $a => &$b)
+      {
+        if (($b[0] & 2) && isset($this->data[$a])) {
+          $data[$a] = $this->data[$a];
+        }
+      }
+    }
+    # complete
+    return $this->data->load($data);
   }
   # }}}
   function getMissingFieldsCnt(): int # {{{
@@ -4645,14 +5042,40 @@ class BotFormItem extends BotImgItem # {{{
     return $c;
   }
   # }}}
-  function &getFieldsInfo(array &$cfg, int $current, int $status): array # {{{
+  function newFieldInfo(# {{{
+    string  $key,
+    bool    $flag  = false,
+    mixed   $value = null
+  ):array
+  {
+    # determine value
+    if ($value === null)
+    {
+      $value = isset($this->data[$key])
+        ? $this->data[$key]
+        : '';
+    }
+    # cast to string
+    if (!is_string($value))
+    {
+      $value = is_array($value)
+        ? implode(',', $value)
+        : "$value";
+    }
+    return [
+      'key'   => $key,
+      'name'  => ($this->text[".$key"] ?: $key),
+      'flag'  => $flag,
+      'value' => $value,
+    ];
+  }
+  # }}}
+  function getFieldsInfo(array &$cfg, int $current, int $status): array # {{{
   {
     # prepare
-    $hand   = $this->skel['handler'];
-    $fields = &$this->skel['fields'];
-    $data   = &$this->data;
-    $count  = count($fields);
     $res    = [];
+    $fields = &$this->skel['fields'];
+    $count  = count($fields);
     # iterate
     reset($fields);
     for ($i = 0; $i < $count; ++$i, next($fields))
@@ -4660,20 +5083,7 @@ class BotFormItem extends BotImgItem # {{{
       # get field
       $name  = key($fields);
       $field = &$fields[$name];
-      $required = !!($field[0] & 1);
-      # determine displayed value (string)
-      if (isset($data[$name]))
-      {
-        if (is_array($val = $data[$name])) {
-          $val = implode(',', $val);
-        }
-        elseif (!is_string($val)) {
-          $val = "$val";
-        }
-      }
-      else {
-        $val = '';
-      }
+      $value = $this->data[$name];
       # determine state flag
       switch ($status) {
       case 0:
@@ -4682,30 +5092,18 @@ class BotFormItem extends BotImgItem # {{{
         break;
       case -1:
         # missing required
-        $flag = ($required && $val === '');
-        break;
-      case -2:
-        # failed
-        $flag = $hand
-          ? ($hand($this, 'failed', $name) ?? false)
-          : true;
+        $flag = (($field[0] & 1) && $value === null);
         break;
       default:
         $flag = true;
         break;
       }
       # hide value
-      if ($val && ($field[0] & 8)) {
-        $val = $cfg['hiddenValue'];
+      if ($value !== null && ($field[0] & 8)) {
+        $value = $cfg['hiddenValue'];
       }
-      # compose
-      $res[] = [
-        'flag'  => $flag,
-        'name'  => ($this->text[".$name"] ?: $name),
-        'value' => $val,
-        'required' => $required,
-        #'hint' => $this->getFieldHint($b),
-      ];
+      # add info
+      $res[] = $this->newFieldInfo($name, $flag, $value);
     }
     return $res;
   }
@@ -4800,215 +5198,18 @@ class BotFormItem extends BotImgItem # {{{
     return $mkup;
   }
   # }}}
-  function getFieldHint(array &$field): string # {{{
-  {
-    # get caption template
-    if (!($a = $this->text['#'.$b[1]])) {
-      return '';
-    }
-    # render
-    switch ($b[1]) {
-    case 'string':
-      $c = $this->tp->render($c, ['max'=>$b[2]]);
-      break;
-    case 'int':
-      $c = $this->messages[$lang][8];
-      $c = $this->tp->render($c, ['min'=>$b[2],'max'=>$b[3]]);
-      break;
-    case 'list':
-      $c = $this->messages[$lang][13];
-      break;
-    default:
-      $c = '.';
-      break;
-    }
-    return $a;
-  }
-  # }}}
-  function findFirstField(# {{{
-    int $bit   = 0,# 0=any,1=required,2=persistent,4=nullable
-    int $empty = 0 # 0=any,1=yes,-1=nope
-  ):int
-  {
-    # prepare
-    $fields = &$this->skel['fields'];
-    $count  = count($fields);
-    if ($bit < 0)
-    {
-      $not = true;
-      $bit = -$bit;
-    }
-    else {
-      $not = false;
-    }
-    # search
-    reset($fields);
-    for ($a = 0; $a < $count; ++$a, next($fields))
-    {
-      # get field name
-      $b = key($fields);
-      # check
-      if ($bit)
-      {
-        $c = $fields[$b][0];
-        if ($not)
-        {
-          if (!($c & $bit))
-          {
-            if ($empty)
-            {
-              $d = isset($this->data[$b]);
-              if ($empty > 0)
-              {
-                if (!$d) {
-                  break;
-                }
-              }
-              elseif ($d) {
-                break;
-              }
-            }
-            else {
-              break;
-            }
-          }
-        }
-        elseif ($c & $bit)
-        {
-          if ($empty)
-          {
-            $d = isset($this->data[$b]);
-            if ($empty > 0)
-            {
-              if (!$d) {
-                break;
-              }
-            }
-            elseif ($d) {
-              break;
-            }
-          }
-          else {
-            break;
-          }
-        }
-      }
-      elseif ($empty)
-      {
-        $d = isset($this->data[$b]);
-        if ($empty > 0)
-        {
-          if (!$d) {
-            break;
-          }
-        }
-        elseif ($d) {
-          break;
-        }
-      }
-      else {
-        break;
-      }
-    }
-    # complete
-    return ($a < $count) ? $a : -1;
-  }
-  # }}}
-  function initData(array &$cfg, bool $persistent = false): bool # {{{
-  {
-    # prepare
-    $fields = &$this->skel['fields'];
-    $data   = isset($this->skel['defs'])
-      ? $this->skel['defs']
-      : (($hand = $this->skel['handler'])
-        ? ($hand($this, 'defs') ?? [])
-        : []);
-    # keep persistent fields (replace defaults)
-    if ($persistent && $this->data)
-    {
-      foreach ($fields as $a => &$b)
-      {
-        if (($b[0] & 2) && isset($this->data[$a])) {
-          $data[$a] = $this->data[$a];
-        }
-      }
-    }
-    # compare
-    if ($data === $this->data) {
-      return false;
-    }
-    # complete
-    $this->data = $data;
-    return true;
-  }
-  # }}}
-  function acceptInput(string $fieldName): ?array # {{{
-  {
-    # prepare
-    $bot = $this->bot;
-    $field = &$this->skel['fields'][$fieldName];
-    if (($inp = $this->input?->text) === null) {
-      return null;
-    }
-    # operate
-    switch ($field[1]) {
-    case 'string':
-    case 'password':
-      # validate string
-      # check length (cut)
-      if (isset($field[2]) && strlen($inp) > $field[2]) {
-        $inp = substr($inp, 0, $field[2]);
-      }
-      # check syntax
-      if (isset($field[3]) && !preg_match($field[3], $inp)) {
-        return [0, $bot->text['bad-data']];
-      }
-      break;
-    case 'int':
-      # validate integer[-2147483648..2147483648] or long[0..4294967295]
-      # extract sign
-      $a = ($inp[0] === '-');
-      $a && ($inp = substr($inp, 1));
-      # check length and digits
-      if (!($b = strlen($inp)) || $b > 10 || !ctype_digit($inp)) {
-        return [0, $bot->text['bad-data']];
-      }
-      # cast
-      $inp = intval($inp);
-      $a && ($inp = -$inp);
-      # check minimum and maximum
-      if (isset($field[2]) && $inp < $field[2]) {
-        $inp = $field[2];
-      }
-      elseif (isset($field[3]) && $inp > $field[3]) {
-        $inp = $field[3];
-      }
-      break;
-    default:
-      return null;
-    }
-    # check not changed
-    if (isset($this->data[$fieldName]) &&
-        $this->data[$fieldName] === $inp)
-    {
-      return [-1];
-    }
-    # complete
-    $this->data[$fieldName] = $inp;
-    return [1];
-  }
-  # }}}
 }
 # }}}
 /***
 * TODO {{{
 * ╔═╗ ⎛     ⎞ ★★☆☆☆
 * ║╬║ ⎜  *  ⎟ ✱✱✱ ✶✶✶ ⨳⨳⨳
-* ╚═╝ ⎝     ⎠ ⟶
+* ╚═╝ ⎝     ⎠ ⟶ ➤
 *
 * check old message callback action does ZAP? or.. PROPER UPDATE?!
 * check file_id stores oke
 * make rendering safe
+* make handler parse errors more descriptive
 * }}}
 */
 class BotTxtItem extends BotItem # {{{

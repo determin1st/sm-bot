@@ -93,29 +93,128 @@ function startbotsbot(object $item, string $func, string $args): ?array # {{{
   ];
 }
 # }}}
-function startbotscreate(object $item, string $func, string $args = ''): ?array # {{{
+function startbotscreate(# {{{
+  object  $item,
+  string  $func,
+  mixed   &$args = null
+):?array
 {
   static $NEWBOT_EXP = '/^.+ t\.me\/([^.]{5,32})\..+ HTTP API:\n([^\n]{44,46})\n.+$/s';
-  ###
   switch ($func) {
   case 'options':
+    # {{{
     # there is only one field with options,
     # get and return available bot classes
     return getBotClassMap($item);
+    # }}}
   case 'input':
+    # {{{
     # parse forwarded BotFather message
-    if (!isset(($a = $item->input)->forward_from) ||
-        !($b = $a->forward_from)->is_bot || $b->username !== 'BotFather' ||
-        !isset($a->text) ||
-        !preg_match($NEWBOT_EXP, $a->text, $a))
+    if (($a = $item->input->text ?? '') === '' ||
+        ($b = $item->input->forward_from ?? null) === null ||
+        !$b->is_bot || $b->username !== 'BotFather' ||
+        !preg_match($NEWBOT_EXP, $a, $b))
     {
       break;
     }
-    # store data
-    $item->data['name']  = $a[1];
-    $item->data['token'] = $a[2];
-    # complete
+    # store and complete
+    $item->data['token'] = $b[2];
     return [1, $item->bot->text['msg-parsed']];
+    # }}}
+  case 'ok':
+    # {{{
+    # get token and extract identifier
+    $bot   = $item->bot;
+    $data  = $item->data;
+    $token = $data['token'];
+    $id    = substr($token, 0, strpos($token, ':'));
+    # set extras
+    $data['id']    = $id;
+    $data['name']  = '';
+    $data['error'] = [];
+    # check identifier is already in use
+    if ($id === strval($bot->id)) {
+      $a = $bot->cfg->name;
+    }
+    elseif ($a = getBotInfo($bot, $id)) {
+      $a = $a['name'];
+    }
+    if ($a)
+    {
+      $data->arrayPush('error', 'id');
+      return [0, $bot->tp->render($item->text['in-use'], [
+        'name' => $a,
+      ])];
+    }
+    # request bot information
+    if (!($a = $bot->api->send('getMe', null, null, $token)))
+    {
+      $data->arrayPush('error', 'token');
+      return [0, $bot->api->error];
+    }
+    # store bot username
+    $data['name'] = $a->username;
+    return [1];
+    # }}}
+  case 'submit':
+    # {{{
+    # prepare
+    $bot  = $item->bot;
+    $data = $item->data;
+    $dir  = $bot->dir;
+    # get configuration template
+    if (!file_exists($a = $dir->inc.BotConfig::FILE_INC) ||
+        !($a = file_get_contents($a)))
+    {
+      $item->log->error("failed to get: $a");
+      return [0];
+    }
+    # render it
+    $a = $bot->tp->render($a, [
+      'class'  => $data['class'],
+      'token'  => $data['token'],
+      'admins' => $item->user->id,
+    ]);
+    # create new bot directory and
+    # store rendered configuration
+    $b = $dir->dataRoot.$data['id'].DIRECTORY_SEPARATOR;
+    $c = $b.BotConfig::FILE_INC;
+    if ((!file_exists($b) && !mkdir($b)) ||
+        !file_put_contents($c, $a))
+    {
+      $item->log->error("failed to set: $c");
+      return [0];
+    }
+    # setup new bot
+    if (!BotConfig::setup($b, $bot))
+    {
+      $item->log->error("failed to set: $c");
+      return [0];
+    }
+    # success
+    return [1];
+    # }}}
+  case 'fields':
+    # {{{
+    # check
+    if (($status = $item['status']) > -2 && $status < 1) {
+      break;
+    }
+    # add extra fields
+    $args[] = $item->newFieldInfo('id');
+    $args[] = $item->newFieldInfo('name');
+    # determine failed fields
+    if ($status === -2)
+    {
+      $b = $item->data['error'];
+      foreach ($args as &$a) {
+        $a['flag'] = in_array($a['key'], $b, true);
+      }
+      unset($a);
+    }
+    # complete
+    return $args;
+    # }}}
   }
   return null;
 }

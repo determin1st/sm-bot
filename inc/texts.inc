@@ -4,7 +4,7 @@
     '
     {{#cnt}}
       Page <b>{{page}}</b> of {{total}} (total items: {{cnt}})
-      {{|}}
+    {{|}}
       List is empty
     {{/cnt}}
     ',# }}}
@@ -18,7 +18,7 @@
     {{#fields}}
       {{^status}}
         {{#flag}}
-          {:white_small_square:}<b>{{name}}</b>{:ZWSP:}
+          {:white_small_square:}{:NBSP:}<b>{{name}}</b>{:ZWSP:}
           <b>⟹</b>{:NBSP:}
           <code>{{#value}}{{value}}{{|}}·{{/value}}</code>
         {{|}}
@@ -26,24 +26,21 @@
           {{#value}}: <code>{{value}}</code>{{/value}}
         {{/flag}}
       {{|-2}}
-        {{#flag}}{:red_circle:} {{|}}{:green_circle:} {{/flag}}
-        <b>{{name}}</b>
-        {{#value}}: {{value}}{{|}} --{{/value}}
+        {{#flag}}{:red_circle:}{{|}}{:yellow_circle:}{{/flag}}
+        {:NBSP:}<b>{{name}}</b>
+        {{#value}}: <code>{{value}}</code>{{|}} <code>─</code>{{/value}}
       {{|-1}}
-        {{#flag}}{:orange_circle:} {{|}}{:green_circle:} {{/flag}}
-        <b>{{name}}</b>
-        {{#value}}: {{value}}{{/value}}
+        {{#flag}}{:orange_circle:}{{|}}{:white_circle:}{{/flag}}
+        {:NBSP:}<b>{{name}}</b>
+        {{#value}}: <code>{{value}}</code>{{|}} <code>─</code>{{/value}}
       {{|1}}
-        {:green_circle:} <b>{{name}}</b>
-        {{#value}}
-          : <code>{{value}}</code>
-        {{|}}
-          <code> ─</code>
-        {{/value}}
-      {{|}}
-        {:black_small_square:} 
-        <b>{{name}}</b>AAA
-        {{#value}}: {{value}}{{/value}}
+        {:white_circle:}
+        {:NBSP:}<b>{{name}}</b>
+        {{#value}}: <code>{{value}}</code>{{|}} <code>─</code>{{/value}}
+      {{|2}}
+        {:green_circle:}
+        {:NBSP:}<b>{{name}}</b>
+        {{#value}}: <code>{{value}}</code>{{|}} <code>─</code>{{/value}}
       {{/status}}
       {{BR}}
     {{/fields}}
@@ -58,8 +55,10 @@
     'op-fail'    => 'operation failed',
     'cmd-fail'   => 'command failed',
     'task-fail'  => 'task failed to start',
+    'task-await' => 'awaiting process completion',
     'no-game'    => 'game not available',
     'not-found'  => 'not found',
+    'oversized'  => 'size limit exceeded',
     'bad-data'   => 'incorrect data',
     'msg-parsed' => 'message parsed',
     'req-field'  => 'this field is required',
@@ -72,12 +71,12 @@
     'next'       => 'next',
     'back'       => 'back',
     'forward'    => 'next',
-    'retry'      => 'retry',
-    'reset'      => 'reset',
     'select'     => 'select',
     'clear'      => 'clear',
     'submit'     => 'submit',
     'complete'   => 'complete',
+    'reset'      => 'reset',
+    'retry'      => 'try again',
     'repeat'     => 'repeat',
     'start'      => 'start',
     'stop'       => 'stop',
@@ -91,7 +90,7 @@
     '
     {{#cnt}}
       Страница <b>{{page}}</b> из {{total}} (всего элементов: {{cnt}})
-      {{|}}
+    {{|}}
       Список пуст
     {{/cnt}}
     ',# }}}
@@ -100,8 +99,10 @@
     'op-fail'    => 'сбой операции',
     'cmd-fail'   => 'сбой комманды',
     'task-fail'  => 'не удалось запустить задачу',
+    'task-await' => 'ожидаю завершения процесса',
     'no-game'    => 'игра недоступна',
     'not-found'  => 'не найден',
+    'oversized'  => 'превышен допустимый размер',
     'bad-data'   => 'неверные данные',
     'msg-parsed' => 'сообщение обработано',
     'req-field'  => 'это поле является обязательным',
@@ -114,12 +115,12 @@
     'next'       => 'следующая',
     'back'       => 'назад',
     'forward'    => 'далее',
-    'retry'      => 'повтор',
-    'reset'      => 'сброс',
     'select'     => 'выбрать',
     'clear'      => 'очистить',
     'submit'     => 'утвердить',
     'complete'   => 'завершить',
+    'reset'      => 'сброс',
+    'retry'      => 'повторить попытку',
     'repeat'     => 'повторить',
     'start'      => 'запустить',
     'stop'       => 'остановить',
