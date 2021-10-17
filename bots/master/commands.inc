@@ -143,7 +143,7 @@
     'markup'  => [],
     'fields'  => [# bits: 1:required+2:persistent+4:nullable+8:hidden
       'phone' => [1+2, 'string', 89031234567, '/^\+{0,1}\d{11}$/'],
-      'city'  => [1+8, 'string', 46],
+      'city'  => [1, 'string', 20],
     ],
     'text'  => [
       'en'  => [

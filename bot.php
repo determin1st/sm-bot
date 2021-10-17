@@ -4360,6 +4360,9 @@ class BotFormItem extends BotImgItem # {{{
             $status = 0;
             ($b || $c) && ($field = 0);
           }
+          elseif (~($b = $this->findFirstField(1, 1)) && $b < $a) {
+            $field = $b;
+          }
           else {
             $field = $a;
           }
