@@ -3,7 +3,6 @@
   [
     'markup' => [
       ['bots'],
-      ['tests'],
       [' '],
       ['!up'],
     ],
@@ -56,6 +55,7 @@
                 To obtain <b>username</b> and <b>token</b> for a new bot,
                 navigate to @BotFather and follow instructions.
                 ',
+                '>token' => 'input a token from @BotFather or forward message about bot creation here',
                 'in-use' => '
                 identifier is already in use by @{{name}}
                 ',
@@ -66,6 +66,7 @@
                 ',
                 '.class' => 'класс',
                 '.token' => 'токен',
+                '>token' => 'введите токен полученный в @BotFather или перешлите сюда сообщение о создании бота',
                 '.id'    => 'идентификатор',
                 '.name'  => 'имя',
                 'in-use' => '
@@ -109,49 +110,6 @@
         ],
       ],
       # }}}
-      'tests' => # {{{
-      [
-        'markup' => [['t1','t2','t3'],['!up']],
-        'text' => ['@'=>'simple tests'],
-        'items' => [
-          't1' =>
-          [
-            'title' => ['color' => [40,40,80]],
-            'markup' => [['!up']],
-          ],
-          't2' =>
-          [
-            'image' => ['file' => 'logo.jpg'],
-            'markup' => [['!up']],
-          ],
-          't3' =>
-          [
-            'title' => ['file' => 'block-640x160.jpg'],
-            'markup' => [['!up']],
-          ],
-        ],
-      ],
-      # }}}
-    ],
-  ],
-  # }}}
-  'test' => [# {{{
-    'type'     => 'form',
-    'datafile' => 1,
-    'config'   => [
-    ],
-    'markup'  => [],
-    'fields'  => [# bits: 1:required+2:persistent+4:nullable+8:hidden
-      'phone' => [1+2, 'string', 89031234567, '/^\+{0,1}\d{11}$/'],
-      'city'  => [1, 'string', 20],
-    ],
-    'text'  => [
-      'en'  => [
-        '@' => 'taxi',
-      ],
-      'en'  => [
-        '@' => 'taxi',
-      ],
     ],
   ],
   # }}}

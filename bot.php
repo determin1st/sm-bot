@@ -42,15 +42,19 @@ class Bot # {{{
       error_get_last() && $bot->destruct();
     });
     # enforce graceful termination
-    if ($bot->isMaster && function_exists($e = 'sapi_windows_set_ctrl_handler'))
+    if (function_exists($e = 'sapi_windows_set_ctrl_handler'))
     {
-      # WinOS: console breaks must stop masterbot
+      # WinOS: console breaks should stop masterbot,
+      # slavebot must register this handler to terminate properly (by master command)
       $e(function (int $e) use ($bot)
       {
-        $bot->destruct();
-        ($e === PHP_WINDOWS_EVENT_CTRL_C)
-          ? exit(1) # restart
-          : exit(2);# stop
+        if ($bot->isMaster)
+        {
+          $bot->destruct();
+          ($e === PHP_WINDOWS_EVENT_CTRL_C)
+            ? exit(1) # restart
+            : exit(2);# stop
+        }
       });
     }
     # operate
@@ -385,7 +389,7 @@ class BotDir # {{{
   # }}}
 }
 # }}}
-class BotConfig # {{{
+class BotConfig implements \JsonSerializable # {{{
 {
   const FILE_INC  = 'config.inc';
   const FILE_JSON = 'config.json';
@@ -402,6 +406,9 @@ class BotConfig # {{{
       'debug'     => true,# display debug output?
       'infoFile'  => '',
       'errorFile' => '',
+    ],
+    'BotMaster' => [
+      'slaves'  => [],# previously started
     ],
     'BotRequestInput' => [
       'wipeInput'     => true,
@@ -464,8 +471,11 @@ class BotConfig # {{{
       'colsFlex'       => false,# allow variable cols in the last row
       'resetFailed'    => true,# allow to reset from negative state
       'resetCompleted' => true,# allow to reset from positive state
+      'resetAll'       => false,# do a full reset (all steps)
       'moveAround'     => false,# allow to cycle back/forward
       'backDisable'    => false,# disable at start position
+      'backStep'       => true,# allow to return to the previous step
+      'backStepReset'  => true,# reset current step before returning
       'forwardDisable' => false,# disable at last position
       'forwardSkip'    => false,# allow to skip required field
       'forwardToOk'    => true,# last forward becomes ok
@@ -490,7 +500,8 @@ class BotConfig # {{{
   ];
   function __construct(# {{{
     public ?object  $bot,
-    public string   $file = ''
+    public string   $file    = '',
+    public bool     $changed = false
   )
   {
     # create properties dynamically
@@ -508,12 +519,10 @@ class BotConfig # {{{
     $fileJson = $dir.self::FILE_JSON;
     $lock     = "$fileJson.lock";
     # setup
-    if (!file_exists($fileJson) &&
-        !self::setup($dir, $bot))
-    {
+    if (!file_exists($fileJson) && !self::setup($dir, $bot)) {
       return false;
     }
-    # load configuration
+    # load
     if (!($o = $bot->file->getJSON($fileJson))) {
       return false;
     }
@@ -548,12 +557,28 @@ class BotConfig # {{{
   {
     if ($this->bot)
     {
-      # unlock
-      $this->bot->isConsole && $this->file &&
-      BotFile::unlock($this->file);
+      if ($this->file)
+      {
+        # save
+        if ($this->changed) {
+          $this->bot->file->setJSON($this->file, $this);
+        }
+        # unlock
+        $this->bot->isConsole &&
+        BotFile::unlock($this->file);
+      }
       # cleanup
       $this->bot = null;
     }
+  }
+  # }}}
+  function jsonSerialize(): array # {{{
+  {
+    $a = [];
+    foreach (array_keys(self::PROPS) as $k) {
+      $a[$k] = $this->$k;
+    }
+    return $a;
   }
   # }}}
   static function setup(string $dir, object $bot): bool # {{{
@@ -635,7 +660,16 @@ abstract class BotConfigAccess implements \ArrayAccess # {{{
     return $this->bot->cfg->$name[$k];
   }
   function offsetSet(mixed $k, mixed $v): void
-  {}
+  {
+    static $name;
+    if (!$name)
+    {
+      ($i = strrpos($name = $this::class, '\\')) &&
+      ($name = substr($name, $i + 1));
+    }
+    $this->bot->cfg->$name[$k] = $v;
+    $this->bot->cfg->changed = true;
+  }
   function offsetUnset(mixed $k): void
   {}
 }
@@ -668,9 +702,9 @@ class BotLog extends BotConfigAccess # {{{
     return new self($this->bot, $name, $this);
   }
   # }}}
-  function debug(string $msg): void # {{{
+  function debug(string ...$msg): void # {{{
   {
-    $this['debug'] && $this->out(0, 0, $msg);
+    $this['debug'] && $this->out(0, 0, ...$msg);
   }
   # }}}
   function info(string ...$msg): void # {{{
@@ -914,18 +948,18 @@ class BotFile # {{{
     }
     if (($data = file_get_contents($file)) === false)
     {
-      $this->log->error(__FUNCTION__."($file):file_get_contents: failed");
+      $this->log->error(__FUNCTION__, "file_get_contents($file)");
       return null;
     }
     if (($data = json_decode($data, true)) === null &&
         json_last_error() !== JSON_ERROR_NONE)
     {
-      $this->log->error(__FUNCTION__."($file):json_decode: ".json_last_error_msg());
+      $this->log->error(__FUNCTION__, "json_decode($file): ".json_last_error_msg());
       return null;
     }
     if (!is_array($data))
     {
-      $this->log->error(__FUNCTION__."($file): incorrect data type");
+      $this->log->error(__FUNCTION__, "$file: incorrect data type");
       return null;
     }
     return $data;
@@ -937,12 +971,12 @@ class BotFile # {{{
     {
       if (($data = json_encode($data, JSON_UNESCAPED_UNICODE)) === false)
       {
-        $this->log->error(__FUNCTION__."($file):json_encode: ".json_last_error_msg());
+        $this->log->error(__FUNCTION__, "json_encode($file): ".json_last_error_msg());
         return false;
       }
       if (file_put_contents($file, $data) === false)
       {
-        $this->log->error(__FUNCTION__."($file):file_put_contents: failed");
+        $this->log->error(__FUNCTION__, "file_put_contents($file)");
         return false;
       }
     }
@@ -950,11 +984,11 @@ class BotFile # {{{
     {
       if (@unlink($file) === false)
       {
-        $this->log->error(__FUNCTION__."($file):unlink: failed");
+        $this->log->error(__FUNCTION__, "unlink($file)");
         return false;
       }
     }
-    $this->log->debug(__FUNCTION__."($file)");
+    $this->log->debug(__FUNCTION__, $file);
     return true;
   }
   # }}}
@@ -1660,13 +1694,13 @@ class BotCommands implements \ArrayAccess # {{{
       $skel[$a = 'path'] = $parent
         ? $parent[$a].'/'.$name
         : '/'.$name;
-      # set type class
+      # determine item type (class)
       $skel[$a = 'type'] = isset($skel[$a])
         ? 'Bot'.ucfirst($skel[$a]).'Item'
         : 'BotImgItem';
       if (!class_exists($class = Bot::NS.$skel[$a], false))
       {
-        $bot->log->error("class not found: $class");
+        $bot->log->error($id, "unknown class: $class");
         return false;
       }
       # determine item handler
@@ -1675,6 +1709,12 @@ class BotCommands implements \ArrayAccess # {{{
       # determine input flag
       if (!isset($skel[$a = 'input'])) {
         $skel[$a] = method_exists($class, 'acceptInput');
+      }
+      # apply class specific
+      if (method_exists($class, 'refine') && !$class::refine($skel))
+      {
+        $bot->log->error($id, "$class failed to refine");
+        return false;
       }
       # refine captions
       # set entry
@@ -1781,19 +1821,30 @@ class BotCommands implements \ArrayAccess # {{{
 }
 # }}}
 # process (console)
-class BotMaster # {{{
+class BotMaster extends BotConfigAccess # {{{
 {
   static function construct(object $bot): ?self # {{{
   {
     # determine starter command
-    if (!file_exists($cmd = $bot->dir->home.'start.php'))
+    if (!file_exists($a = $bot->dir->home.'start.php'))
     {
-      $bot->log->error("file not found: $cmd");
+      $bot->log->error("file not found: $a");
       return null;
     }
-    $cmd = '"'.PHP_BINARY.'" -f "'.$cmd.'" ';
     # construct
-    return new self($bot, $bot->log->new('proc'), $cmd);
+    $proc = new self(
+      $bot, $bot->log->new('proc'),
+      '"'.PHP_BINARY.'" -f "'.$a.'" '
+    );
+    # start slaves
+    foreach ($proc['slaves'] as $a)
+    {
+      if (!$proc->start("$a")) {
+        return null;
+      }
+    }
+    # done
+    return $proc;
   }
   # }}}
   function __construct(# {{{
@@ -1802,6 +1853,19 @@ class BotMaster # {{{
     public string $cmd,
     public array  $map = []
   ) {}
+  # }}}
+  function destruct(): void # {{{
+  {
+    if ($this->map)
+    {
+      # store started slaves into master's configuration
+      $this['slaves'] = array_keys($this->map);
+      # terminate them
+      foreach ($this->map as $id => $slave) {
+        $slave->destruct();
+      }
+    }
+  }
   # }}}
   function start(string $id): bool # {{{
   {
@@ -1861,13 +1925,6 @@ class BotMaster # {{{
     fwrite(STDOUT, $s);
   }
   # }}}
-  function destruct(): void # {{{
-  {
-    foreach ($this->map as $id => $slave) {
-      $slave->destruct();
-    }
-  }
-  # }}}
 }
 # }}}
 class BotMasterSlave # {{{
@@ -1879,12 +1936,11 @@ class BotMasterSlave # {{{
       ['pipe','r'],   # 0:input
       ['pipe','w']    # 1:output
     ];
-    static $OPTS = [
+    static $OPTS = [# windows OS only
       'suppress_errors' => false,
       'bypass_shell'    => true,
       'blocking_pipes'  => true,
-      'create_process_group' => true,
-      #'create_process_group' => false,
+      'create_process_group' => true,# allow child to handle CTRL events?
       'create_new_console'   => false,
     ];
     $bot  = $master->bot;
@@ -2845,7 +2901,7 @@ class BotUserConfig # {{{
     {
       foreach ($m->list as $msg)
       {
-        if ($msg->data[1] === $messageId) {
+        if ($msg->id === $messageId) {
           return $m->item;
         }
       }
@@ -3052,26 +3108,22 @@ class BotUserMessages implements \JsonSerializable # {{{
     if ((time() - $this->time) > 0.8 * Bot::MESSAGE_LIFETIME) {
       return false;
     }
-    # check count is equal or more (reduceable)
-    if (($a = count($this->list)) < ($b = count($item->msgs))) {
+    # get message counts
+    $a = count($this->list);
+    $b = count($item->msgs);
+    # new message block must be smaller or
+    # equal to the current, check otherwise
+    if ($a < $b) {
       return false;
     }
     # check message types
-    $a = $b - $a + 1;
-    $i = -1;
-    while (++$i < $a)
+    for ($i = 0; $i < $b; ++$i)
     {
-      for ($j = $i, $k = 0; $k < $b; ++$k)
-      {
-        if ($this->list[$j]::class !== $item->msgs[$k]::class) {
-          break;
-        }
-      }
-      if ($k === $b) {
-        return true;
+      if ($this->list[$i]::class !== $item->msgs[$i]::class) {
+        return false;
       }
     }
-    return false;
+    return true;
   }
   # }}}
   function edit(object $item): int # {{{
@@ -3470,6 +3522,77 @@ class BotImgMessage extends BotMessage # {{{
     $img && imagedestroy($img);
     # complete
     return $res;
+  }
+  # }}}
+}
+# }}}
+class BotTxtMessage extends BotMessage # {{{
+{
+  function init(): void # {{{
+  {
+    $this->hash = hash('md4',
+      $this->data['text'].$this->data['markup']
+    );
+  }
+  # }}}
+  function send(): bool # {{{
+  {
+    # prepare
+    $bot = $this->bot;
+    $res = [
+      'chat_id'    => $bot->user->chat->id,
+      'text'       => $this->data['text'],
+      'parse_mode' => 'HTML',
+      'disable_notification' => true,
+    ];
+    if ($this->data['markup']) {
+      $res['reply_markup'] = $this->data['markup'];
+    }
+    # send
+    if (!($res = $bot->api->send('sendMessage', $res))) {
+      return false;
+    }
+    # set message identifier and complete
+    $this->id = $res->message_id;
+    return true;
+  }
+  # }}}
+  function edit(object $msg): bool # {{{
+  {
+    # prepare
+    $bot = $this->bot;
+    $res = [
+      'chat_id'      => $bot->user->chat->id,
+      'message_id'   => $this->id,
+      'text'         => $msg->data['text'],
+      'parse_mode'   => 'HTML',
+      'reply_markup' => $msg->data['markup'],
+    ];
+    # operate
+    if (!($res = $bot->api->send('editMessageText', $res)) || $res === true) {
+      return false;
+    }
+    # update hash and complete
+    $this->hash = $msg->hash;
+    return true;
+  }
+  # }}}
+  function zap(): bool # {{{
+  {
+    # prepare
+    $bot = $this->bot;
+    $res = [
+      'chat_id'      => $bot->user->chat->id,
+      'message_id'   => $this->id,
+      'text'         => $bot->tp->render('{{END}}', ''),
+      'parse_mode'   => 'HTML',
+    ];
+    # operate
+    if (!($res = $bot->api->send('editMessageText', $res)) || $res === true) {
+      return false;
+    }
+    # complete
+    return true;
   }
   # }}}
 }
@@ -3885,13 +4008,37 @@ class BotItemData implements \ArrayAccess # {{{
     }
   }
   # }}}
-  function load(array &$data): bool # {{{
+  function set(array &$data): bool # {{{
   {
-    if ($data === $this->data) {
+    if ($this->data === $data) {
       return false;
     }
     $this->count = count($this->data = $data);
     return $this->changed = true;
+  }
+  # }}}
+  function merge(array &$data): bool # {{{
+  {
+    reset($data);
+    for ($i = 0, $j = count($data); $i < $j; ++$i)
+    {
+      $k = key($data);
+      if ($data[$k] === null)
+      {
+        if (isset($this->data[$k]))
+        {
+          unset($this->data[$k]);
+          $this->changed = true;
+        }
+      }
+      elseif (!isset($this->data[$k]) ||
+              $this->data[$k] !== $data[$k])
+      {
+        $this->data[$k] = $data[$k];
+        $this->changed  = true;
+      }
+    }
+    return $this->changed;
   }
   # }}}
   function indexOf(string $k, string|int $v): int # {{{
@@ -4091,7 +4238,7 @@ class BotListItem extends BotImgItem # {{{
       # set update time
       $a && ($this['time'] = $c);
       # store
-      $data->load($b);
+      $data->set($b);
     }
     # determine page size
     $size = $cfg['rows'] * $cfg['cols'];
@@ -4318,25 +4465,56 @@ class BotListItem extends BotImgItem # {{{
 # }}}
 class BotFormItem extends BotImgItem # {{{
 {
+  # base
+  static function refine(array &$skel): bool # {{{
+  {
+    if (!isset($skel[$a = 'fields'])) {
+      return false;
+    }
+    if (!is_int(key($skel[$a]))) {
+      $skel[$a] = [$skel[$a]];
+    }
+    if (!isset($skel[$a = 'defs'])) {
+      $skel[$a] = [];
+    }
+    return true;
+  }
+  # }}}
   function render(string $func, string $args): ?object # {{{
   {
     # prepare {{{
+    static $STATUS = [
+      -3 => 'progress',
+      -2 => 'failure',
+      -1 => 'miss',
+       0 => 'input',
+       1 => 'confirmation',
+       2 => 'complete',
+       3 => 'progress',
+    ];
     $cfg    = $this->config();
     $bot    = $this->bot;
     $id     = $this->id;
     $mkup   = [];
     $msg    = [];
     $info   = '';
-    $fields = &$this->skel['fields'];
-    $hand   = $this->skel['handler'];
     if (($data = $this->data) === null)
     {
       $this->log->warn(__CLASS__.' must have data');
       return null;
     }
     # get currents
+    /***
+    $state = [
+      ($step   = $this['step']   ?? 0),
+      ($status = $this['status'] ?? 0),
+      ($field  = $this['field']  ?? 0),
+    ];
+    /***/
+    $step   = $this['step']   ?? 0;
     $status = $this['status'] ?? 0;
     $field  = $this['field']  ?? 0;
+    /***/
     # check item entry (initial render)
     if ($this->user->cfg->queueSearch($this, true) === -1)
     {
@@ -4344,39 +4522,48 @@ class BotFormItem extends BotImgItem # {{{
       # a form with at least one non-persistent field
       # should reset its data on each entry,
       # except it is in confirmation or in progress state
-      if (~($a = $this->findFirstField(-2)) &&
+      if (~($a = $this->findFirstField($step, -2)) &&
           $status !== 1 && abs($status) !== 3)
       {
-        # resetting completed and failed states
-        # is optionated and on by default
+        # resetting completed or failed state
+        # is optionated but on by default
         $b = ($status === -2);
         $c = ($status ===  2);
         if ((!$b || $cfg['resetFailed']) &&
             (!$c || $cfg['resetCompleted']))
         {
-          $this->resetData($cfg, true);
-          if ($status)
+          if ($cfg['resetAll'])
           {
-            $status = 0;
-            ($b || $c) && ($field = 0);
+            $this->resetData(0, true);
+            $step = $status = $field = 0;
           }
-          elseif (~($b = $this->findFirstField(1, 1)) && $b < $a) {
-            $field = $b;
-          }
-          else {
-            $field = $a;
+          else
+          {
+            $this->resetData($step, true);
+            if ($status)
+            {
+              $status = 0;
+              ($b || $c) && ($field = 0);
+            }
+            elseif (~($b = $this->findFirstField($step, 1, 1)) && $b < $a) {
+              $field = $b;
+            }
+            else {
+              $field = $a;
+            }
           }
         }
       }
     }
-    # determine names and counts
+    $hand   = $this->skel['handler'];
+    $fields = &$this->skel['fields'][$step];
     $fieldNames   = array_keys($fields);
     $fieldCount   = count($fields);
     $fieldLast    = $fieldCount - 1;
     $fieldCurrent = ($field >= 0 && $field < $fieldCount)
       ? $fieldNames[$field]
       : '';
-    $fieldMissing = $this->getMissingFieldsCnt();
+    $fieldMissing = $this->getMissingFieldsCnt($step);
     $fieldOpts    = null;# for performance, select cache
     # }}}
     # operate {{{
@@ -4387,17 +4574,30 @@ class BotFormItem extends BotImgItem # {{{
     case 'back':
     case 'prev':
       # {{{
-      if ($status === 0 && ($field !== 0 || $cfg['moveAround']))
+      if ($status === 0)
       {
-        if (--$field < 0) {
-          $field = $fieldLast;
+        # check input is at the first field
+        if ($field === 0)
+        {
+          # return to the previous step or
+          # move to the last field, otherwise, ignore
+          if ($step > 0 && $cfg['backStep'])
+          {
+            $cfg['backStepReset'] && $this->resetData($step);
+            --$step;
+            $field = count($this->skel['fields'][$step]) - 1;
+          }
+          elseif ($cfg['moveAround']) {
+            $field = $fieldLast;
+          }
+          break;
         }
-        $this->log->info($func, "$fieldCurrent => ".$fieldNames[$field]);
+        # return to the previous input field
+        --$field;
       }
       elseif ($status === 1 || $status === -2)
       {
-        # back from confirmation/failure
-        $this->log->info($func, "$status");
+        # return to the input from confirmation/failure
         $status = 0;
       }
       # }}}
@@ -4424,24 +4624,19 @@ class BotFormItem extends BotImgItem # {{{
       if (++$field > $fieldLast) {
         $field = 0;
       }
-      $this->log->info($func, "$fieldCurrent => ".$fieldNames[$field]);
       # }}}
       break;
     case 'first':
       # {{{
-      if ($status === 0 && $field !== 0)
-      {
+      if ($status === 0 && $field !== 0) {
         $field = 0;
-        $this->log->info($func, "$fieldCurrent => ".$fieldNames[$field]);
       }
       # }}}
       break;
     case 'last':
       # {{{
-      if ($status === 0 && $field !== ($a = $fieldCount - 1))
-      {
+      if ($status === 0 && $field !== ($a = $fieldCount - 1)) {
         $field = $a;
-        $this->log->info($func, "$fieldCurrent => ".$fieldNames[$field]);
       }
       # }}}
       break;
@@ -4450,15 +4645,15 @@ class BotFormItem extends BotImgItem # {{{
       # check correct state and argument
       if ($status !== 0 || !strlen($args))
       {
-        $this->log->error('incorrect state or argument');
+        $this->log->error($func, 'incorrect state or argument');
         break;
       }
       # get field options and
       # check selected key exists
-      if (!($fieldOpts = $this->getFieldOptions($fieldCurrent)) ||
+      if (!($fieldOpts = $this->getFieldOptions($step, $fieldCurrent)) ||
           !isset($fieldOpts[$args]))
       {
-        $this->log->error("option not found: $fieldCurrent/$args");
+        $this->log->error($func, "option not found: $fieldCurrent/$args");
         break;
       }
       # make selection or de-selection
@@ -4520,9 +4715,8 @@ class BotFormItem extends BotImgItem # {{{
       else
       {
         # create first key
-        $data[$fieldCurrent] = ($fields[$fieldCurrent][2] > 1)
-          ? [$args]
-          : $args;
+        $data[$fieldCurrent] = (($fields[$fieldCurrent][2] ?? 1) > 1)
+          ? [$args] : $args;
         $this->log->info($func, "[+]$fieldCurrent.$args");
       }
       # }}}
@@ -4545,7 +4739,7 @@ class BotFormItem extends BotImgItem # {{{
       }
       # invoke handler
       if (!($hand && ($a = $hand($this, $func, $fieldCurrent))) &&
-          !($a = $this->acceptInput($fieldCurrent)))
+          !($a = $this->acceptInput($step, $fieldCurrent)))
       {
         return null;
       }
@@ -4572,64 +4766,72 @@ class BotFormItem extends BotImgItem # {{{
         $this->log->error($func, "($status)");
         return null;
       }
-      # act as forward before last field reached
+      # check option and
+      # act as forward before last field is reached
       if ($status === 0 && $cfg['okIsForward'] && $field < $fieldLast)
       {
-        # check empty required skip
+        # warn when required is empty
         if (!isset($data[$fieldCurrent]) &&
             ($fields[$fieldCurrent][0] & 1))
         {
           $info = $bot->text['req-field'];
           break;
         }
-        # increment
+        # advance to the next field
         $field++;
-        $this->log->info($func, "$fieldCurrent => ".$fieldNames[$field]);
         break;
       }
-      # check required fields missing
+      # check any missing required
       if ($fieldMissing)
       {
-        # switch to failure state and
-        # seek to first empty required
+        # switch to failure and
+        # seek to the first empty required
         $status = -1;
-        $field  = $this->findFirstField(1, 1);
+        $field  = $this->findFirstField($step, 1, 1);
         break;
       }
-      # report
-      $this->log->info($func, "($status)");
-      # determine confirmation step requirement
-      $a = (
-        $cfg['okConfirm'] &&
-        ($status === 0 || $status === -2)
+      # determine index of the last step
+      $a = count($this->skel['fields']) - 1;
+      # determine action variant:
+      # next step, confirmation or submittion
+      $b = (
+        ($step < $a) ||
+        ($cfg['okConfirm'] && ($status === 0 || $status === -2))
       );
+      $func = $b ? 'ok' : 'submit';
       # invoke handler
-      if ($hand && ($b = $hand($this, ($a ? 'ok' : 'submit'))))
+      if ($hand && ($c = $hand($this, $func, $step)))
       {
-        # get info message
-        isset($b[1]) && ($info = $b[1]);
-        # check failure
-        if ($b[0] === 0)
+        # set info
+        isset($c[1]) && ($info = $c[1]);
+        # check failed
+        if ($c[0] === 0)
         {
           $status = -2;
           break;
         }
         # check task startup
-        if (!$a && $b[0] === -1)
+        if ($c[0] === -1)
         {
-          $this->log->warn('TODO');
+          $this->log->warn($func, 'TODO');
           break;
         }
       }
-      # proceed to confirmation
-      if ($a)
+      # proceed to the next step / confirmation
+      if ($b)
       {
-        $status = 1;
+        if ($step < $a)
+        {
+          ++$step;
+          $status = $field = 0;
+        }
+        else {
+          $status = 1;
+        }
         break;
       }
       # proceed to completion
       $status = 2;
-      break;
       # }}}
       break;
     case 'reset':
@@ -4642,9 +4844,16 @@ class BotFormItem extends BotImgItem # {{{
         return null;
       }
       # hard reset
-      $this->log->info($func, "($status)");
-      $this->resetData($cfg);
-      $status = $field = 0;
+      if ($cfg['resetAll'])
+      {
+        $this->resetData(0);
+        $step = $status = $field = 0;
+      }
+      else
+      {
+        $this->resetData($step);
+        $status = $field = 0;
+      }
       # }}}
       break;
     case 'repeat':
@@ -4652,43 +4861,28 @@ class BotFormItem extends BotImgItem # {{{
       # check in correct state
       if (abs($status) !== 2)
       {
-        $this->log->error($func, "($status)");
+        $this->log->error($func, $STATUS[$status]);
         return null;
       }
-      $this->log->info($func, "($status)");
       if ($status < 0)
       {
         # back to normal (failure => input)
         $status = 0;
       }
+      elseif ($cfg['resetAll'])
+      {
+        # hard repeat
+        $this->resetData(0, true);
+        $step  = $status = 0;
+        $field = ~($a = $this->findFirstField(0, -2)) ? $a : 0;
+      }
       else
       {
-        # soft reset (success => input)
-        $this->resetData($cfg, true);
+        # soft repeat
+        $this->resetData($step, true);
         $status = 0;
-        $field  = ~($a = $this->findFirstField(-2)) ? $a : 0;
+        $field  = ~($a = $this->findFirstField($step, -2)) ? $a : 0;
       }
-      # }}}
-      break;
-    ###
-    ###
-    case '.done':
-      # {{{
-      if (!in_array($state,[1,4,3]) || !$args)
-      {
-        $error = "incorrect state ($state) or no args";
-        return $item;
-      }
-      $state = intval($args[0]) ? 5 : 4;
-      $stateInfo = [1, base64_decode($args[1])];
-      # }}}
-      break;
-    case '.progress':
-      # {{{
-      if ($state !== 3 || !$args) {
-        $error = 1;return $item;# NOP guard
-      }
-      $stateInfo[0] = intval($args[0]);
       # }}}
       break;
     default:
@@ -4697,21 +4891,37 @@ class BotFormItem extends BotImgItem # {{{
     }
     # }}}
     # sync {{{
-    # check state
-    if ($status !== $this['status'] ||
-        $field  !== $this['field'])
+    $a = $step   !== $this['step'];
+    $b = $status !== $this['status'];
+    $c = $field  !== $this['field'];
+    if ($a || $b || $c)
     {
       # update
-      $this['status'] = $status;
-      $this['field']  = $field;
+      $a && ($this['step']   = $step);
+      $b && ($this['status'] = $status);
+      $c && ($this['field']  = $field);
       # re-determine
-      $fieldCurrent = ($field >= 0 && $field < $fieldCount)
-        ? $fieldNames[$field]
-        : '';
+      if ($a)
+      {
+        $fields = &$this->skel['fields'][$step];
+        $fieldNames = array_keys($fields);
+        $fieldCount = count($fields);
+      }
+      if ($a || $c)
+      {
+        $fieldCurrent = ($field >= 0 && $field < $fieldCount)
+          ? $fieldNames[$field]
+          : '';
+      }
+      # report
+      $d = '';
+      $a && ($d .= " step:$step");
+      $b && ($d .= ' status:'.$STATUS[$status]);
+      $c && ($d .= " field:$fieldCurrent");
+      $this->log->info($func, ltrim($d));
     }
-    # check data
-    if ($data->changed) {
-      $fieldMissing = $this->getMissingFieldsCnt();
+    if ($a || $data->changed) {
+      $fieldMissing = $this->getMissingFieldsCnt($step);
     }
     # }}}
     # render markup {{{
@@ -4754,7 +4964,7 @@ class BotFormItem extends BotImgItem # {{{
       }
       unset($b);
       # selector group
-      if ($a = $this->getFieldOptionsMkup($fieldCurrent, $cfg, $fieldOpts))
+      if ($a = $this->getFieldOptionsMkup($step, $fieldCurrent, $cfg, $fieldOpts))
       {
         foreach ($a as &$b) {
           $mkup[] = $b;
@@ -4815,11 +5025,19 @@ class BotFormItem extends BotImgItem # {{{
     $msg['markup'] = $this->markup($mkup, $a);
     # }}}
     # render text {{{
-    # determine fields data (base and extended)
-    $a = $this->getFieldsInfo($cfg, $field, $status);
-    $hand && ($b = $hand($this, 'fields', $a)) && ($a = $b);
-    # determine status information
-    $b = 0;
+    # get completed and current fields
+    $a = $this->getCompleteFields($step, $status, $cfg);
+    if ($status === 2) {
+      $b = [];
+    }
+    else
+    {
+      # base + extra
+      $b = $this->getCurrentFields($step, $status, $field, $cfg);
+      $hand && ($c = $hand($this, 'fields', $b)) && ($b = $c);
+    }
+    # determine status and progress information
+    $c = 0;
     if (!$info)
     {
       if ($status === -1) {
@@ -4827,37 +5045,49 @@ class BotFormItem extends BotImgItem # {{{
       }
       elseif ($status < -1 && $hand)
       {
-        $info = ($b = $hand($this, 'info', $status))
-          ? $b[0]
+        $info = ($c = $hand($this, 'status', $status))
+          ? $c[0]
           : ($status === -3
             ? $bot->text['task-await']
             : $bot->text['op-fail']);
-        $b = ($b && isset($b[1]))
-          ? $b[1]
+        $c = ($c && isset($c[1]))
+          ? $c[1]
           : 0;
       }
     }
     # compose
     $msg['text'] = $this->text->render([
-      'fields'   => $a,
+      'completeCount' => count($a),
+      'currentCount'  => count($b),
+      'complete' => $a,
+      'current'  => $b,
       'status'   => $status,
       'info'     => $info,
-      'progress' => $b,
+      'progress' => $c,
     ]);
     # }}}
-    # complete
+    # complete {{{
     if (!($a = $this->image($msg))) {
       return null;
     }
     $this->msgs[] = $a;
+    if ($status === 0)
+    {
+      $b = $this->newFieldHint($step, $fieldCurrent);
+      if (!($a = BotTxtMessage::construct($bot, $b))) {
+        return null;
+      }
+      $this->msgs[] = $a;
+    }
     return $this;
+    # }}}
   }
   # }}}
-  function acceptInput(string $fieldName): ?array # {{{
+  function acceptInput(int $step, string $fieldName): ?array # {{{
   {
     # prepare
     $bot   = $this->bot;
-    $field = &$this->skel['fields'][$fieldName];
+    $field = &$this->skel['fields'][$step][$fieldName];
     # get text
     if (($inp = $this->input->text ?? null) === null) {
       return null;
@@ -4920,13 +5150,60 @@ class BotFormItem extends BotImgItem # {{{
     return [1];
   }
   # }}}
+  # helpers
+  function resetData(# {{{
+    int  $step,
+    bool $soft = false
+  ):void
+  {
+    if ($step > 0)
+    {
+      # partial reset,
+      # clear step fields (keep persistent)
+      $a = &$this->skel['fields'][$step];
+      foreach ($a as $b => &$c)
+      {
+        if (!$soft || !($c[0] & 2)) {
+          unset($this->data[$b]);
+        }
+      }
+      unset($c);
+    }
+    else
+    {
+      # reset all,
+      # get defaults
+      $defs = $this->skel['defs'];
+      if ($hand = $this->skel['handler']) {
+        $hand($this, 'defs', $defs);
+      }
+      # keep persistent fields
+      if ($soft && $this->data->count)
+      {
+        foreach ($this->skel['fields'] as $a => &$b)
+        {
+          foreach ($b as $c => &$d)
+          {
+            if (($d[0] & 2) && isset($this->data[$c])) {
+              $defs[$c] = $this->data[$c];
+            }
+          }
+        }
+        unset($b, $d);
+      }
+      # replace
+      $this->data->set($defs);
+    }
+  }
+  # }}}
   function findFirstField(# {{{
+    int $step,
     int $bit   = 0,# 0=any,1=required,2=persistent,4=nullable
     int $empty = 0 # 0=any,1=yes,-1=nope
   ):int
   {
     # prepare
-    $fields = &$this->skel['fields'];
+    $fields = &$this->skel['fields'][$step];
     $count  = count($fields);
     if ($bit < 0)
     {
@@ -5009,33 +5286,10 @@ class BotFormItem extends BotImgItem # {{{
     return ($a < $count) ? $a : -1;
   }
   # }}}
-  function resetData(array &$cfg, bool $persistent = false): bool # {{{
-  {
-    # prepare
-    $fields = &$this->skel['fields'];
-    $data   = isset($this->skel['defs'])
-      ? $this->skel['defs']
-      : (($hand = $this->skel['handler'])
-        ? ($hand($this, 'defs') ?? [])
-        : []);
-    # keep persistent fields (replace defaults)
-    if ($persistent && $this->data)
-    {
-      foreach ($fields as $a => &$b)
-      {
-        if (($b[0] & 2) && isset($this->data[$a])) {
-          $data[$a] = $this->data[$a];
-        }
-      }
-    }
-    # complete
-    return $this->data->load($data);
-  }
-  # }}}
-  function getMissingFieldsCnt(): int # {{{
+  function getMissingFieldsCnt(int $step): int # {{{
   {
     $c = 0;
-    foreach ($this->skel['fields'] as $a => &$b)
+    foreach ($this->skel['fields'][$step] as $a => &$b)
     {
       if (($b[0] & 1) && !isset($this->data[$a])) {
         $c++;
@@ -5045,77 +5299,11 @@ class BotFormItem extends BotImgItem # {{{
     return $c;
   }
   # }}}
-  function newFieldInfo(# {{{
-    string  $key,
-    bool    $flag  = false,
-    mixed   $value = null
-  ):array
-  {
-    # determine value
-    if ($value === null)
-    {
-      $value = isset($this->data[$key])
-        ? $this->data[$key]
-        : '';
-    }
-    # cast to string
-    if (!is_string($value))
-    {
-      $value = is_array($value)
-        ? implode(',', $value)
-        : "$value";
-    }
-    return [
-      'key'   => $key,
-      'name'  => ($this->text[".$key"] ?: $key),
-      'flag'  => $flag,
-      'value' => $value,
-    ];
-  }
-  # }}}
-  function getFieldsInfo(array &$cfg, int $current, int $status): array # {{{
-  {
-    # prepare
-    $res    = [];
-    $fields = &$this->skel['fields'];
-    $count  = count($fields);
-    # iterate
-    reset($fields);
-    for ($i = 0; $i < $count; ++$i, next($fields))
-    {
-      # get field
-      $name  = key($fields);
-      $field = &$fields[$name];
-      $value = $this->data[$name];
-      # determine state flag
-      switch ($status) {
-      case 0:
-        # current
-        $flag = ($i === $current);
-        break;
-      case -1:
-        # missing required
-        $flag = (($field[0] & 1) && $value === null);
-        break;
-      default:
-        $flag = true;
-        break;
-      }
-      # hide value
-      if ($value !== null && ($field[0] & 8)) {
-        $value = $cfg['hiddenValue'];
-      }
-      # add info
-      $res[] = $this->newFieldInfo($name, $flag, $value);
-    }
-    return $res;
-  }
-  # }}}
-  function &getFieldOptions(string $name): ?array # {{{
+  function &getFieldOptions(int $step, string $name): ?array # {{{
   {
     static $SPEC = '!select', $NULL = null;
     # get field and check it has options
-    $field = &$this->skel['fields'][$name];
+    $field = &$this->skel['fields'][$step][$name];
     if (!strpos($SPEC, $field[1])) {
       return $NULL;
     }
@@ -5137,6 +5325,7 @@ class BotFormItem extends BotImgItem # {{{
   }
   # }}}
   function &getFieldOptionsMkup(# {{{
+    int    $step,
     string $name,
     array  &$cfg,
     ?array &$opts = null
@@ -5144,7 +5333,7 @@ class BotFormItem extends BotImgItem # {{{
   {
     static $NULL = null;
     # get field options
-    if (!$opts && !($opts = $this->getFieldOptions($name))) {
+    if (!$opts && !($opts = $this->getFieldOptions($step, $name))) {
       return $NULL;
     }
     # get list of selected keys
@@ -5159,7 +5348,7 @@ class BotFormItem extends BotImgItem # {{{
     }
     # prepare
     $id    = $this->id;
-    $func  = $this->skel['fields'][$name][1];
+    $func  = $this->skel['fields'][$step][$name][1];
     $templ = $this->caps[$func];
     $bot   = $this->bot;
     $cols  = $cfg['cols'];
@@ -5201,6 +5390,119 @@ class BotFormItem extends BotImgItem # {{{
     return $mkup;
   }
   # }}}
+  function &getFields(int $step, array &$cfg): array # {{{
+  {
+    # prepare
+    $res    = [];
+    $fields = &$this->skel['fields'][$step];
+    $count  = count($fields);
+    # iterate
+    reset($fields);
+    for ($i = 0; $i < $count; ++$i, next($fields))
+    {
+      # get field
+      $name  = key($fields);
+      $field = &$fields[$name];
+      # get value
+      $value = (($field[0] & 8) && isset($this->data[$name]))
+        ? $cfg['hiddenValue']
+        : null;# default value
+      # accumulate
+      $res[] = $this->newFieldDescriptor($name, $value, $field[0]);
+    }
+    return $res;
+  }
+  # }}}
+  function &getCurrentFields(# {{{
+    int   $step,
+    int   $status,
+    int   $field,
+    array &$cfg
+  ):array
+  {
+    # get fields
+    $res = &$this->getFields($step, $cfg);
+    # set flags
+    foreach ($res as $a => &$b)
+    {
+      switch ($status) {
+      case 0:
+        # current
+        $b['flag'] = ($a === $field);
+        break;
+      case -1:
+        # missing required
+        $b['flag'] = (($b['type'] & 1) && ($b['value'] === ''));
+        break;
+      }
+    }
+    return $res;
+  }
+  # }}}
+  function &getCompleteFields(# {{{
+    int   $step,
+    int   $status,
+    array &$cfg
+  ):array
+  {
+    $res = [];
+    if ($status === 2) {
+      $step++;
+    }
+    if ($step > 0)
+    {
+      for ($i = 0; $i < $step; ++$i) {
+        $res = array_merge($res, $this->getFields($i, $cfg));
+      }
+    }
+    return $res;
+  }
+  # }}}
+  function newFieldDescriptor(# {{{
+    string  $id,
+    ?string $value = null,
+    int     $type  = 0
+  ):array
+  {
+    if ($value === null)
+    {
+      if (isset($this->data[$id]))
+      {
+        if (!is_string($value = $this->data[$id]))
+        {
+          $value = is_array($value)
+            ? implode(',', $value)
+            : "$value";
+        }
+      }
+      else {
+        $value = '';
+      }
+    }
+    return [
+      'id'    => $id,
+      'name'  => ($this->text[".$id"] ?: $id),
+      'value' => $value,
+      'type'  => $type,# bitmask
+      'flag'  => false,
+    ];
+  }
+  # }}}
+  function newFieldHint(int $step, string $name): array # {{{
+  {
+    # prepare
+    $bot   = $this->bot;
+    $field = $this->skel['fields'][$step][$name];
+    # get template
+    $a = $field[1];
+    $a = $this->text[">$name"] ?: $bot->text[">$a"];
+    # complete
+    return [
+      'text'   => $bot->tp->render($a, []),
+      'markup' => null,
+    ];
+  }
+  # }}}
 }
 # }}}
 /***
@@ -5209,10 +5511,13 @@ class BotFormItem extends BotImgItem # {{{
 * ║╬║ ⎜  *  ⎟ ✱✱✱ ✶✶✶ ⨳⨳⨳
 * ╚═╝ ⎝     ⎠ ⟶ ➤
 *
+* form input bob/hints
+* form multi-step
+* form datafile prefix: "_<name>.json"
 * check old message callback action does ZAP? or.. PROPER UPDATE?!
 * check file_id stores oke
-* make rendering safe
 * make handler parse errors more descriptive
+* remove unnecessary refresh in private chat (update compatibility)
 * }}}
 */
 class BotTxtItem extends BotItem # {{{

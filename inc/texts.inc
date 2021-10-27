@@ -11,11 +11,21 @@
     'BotFormItem' => # {{{
     '
     {:BEG:}
-    {{#desc}}
-      {{desc}}
-      {{BR}}──{:BR:}
-    {{/desc}}
-    {{#fields}}
+    {{#description}}
+      {{desc}}{:BR:}
+      ──{:BR:}
+    {{/description}}
+    {{#completeCount}}
+      {{#complete}}
+        {:green_circle:}{:NBSP:}<b>{{name}}</b>
+        {{#value}}: <code>{{value}}</code>{{|}} <code>─</code>{{/value}}
+        {:BR:}
+      {{/complete}}
+      {{#currentCount}}
+        ──{:BR:}
+      {{/currentCount}}
+    {{/completeCount}}
+    {{#current}}
       {{^status}}
         {{#flag}}
           {:white_small_square:}{:NBSP:}<b>{{name}}</b>{:ZWSP:}
@@ -37,13 +47,9 @@
         {:white_circle:}
         {:NBSP:}<b>{{name}}</b>
         {{#value}}: <code>{{value}}</code>{{|}} <code>─</code>{{/value}}
-      {{|2}}
-        {:green_circle:}
-        {:NBSP:}<b>{{name}}</b>
-        {{#value}}: <code>{{value}}</code>{{|}} <code>─</code>{{/value}}
       {{/status}}
-      {{BR}}
-    {{/fields}}
+      {:BR:}
+    {{/current}}
     {{#info}}
       ──{:BR:}
       {:information_source:} {{info}}
@@ -80,9 +86,9 @@
     'repeat'     => 'repeat',
     'start'      => 'start',
     'stop'       => 'stop',
-    '#string'    => 'string ({{x}})',
-    '#int'       => 'integer [{{a}}..{{b}}]',
-    '#list'      => 'list value [{{x}}]',
+    '>string'    => 'input a string',
+    '>int'       => 'input an integer',
+    '>select'    => 'select a value from the list',
   ],
   # }}}
   'ru' => [# {{{
@@ -124,9 +130,9 @@
     'repeat'     => 'повторить',
     'start'      => 'запустить',
     'stop'       => 'остановить',
-    '#string'    => 'строка',
-    '#int'       => 'целое число',
-    '#list'      => 'значение из списка',
+    '>string'    => 'введите строку',
+    '>int'       => 'введите целое число',
+    '>select'    => 'выберите значение из списка',
   ],
   # }}}
 ];

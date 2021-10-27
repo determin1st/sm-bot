@@ -201,14 +201,14 @@ function startbotscreate(# {{{
       break;
     }
     # add extra fields
-    $args[] = $item->newFieldInfo('id');
-    $args[] = $item->newFieldInfo('name');
+    $args[] = $item->newFieldDescriptor('id');
+    $args[] = $item->newFieldDescriptor('name');
     # determine failed fields
     if ($status === -2)
     {
       $b = $item->data['error'];
       foreach ($args as &$a) {
-        $a['flag'] = in_array($a['key'], $b, true);
+        $a['flag'] = in_array($a['id'], $b, true);
       }
       unset($a);
     }
