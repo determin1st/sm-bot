@@ -12,23 +12,23 @@
     '
     {:BEG:}
     {{#description}}
-      {{desc}}{:BR:}
-      ──{:BR:}
+      {{description}}{{BR}}
+      {{BR}}
     {{/description}}
     {{#completeCount}}
       {{#complete}}
         {:green_circle:}{:NBSP:}<b>{{name}}</b>
-        {{#value}}: <code>{{value}}</code>{{|}} <code>─</code>{{/value}}
-        {:BR:}
+        {{#value}}: <code>{{value}}</code>{{|}} <code>──</code>{{/value}}
+        {{BR}}
       {{/complete}}
       {{#currentCount}}
-        ──{:BR:}
+        ──{{BR}}
       {{/currentCount}}
     {{/completeCount}}
     {{#current}}
       {{^status}}
         {{#flag}}
-          {:white_small_square:}{:NBSP:}<b>{{name}}</b>{:ZWSP:}
+          {:white_small_square:}<b>{{name}}</b>{:ZWSP:}
           <b>⟹</b>{:NBSP:}
           <code>{{#value}}{{value}}{{|}}·{{/value}}</code>
         {{|}}
@@ -38,21 +38,30 @@
       {{|-2}}
         {{#flag}}{:red_circle:}{{|}}{:yellow_circle:}{{/flag}}
         {:NBSP:}<b>{{name}}</b>
-        {{#value}}: <code>{{value}}</code>{{|}} <code>─</code>{{/value}}
+        {{#value}}: <code>{{value}}</code>{{|}} <code>──</code>{{/value}}
       {{|-1}}
         {{#flag}}{:orange_circle:}{{|}}{:white_circle:}{{/flag}}
         {:NBSP:}<b>{{name}}</b>
-        {{#value}}: <code>{{value}}</code>{{|}} <code>─</code>{{/value}}
+        {{#value}}: <code>{{value}}</code>{{|}} <code>──</code>{{/value}}
       {{|1}}
         {:white_circle:}
         {:NBSP:}<b>{{name}}</b>
-        {{#value}}: <code>{{value}}</code>{{|}} <code>─</code>{{/value}}
+        {{#value}}: <code>{{value}}</code>{{|}} <code>──</code>{{/value}}
       {{/status}}
-      {:BR:}
+      {{BR}}
     {{/current}}
     {{#info}}
-      ──{:BR:}
-      {:information_source:} {{info}}
+      {{BR}}
+      {{#status}}
+        {:blue_circle:}
+      {{|-2}}
+        {:red_circle:}
+      {{|-1}}
+        {:yellow_circle:}
+      {{|}}
+        {:information_source:}
+      {{/status}}
+      {:NBSP:}{{info}}
     {{/info}}
     {:END:}
     ',# }}}
@@ -66,6 +75,8 @@
     'not-found'  => 'not found',
     'oversized'  => 'size limit exceeded',
     'bad-data'   => 'incorrect data',
+    'max-value'  => '{{x}} is the maximum value',
+    'min-value'  => '{{x}} is the minimum value',
     'msg-parsed' => 'message parsed',
     'req-field'  => 'this field is required',
     'req-miss'   => 'missing required parameter',
@@ -84,6 +95,7 @@
     'reset'      => 'reset',
     'retry'      => 'try again',
     'repeat'     => 'repeat',
+    'change'     => 'change',
     'start'      => 'start',
     'stop'       => 'stop',
     '>string'    => 'input a string',
@@ -110,6 +122,8 @@
     'not-found'  => 'не найден',
     'oversized'  => 'превышен допустимый размер',
     'bad-data'   => 'неверные данные',
+    'max-value'  => '{{x}} это максимальное значение',
+    'min-value'  => '{{x}} это минимальное значение',
     'msg-parsed' => 'сообщение обработано',
     'req-field'  => 'это поле является обязательным',
     'req-miss'   => 'пропущен обязательный параметр',
@@ -128,6 +142,7 @@
     'reset'      => 'сброс',
     'retry'      => 'повторить попытку',
     'repeat'     => 'повторить',
+    'change'     => 'изменить',
     'start'      => 'запустить',
     'stop'       => 'остановить',
     '>string'    => 'введите строку',

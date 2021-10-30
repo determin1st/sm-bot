@@ -469,6 +469,7 @@ class BotConfig implements \JsonSerializable # {{{
     'BotFormItem'      => [
       'cols'           => 3,# number of options in a row
       'colsFlex'       => false,# allow variable cols in the last row
+      'isPersistent'   => false,# change instead of repeat
       'resetFailed'    => true,# allow to reset from negative state
       'resetCompleted' => true,# allow to reset from positive state
       'resetAll'       => false,# do a full reset (all steps)
@@ -493,7 +494,7 @@ class BotConfig implements \JsonSerializable # {{{
         'inputHead'    => [],
         'inputFoot'    => [['!back','!ok','!forward'],['!up']],
         'confirm'      => [['!back','!submit'],['!up']],
-        'success'      => [['!repeat'],['!up']],
+        'success'      => [['!repeat','!change'],['!up']],
       ],
     ],
     # }}}
@@ -1520,8 +1521,12 @@ class BotText implements \ArrayAccess # {{{
     'large_orange_diamond' => "\xF0\x9F\x94\xB6",
     'small_red_triangle'   => "\xF0\x9F\x94\xBA",
     'small_red_triangle_down' => "\xF0\x9F\x94\xBB",
-    'information_source'   => "\xE2\x84\xB9",
+    'information_source'    => "\xE2\x84\xB9",
+    'eight_spoked_asterisk' => "\xE2\x9C\xB3",
     'repeat'           => "\xF0\x9F\x94\x81",
+    'keycap'           => "\xEF\xB8\x8F\xE2\x83\xA3",
+    'keycap_asterisk'  => "*\xEF\xB8\x8F\xE2\x83\xA3",
+    'stopwatch'        => "\xE2\x8F\xB1",
     # }}}
   ];
   static function construct(object $bot): ?self # {{{
@@ -3968,7 +3973,7 @@ class BotItemData implements \ArrayAccess # {{{
       $file = ($file === 1)
         ? $item->user->dir # private
         : $item->bot->dir->data; # public
-      $file = $file.$item->id.'.json';
+      $file = $file.'_'.$item->id.'.json';
     }
     else {
       $file = '';
@@ -4504,53 +4509,41 @@ class BotFormItem extends BotImgItem # {{{
       return null;
     }
     # get currents
-    /***
-    $state = [
-      ($step   = $this['step']   ?? 0),
-      ($status = $this['status'] ?? 0),
-      ($field  = $this['field']  ?? 0),
-    ];
-    /***/
     $step   = $this['step']   ?? 0;
     $status = $this['status'] ?? 0;
     $field  = $this['field']  ?? 0;
-    /***/
-    # check item entry (initial render)
-    if ($this->user->cfg->queueSearch($this, true) === -1)
+    # non-persistent form with at least one non-persistent field
+    # should reset its data, check
+    if (!$cfg['isPersistent'] &&
+        $this->user->cfg->queueSearch($this, true) === -1 &&
+        ~($a = $this->findFirstField($step, -2)) &&
+        $status !== 1 && abs($status) !== 3)
     {
-      # soft reset,
-      # a form with at least one non-persistent field
-      # should reset its data on each entry,
-      # except it is in confirmation or in progress state
-      if (~($a = $this->findFirstField($step, -2)) &&
-          $status !== 1 && abs($status) !== 3)
+      # resetting completed or failed state
+      # is optionated but enabled by default
+      $b = ($status === -2);
+      $c = ($status ===  2);
+      if ((!$b || $cfg['resetFailed']) &&
+          (!$c || $cfg['resetCompleted']))
       {
-        # resetting completed or failed state
-        # is optionated but on by default
-        $b = ($status === -2);
-        $c = ($status ===  2);
-        if ((!$b || $cfg['resetFailed']) &&
-            (!$c || $cfg['resetCompleted']))
+        if ($cfg['resetAll'])
         {
-          if ($cfg['resetAll'])
+          $this->resetData(0, true);
+          $step = $status = $field = 0;
+        }
+        else
+        {
+          $this->resetData($step, true);
+          if ($status)
           {
-            $this->resetData(0, true);
-            $step = $status = $field = 0;
+            $status = 0;
+            ($b || $c) && ($field = 0);
           }
-          else
-          {
-            $this->resetData($step, true);
-            if ($status)
-            {
-              $status = 0;
-              ($b || $c) && ($field = 0);
-            }
-            elseif (~($b = $this->findFirstField($step, 1, 1)) && $b < $a) {
-              $field = $b;
-            }
-            else {
-              $field = $a;
-            }
+          elseif (~($b = $this->findFirstField($step, 1, 1)) && $b < $a) {
+            $field = $b;
+          }
+          else {
+            $field = $a;
           }
         }
       }
@@ -4721,37 +4714,38 @@ class BotFormItem extends BotImgItem # {{{
       }
       # }}}
       break;
-    case 'clear':
-      # {{{
-      if ($status === 0 && ($fields[$fieldCurrent][0] & 4) &&
-          isset($data[$fieldCurrent]))
-      {
-        unset($data[$fieldCurrent]);
-        $this->log->info($func, "[-]$fieldCurrent");
-      }
-      # }}}
-      break;
     case 'input':
       # {{{
       # check
       if ($status !== 0) {
         return null;
       }
-      # invoke handler
-      if (!($hand && ($a = $hand($this, $func, $fieldCurrent))) &&
-          !($a = $this->acceptInput($step, $fieldCurrent)))
-      {
+      # accept
+      if (!($a = $this->acceptInput($step, $fieldCurrent))) {
         return null;
       }
-      # check handled
+      # check accepted
       if (~$a[0])
       {
-        # log success
+        # report success
         if ($a[0]) {
           $this->log->info($func, "[~]$fieldCurrent");
         }
         # set info
         isset($a[1]) && ($info = $a[1]);
+      }
+      # }}}
+      break;
+    case 'clear':
+      # {{{
+      if ($status === 0 && ($fields[$fieldCurrent][0] & 4) &&
+          isset($data[$fieldCurrent]))
+      {
+        # clear and callback
+        unset($data[$fieldCurrent]);
+        $hand && $hand($this, 'changed', $fieldCurrent);
+        # report
+        $this->log->info($func, "[-]$fieldCurrent");
       }
       # }}}
       break;
@@ -4793,28 +4787,38 @@ class BotFormItem extends BotImgItem # {{{
       # determine index of the last step
       $a = count($this->skel['fields']) - 1;
       # determine action variant:
-      # next step, confirmation or submittion
+      # next step, confirmation or submission
       $b = (
         ($step < $a) ||
         ($cfg['okConfirm'] && ($status === 0 || $status === -2))
       );
       $func = $b ? 'ok' : 'submit';
-      # invoke handler
+      # callback
       if ($hand && ($c = $hand($this, $func, $step)))
       {
-        # set info
-        isset($c[1]) && ($info = $c[1]);
-        # check failed
-        if ($c[0] === 0)
+        if ($c[0] === -1)
         {
+          # TODO: task startup
+          $this->log->warn($func, 'task');
+          break;
+        }
+        elseif ($c[0] === 2)
+        {
+          # instant submission
+          $b = false;
+          $info = $c[1] ?? '';
+        }
+        elseif ($c[0] === 0)
+        {
+          # step failure
+          $info   = $c[1] ?? $bot->text['op-fail'];
           $status = -2;
           break;
         }
-        # check task startup
-        if ($c[0] === -1)
+        elseif (isset($c[1]))
         {
-          $this->log->warn($func, 'TODO');
-          break;
+          # step success
+          $info = $c[1];
         }
       }
       # proceed to the next step / confirmation
@@ -4856,6 +4860,7 @@ class BotFormItem extends BotImgItem # {{{
       }
       # }}}
       break;
+    case 'change':
     case 'repeat':
       # {{{
       # check in correct state
@@ -4864,24 +4869,31 @@ class BotFormItem extends BotImgItem # {{{
         $this->log->error($func, $STATUS[$status]);
         return null;
       }
-      if ($status < 0)
+      elseif ($status < 0)
       {
         # back to normal (failure => input)
         $status = 0;
       }
-      elseif ($cfg['resetAll'])
-      {
-        # hard repeat
-        $this->resetData(0, true);
-        $step  = $status = 0;
-        $field = ~($a = $this->findFirstField(0, -2)) ? $a : 0;
-      }
       else
       {
-        # soft repeat
-        $this->resetData($step, true);
-        $status = 0;
-        $field  = ~($a = $this->findFirstField($step, -2)) ? $a : 0;
+        # changing or repeating (complete => input)
+        if ($cfg['resetAll'] || $cfg['isPersistent'])
+        {
+          # hard repeat/change
+          $this->resetData(0, true);
+          $step = $status = 0;
+        }
+        else
+        {
+          # soft repeat
+          $this->resetData($step, true);
+          $status = 0;
+        }
+        $field = $cfg['isPersistent']
+          ? 0
+          : (~($a = $this->findFirstField(0, -2))
+            ? $a
+            : 0);
       }
       # }}}
       break;
@@ -4949,6 +4961,12 @@ class BotFormItem extends BotImgItem # {{{
           ? (($status === -2)
             ? 1
             : ($cfg['retryDisable'] ? -1 : 0))
+          : 0,
+        'repeat' => $cfg['isPersistent']
+          ? 0
+          : 1,
+        'change' => $cfg['isPersistent']
+          ? 1
           : 0,
       ];
     }
@@ -5055,8 +5073,12 @@ class BotFormItem extends BotImgItem # {{{
           : 0;
       }
     }
+    if (!$hand || !($d = $hand($this, 'description', $status))) {
+      $d = $this->text['#description'] ?: '';
+    }
     # compose
     $msg['text'] = $this->text->render([
+      'description'   => $d,
       'completeCount' => count($a),
       'currentCount'  => count($b),
       'complete' => $a,
@@ -5087,7 +5109,14 @@ class BotFormItem extends BotImgItem # {{{
   {
     # prepare
     $bot   = $this->bot;
+    $hand  = $this->skel['handler'];
     $field = &$this->skel['fields'][$step][$fieldName];
+    $info  = '';
+    # try custom handler
+    if ($hand && ($a = $hand($this, 'input', $fieldName))) {
+      return $a;
+    }
+    # do standard handling
     # get text
     if (($inp = $this->input->text ?? null) === null) {
       return null;
@@ -5096,7 +5125,7 @@ class BotFormItem extends BotImgItem # {{{
     switch ($field[1]) {
     case 'string':
       # validate string size
-      if (isset($field[2]) && strlen($inp) > $field[2])
+      if (isset($field[2]) && $field[2] && strlen($inp) > $field[2])
       {
         # hidden data is considered fragile, so,
         # instead of cutting, discard and report
@@ -5105,8 +5134,10 @@ class BotFormItem extends BotImgItem # {{{
           unset($this->data[$fieldName]);
           return [0, $bot->text['oversized']];
         }
-        else {
-          $inp = substr($inp, 0, $field[2]);
+        else
+        {
+          $inp  = substr($inp, 0, $field[2]);
+          $info = $bot->text['oversized'];
         }
       }
       # check syntax
@@ -5131,11 +5162,19 @@ class BotFormItem extends BotImgItem # {{{
       $inp = intval($inp);
       $a && ($inp = -$inp);
       # check minimum and maximum
-      if (isset($field[2]) && $inp < $field[2]) {
-        $inp = $field[2];
+      if (isset($field[2]) && $inp < $field[2])
+      {
+        $a = $bot->tp->render($bot->text['min-value'], [
+          'x' => $field[2]
+        ]);
+        return [0, $a];
       }
-      elseif (isset($field[3]) && $inp > $field[3]) {
-        $inp = $field[3];
+      elseif (isset($field[3]) && $inp > $field[3])
+      {
+        $a = $bot->tp->render($bot->text['max-value'], [
+          'x' => $field[3]
+        ]);
+        return [0, $a];
       }
       break;
     default:
@@ -5145,9 +5184,10 @@ class BotFormItem extends BotImgItem # {{{
     if ($inp === $this->data[$fieldName]) {
       return [-1];
     }
-    # complete
+    # change and callback
     $this->data[$fieldName] = $inp;
-    return [1];
+    $hand && $hand($this, 'changed', $fieldName);
+    return [1, $info];
   }
   # }}}
   # helpers
@@ -5451,8 +5491,22 @@ class BotFormItem extends BotImgItem # {{{
     }
     if ($step > 0)
     {
-      for ($i = 0; $i < $step; ++$i) {
-        $res = array_merge($res, $this->getFields($i, $cfg));
+      if ($status === 2 && $cfg['isPersistent'])
+      {
+        # exclude non-persistent fields
+        for ($i = 0; $i < $step; ++$i)
+        {
+          foreach ($this->getFields($i, $cfg) as &$a) {
+            ($a['type'] & 2) && ($res[] = $a);
+          }
+        }
+      }
+      else
+      {
+        # merge all
+        for ($i = 0; $i < $step; ++$i) {
+          $res = array_merge($res, $this->getFields($i, $cfg));
+        }
       }
     }
     return $res;
@@ -5490,17 +5544,29 @@ class BotFormItem extends BotImgItem # {{{
   # }}}
   function newFieldHint(int $step, string $name): array # {{{
   {
-    # prepare
-    $bot   = $this->bot;
-    $field = $this->skel['fields'][$step][$name];
-    # get template
-    $a = $field[1];
-    $a = $this->text[">$name"] ?: $bot->text[">$a"];
+    # assemble text message
+    if (($a = $this->skel['handler']) &&
+        ($a = $a($this, 'hint', $name)))
+    {
+      # dynamic (handler),
+      # extract text and markup
+      $b = $a[1] ?? null;
+      $a = $a[0];
+    }
+    else
+    {
+      # static (item or bot),
+      # try to extract from the item
+      if (!($a = $this->text[">$name"]))
+      {
+        # reach for common type otherwise
+        $a = $this->skel['fields'][$step][$name][1];
+        $a = $this->bot->text[">$a"];
+      }
+      $b = null;
+    }
     # complete
-    return [
-      'text'   => $bot->tp->render($a, []),
-      'markup' => null,
-    ];
+    return ['text'=>$a, 'markup'=>$b];
   }
   # }}}
 }
@@ -5511,9 +5577,6 @@ class BotFormItem extends BotImgItem # {{{
 * ║╬║ ⎜  *  ⎟ ✱✱✱ ✶✶✶ ⨳⨳⨳
 * ╚═╝ ⎝     ⎠ ⟶ ➤
 *
-* form input bob/hints
-* form multi-step
-* form datafile prefix: "_<name>.json"
 * check old message callback action does ZAP? or.. PROPER UPDATE?!
 * check file_id stores oke
 * make handler parse errors more descriptive

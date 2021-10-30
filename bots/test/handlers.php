@@ -1,5 +1,66 @@
 <?php
-namespace SM;
+namespace SM\BotItem;
+use SM\{# {{{
+  BotError, BotConfig, BotText, BotFile, BotCommands
+};
+# }}}
+function start11111111(object $item, string $func, string $args): ?array # {{{
+{
+  return null;
+}
+# }}}
+function startformst1(# {{{
+  object  $item,
+  string  $func,
+  mixed   &$args = null
+):?array
+{
+  $item->log->warn('callback', $func);
+  switch ($func) {
+  case 'changed':# {{{
+    if ($args === 'phone')
+    {
+      # generate random submission code
+      $item['code'] = rand(100, 999);
+    }
+    break;
+  # }}}
+  case 'ok':# {{{
+    # check code is not required to submit
+    if (!isset($item['code'])) {
+      return [2];# submit instantly
+    }
+    # check timeout lock
+    if (isset($item['time']))
+    {
+      $a = time() - $item['time'];
+      $b = 60;
+      if ($a < $b)
+      {
+        return [0, $item->bot->tp->render($item->text['cooldown'], [
+          'x' => $b - $a
+        ])];
+      }
+    }
+    $item['time'] = time();
+    break;
+  # }}}
+  case 'submit':# {{{
+    # TODO
+    break;
+  # }}}
+  case 'fields':# {{{
+    if ($item['status'] !== -2) {
+      break;
+    }
+    break;
+  # }}}
+  }
+  return null;
+}
+# }}}
+###
+# {{{
 class item_testmenu_tree_cycle_start_play {
   public static function render($bot, &$item) # {{{
   {
@@ -277,4 +338,5 @@ class task_testformmm {
     ];
   # }}}
 }
+# }}}
 ?>

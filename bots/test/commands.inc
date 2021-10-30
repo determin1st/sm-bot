@@ -12,7 +12,7 @@
       [
         'markup' => [['t1','t2','t3'],['!up']],
         'text' => [
-          '@'=>'image/title tests'
+          '@'=>'title/image tests'
         ],
         'items' => [
           't1' =>
@@ -45,23 +45,59 @@
             'type'     => 'form',
             'datafile' => 1,
             'config'   => [
-              'okConfirm' => false,
+              'isPersistent'  => true,
+              'okConfirm'     => false,
+              'resetComplete' => false,
             ],
             'markup' => [],
-            'fields' => [# bits: 1:required+2:persistent+4:nullable+8:hidden
+            'fields' => [# bits: 1=required+2=persistent+4=nullable+8=hidden
               [
-                'phone' => [1+2, 'string', 89031234567, '/^\+{0,1}\d{11}$/'],
-                'city'  => [1, 'string', 20],
+                'phone' => [1+2, 'string', 12, '/^\+{0,1}\d{11}$/'],
+                'city'  => [1+2+4, 'string', 20],
               ], [
                 'code'  => [1, 'int', 100, 999],
               ],
             ],
             'text' => [
-              'en'  => [
-                '@' => 'sms',
+              'en' => [
+                '@' => "sms form",
+                '#description' => '
+                This two-step form emulates input with SMS confirmation. 
+                Generated code is shown after first unseccessful attempt. 
+                ',
+                '.phone' => "mob.phone",
+                '>phone' => '
+                type mobile phone number
+                ',
+                '>code' => '
+                enter the code from the SMS message 
+                sent to the specified phone number
+                ',
+                'cooldown' => '
+                Repeated SMS code requests are throttled. 
+                Try again in {:stopwatch:}{{x}} seconds.
+                ',
               ],
-              'en'  => [
-                '@' => 'sms',
+              'ru' => [
+                '@' => "sms форма",
+                '#description' => '
+                Эта двухшаговая форма эмулирует ввод с подтверждением по СМС. 
+                Сгенерированный код отображается после первой неудачной попытки.
+                ',
+                '.phone' => "моб.телефон",
+                '>phone' => '
+                введите номер мобильного телефона
+                ',
+                '.city' => "город",
+                '.code' => "код",
+                '>code' => '
+                введите код из СМС сообщения 
+                отправленного на указанный номер телефона
+                ',
+                'cooldown' => '
+                Повторные запросы СМС кода ограничены. 
+                Попробуйте снова через {:stopwatch:}{{x}} секунд.
+                ',
               ],
             ],
           ],

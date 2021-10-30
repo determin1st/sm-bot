@@ -13,6 +13,7 @@
   'reset'    => '{:arrow_right_hook:} {{.}}',
   'retry'    => '{{.}} {:arrows_counterclockwise:}',
   'repeat'   => '{:repeat:} {{.}}',
+  'change'   => '{{.}} {:keycap_asterisk:}',
   'ok'       => 'OK',
   'submit'   => '{{.}} {:record_button:}',
   'add'      => '{:new:} {{.}}',
