@@ -63,6 +63,7 @@
                 '@' => "sms form",
                 '#description' => '
                 This two-step form emulates input with SMS confirmation. 
+                Confirmation is only required for phone number. 
                 Generated code is shown after first unseccessful attempt. 
                 ',
                 '.phone' => "mob.phone",
@@ -74,14 +75,19 @@
                 sent to the specified phone number
                 ',
                 'cooldown' => '
-                Repeated SMS code requests are throttled. 
+                Repeated SMS code requests are throttled.{:BR:}
                 Try again in {:stopwatch:}{{x}} seconds.
                 ',
+                'wrong' => "
+                Entered code is incorrect (the correct one is <b>{{x}}</b>).{:BR:}
+                {{y}} attempts left.
+                ",
               ],
               'ru' => [
                 '@' => "sms форма",
                 '#description' => '
                 Эта двухшаговая форма эмулирует ввод с подтверждением по СМС. 
+                Подтверждение требуется только для номера телефона. 
                 Сгенерированный код отображается после первой неудачной попытки.
                 ',
                 '.phone' => "моб.телефон",
@@ -95,8 +101,16 @@
                 отправленного на указанный номер телефона
                 ',
                 'cooldown' => '
-                Повторные запросы СМС кода ограничены. 
+                Повторные запросы СМС кода ограничены.{:BR:}
                 Попробуйте снова через {:stopwatch:}{{x}} секунд.
+                ',
+                'wrong' => '
+                Введен неверный код (правильный - <b>{{x}}</b>).{:BR:}
+                Осталось {{y}} попытки.
+                ',
+                'wrong' => '
+                Entered code is incorrect (the correct one is <b>{{x}}</b>).{:BR:}
+                {{y}} attempts left.
                 ',
               ],
             ],

@@ -17,7 +17,7 @@ function startformst1(# {{{
 {
   $item->log->warn('callback', $func);
   switch ($func) {
-  case 'changed':# {{{
+  case 'change':# {{{
     if ($args === 'phone')
     {
       # generate random submission code
@@ -46,13 +46,41 @@ function startformst1(# {{{
     break;
   # }}}
   case 'submit':# {{{
-    # TODO
+    # prepare
+    $bot     = $item->bot;
+    $data    = $item->data;
+    $attempt = 1 + ($data['attempt'] ?? 0);
+    $max     = 3;
+    # check retry attempt
+    if ($item['status'] === -2)
+    {
+      # clear incorrect code and return to the input mode
+      unset($data['code']);
+      return [-1];
+    }
+    # check no attempts left
+    if ($attempt > $max)
+    {
+      var_dump('NO ATTEMPTS LEFT!!!!!!!!');
+    }
+    # save current attempt
+    $data['attempt'] = $attempt;
+    # check code
+    if ($item[$a = 'code'] !== $data[$a])
+    {
+      return [0, $bot->tp->render($item->text['wrong'], [
+        'x' => $item[$a],
+        'y' => $max - $attempt,
+      ])];
+    }
     break;
   # }}}
   case 'fields':# {{{
+    # operating in failure state
     if ($item['status'] !== -2) {
       break;
     }
+    # ...
     break;
   # }}}
   }
