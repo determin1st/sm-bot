@@ -11,20 +11,19 @@
     'BotFormItem' => # {{{
     '
     {:BEG:}
-    {{#description}}
-      {{description}}{{BR}}
-      {{BR}}
+    {{?description}}
+      {{description}}{{BR}}{{BR}}
     {{/description}}
-    {{#completeCount}}
+    {{?complete}}
       {{#complete}}
         {:green_circle:}{:NBSP:}<b>{{name}}</b>
         {{#value}}: <code>{{value}}</code>{{|}} <code>──</code>{{/value}}
         {{BR}}
       {{/complete}}
-      {{#currentCount}}
+      {{?current}}
         ──{{BR}}
-      {{/currentCount}}
-    {{/completeCount}}
+      {{/current}}
+    {{/complete}}
     {{#current}}
       {{^status}}
         {{#flag}}
@@ -50,7 +49,7 @@
       {{/status}}
       {{BR}}
     {{/current}}
-    {{#info}}
+    {{?info}}
       {{BR}}
       {{#status}}
         {:blue_circle:}

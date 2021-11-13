@@ -101,14 +101,12 @@ function startbotscreate(# {{{
 {
   static $NEWBOT_EXP = '/^.+ t\.me\/([^.]{5,32})\..+ HTTP API:\n([^\n]{44,46})\n.+$/s';
   switch ($func) {
-  case 'options':
-    # {{{
+  case 'options':# {{{
     # there is only one field with options,
     # get and return available bot classes
     return getBotClassMap($item);
-    # }}}
-  case 'input':
-    # {{{
+  # }}}
+  case 'input':# {{{
     # parse forwarded BotFather message
     if (($a = $item->input->text ?? '') === '' ||
         ($b = $item->input->forward_from ?? null) === null ||
@@ -120,9 +118,8 @@ function startbotscreate(# {{{
     # store and complete
     $item->data['token'] = $b[2];
     return [1, $item->bot->text['msg-parsed']];
-    # }}}
-  case 'ok':
-    # {{{
+  # }}}
+  case 'ok':# {{{
     # get token and extract identifier
     $bot   = $item->bot;
     $data  = $item->data;
@@ -155,9 +152,8 @@ function startbotscreate(# {{{
     # store bot username
     $data['name'] = $a->username;
     return [1];
-    # }}}
-  case 'submit':
-    # {{{
+  # }}}
+  case 'submit':# {{{
     # prepare
     $bot  = $item->bot;
     $data = $item->data;
@@ -193,9 +189,8 @@ function startbotscreate(# {{{
     }
     # success
     return [1];
-    # }}}
-  case 'fields':
-    # {{{
+  # }}}
+  case 'fields':# {{{
     # check
     if (($status = $item['status']) > -2 && $status < 1) {
       break;
@@ -212,9 +207,8 @@ function startbotscreate(# {{{
       }
       unset($a);
     }
-    # complete
-    return $args;
-    # }}}
+    break;
+  # }}}
   }
   return null;
 }

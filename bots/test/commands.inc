@@ -52,8 +52,8 @@
             'markup' => [],
             'fields' => [# bits: 1=required+2=persistent+4=nullable+8=hidden
               [
-                'phone' => [1+2, 'string', 12, '/^\+{0,1}\d{11}$/'],
                 'city'  => [1+2+4, 'string', 20],
+                'phone' => [1+2, 'string', 12, '/^\+{0,1}\d{11}$/'],
               ], [
                 'code'  => [1, 'int', 100, 999],
               ],
@@ -107,10 +107,6 @@
                 'wrong' => '
                 Введен неверный код (правильный - <b>{{x}}</b>).{:BR:}
                 Осталось {{y}} попытки.
-                ',
-                'wrong' => '
-                Entered code is incorrect (the correct one is <b>{{x}}</b>).{:BR:}
-                {{y}} attempts left.
                 ',
               ],
             ],
