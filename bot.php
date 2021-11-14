@@ -1,11 +1,11 @@
 <?php
 declare(strict_types=1);
+namespace SM;
 use # {{{
   Throwable, Error, Exception,
   JsonSerializable, ArrayAccess,
-  CURLFile, Closure, Generator;
+  Generator, Closure, CURLFile;
 # }}}
-namespace SM;
 class Bot # {{{
 {
   # {{{
@@ -51,71 +51,39 @@ class Bot # {{{
     if (function_exists($e = 'sapi_windows_set_ctrl_handler'))
     {
       # WinOS: console breaks should stop masterbot,
-      # slavebot must register this handler to terminate properly (by master command)
+      # slavebot must register this handler to terminate properly (by master's command)
       $e(function (int $e) use ($bot)
       {
         if ($bot->isMaster)
         {
-          $bot->destruct();
-          ($e === PHP_WINDOWS_EVENT_CTRL_C)
-            ? exit(1) # restart
-            : exit(2);# stop
+          $bot->status = ($e === PHP_WINDOWS_EVENT_CTRL_C)
+            ? 1 # restart
+            : 2;# stop
         }
       });
     }
     # report startup
     $bot->log->info('started');
     $bot->log->commands();
-    # start process event loop
-    $fetcher = null;
+    # start event loop
     $replies = 0;
     while ($bot->status === 0)
     {
-      # start or re-start fetcher
-      if (!$fetcher || !$fetcher->valid()) {
-        $fetcher = $bot->api->getUpdates();
-      }
-      # request updates
-      if ($fetcher->key() === 0)
+      # handle updates
+      if ($a = $bot->api->getUpdates())
       {
-      }
-      if ($a = $fetcher->current())
-      {
-        # handle updates
+        if ($a instanceof BotError) {
+          break;
+        }
         foreach ($a->result as $b) {
           $bot->update($b) && $replies++;
         }
       }
-      elseif ($bot->api->log->errorCount)
-      {
-        # handle errors
-        if (++$fails === 5)
-        {
-          $bot->status = 2;
-        }
-        $bot->api->log->errorCount = 0;
-        continue;
-      }
-      $fetcher->next();
+      # handle process communications
+      $bot->proc->check();
+      # rest
+      usleep(Bot::PROCESS_TICK);
     }
-    /***
-    while (($u = $bot->api->getUpdates()) !== null)
-    {
-      foreach ($u as $o)
-      {
-        if (!$bot->update($o)) {
-          break 2;
-        }
-      }
-    }
-    var_dump($u);
-    var_dump('aaaaaaaaaaa');
-    catch (Throwable $e)
-    {
-      $bot->log->exception($e);
-      $bot->status = 2;
-    }
-    /***/
     # terminate
     $bot->destruct();
     exit($bot->status);
@@ -193,7 +161,7 @@ class Bot # {{{
     public int  $id,
     public bool $isMaster,
     public bool $isConsole,
-    public int  $status = 1,
+    public int  $status = 0,
   )
   {
     $this->dir  = new BotDir($this);
@@ -211,14 +179,9 @@ class Bot # {{{
       $this->proc?->destruct();
       $this->api?->finit();
       $this->cfg?->destruct();
-      $this->log->info('stopped');
+      $this->log->info('stopped('.$this->status.')');
       $this->log = null;
     }
-  }
-  # }}}
-  function check(): bool # {{{
-  {
-    return $this->proc->check();
   }
   # }}}
   function update(object $o): bool # {{{
@@ -331,24 +294,43 @@ class Bot # {{{
 # }}}
 class BotError extends Error # {{{
 {
-  static function text(string $msg): self {
-    return new self($msg);
+  public $msg,$origin,$next;
+  static function text(string ...$msg): self
+  {
+    $e = new self();
+    if (count($t = $e->getTrace()) > 1) {
+      array_unshift($msg, $t[1]['function'].'·'.$t[0]['line']);
+    }
+    $e->msg = $msg;
+    return $e;
   }
   static function skip(): self {
-    return new self('');
+    return new self();# not an error, used for escaping
   }
-  static function from(object $e): object
+  static function from(object $e): ?self
   {
     return ($e instanceof BotError)
-      ? ($e->origin ?: $e)
-      : new self('', $e);
+      ? ($e->msg
+        ? $e          # as is
+        : null)       # not an error
+      : new self($e); # wrap
   }
-  function __construct(
-    string $msg,
-    public ?object $origin = null
-  )
+  function __construct(?object $origin = null)
   {
-    parent::__construct($msg, -1);
+    $this->origin = $origin;
+    parent::__construct('', -1);
+  }
+  function push(object $e): self
+  {
+    if ($e = self::from($e))
+    {
+      $n = $this;
+      while ($n->next) {
+        $n = $n->next;
+      }
+      $n->next = $e;
+    }
+    return $this;
   }
 }
 # }}}
@@ -713,6 +695,392 @@ abstract class BotConfigAccess implements ArrayAccess # {{{
   {}
 }
 # }}}
+class BotApi extends BotConfigAccess # {{{
+{
+  const URL = 'https://api.telegram.org/bot';
+  const CONFIG = [
+    # {{{
+    CURLOPT_RETURNTRANSFER => true,
+    CURLOPT_CONNECTTIMEOUT => 10,# default(0): 300
+    CURLOPT_TIMEOUT        => 0,# default(0): never
+    CURLOPT_FORBID_REUSE   => false,
+    CURLOPT_FRESH_CONNECT  => false,
+    ###
+    CURLOPT_TCP_NODELAY    => true,
+    CURLOPT_TCP_KEEPALIVE  => 1,
+    CURLOPT_TCP_KEEPIDLE   => 300,
+    CURLOPT_TCP_KEEPINTVL  => 300,
+    #CURLOPT_TCP_FASTOPEN   => true,
+    ###
+    CURLOPT_HTTP_VERSION   => CURL_HTTP_VERSION_1_1,
+    CURLMOPT_PIPELINING    => 0,
+    CURLOPT_PIPEWAIT       => false,
+    CURLOPT_FOLLOWLOCATION => false,
+    #CURLOPT_NOSIGNAL       => true,
+    #CURLOPT_VERBOSE        => true,
+    CURLOPT_SSL_VERIFYSTATUS => false,# require OCSP during the TLS handshake?
+    CURLOPT_SSL_VERIFYHOST   => 0,# are you afraid of MITM?
+    CURLOPT_SSL_VERIFYPEER   => false,# diallow self-signed certs?
+    # }}}
+  ];
+  public $log,$curl,$error = '';
+  function __construct(public object $bot)# {{{
+  {
+    $this->log = $bot->log->new('api');
+  }
+  # }}}
+  function init(): bool # {{{
+  {
+    try
+    {
+      # create curl instance
+      if (!($this->curl = curl_init())) {
+        throw BotError::text('curl_init() failed');
+      }
+      # configure
+      if (!curl_setopt_array($this->curl, self::CONFIG))
+      {
+        throw BotError::text(
+          'curl_setopt_array() failed'.
+          (curl_errno($this->curl) ? ': '.curl_error($this->curl) : '')
+        );
+      }
+    }
+    catch (Throwable $e)
+    {
+      $this->log->exception($e);
+      if ($this->curl)
+      {
+        curl_close($this->curl);
+        $this->curl = null;
+      }
+      return false;
+    }
+    return true;
+  }
+  # }}}
+  function send(# {{{
+    string  $method,
+    ?array  $req,
+    ?object $file  = null,
+    string  $token = ''
+  ):object|bool
+  {
+    static $FILE_METHOD = [
+      'sendPhoto'     => 'photo',
+      'sendAudio'     => 'audio',
+      'sendDocument'  => 'document',
+      'sendVideo'     => 'video',
+      'sendAnimation' => 'animation',
+      'sendVoice'     => 'voice',
+      'sendVideoNote' => 'video_note',
+    ];
+    try
+    {
+      # determine file attachment
+      if ($file !== null) {
+        $req[$file->postname] = $file;
+      }
+      elseif (isset($FILE_METHOD[$method]) &&
+              isset($req[$a = $FILE_METHOD[$method]]) &&
+              $req[$a] instanceof BotApiFile)
+      {
+        $file = $req[$a];
+      }
+      # determine token
+      $token || ($token = $this->bot->cfg->token);
+      # set request parameters
+      $req = [
+        CURLOPT_URL => self::URL.$token.'/'.$method,
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => $req,
+      ];
+      if (!curl_setopt_array($this->curl, $req)) {
+        throw BotError::text('failed to setup the request');
+      }
+      # send
+      if (($x = curl_exec($this->curl)) === false) {
+        throw BotError::text('curl failed('.curl_errno($this->curl).'): '.curl_error($this->curl));
+      }
+      # decode response
+      if (!($res = json_decode($x, false))) {
+        throw BotError::text("incorrect response JSON: █$x█");
+      }
+      # check response result
+      if (!($res->ok ?? false) || !isset($res->result))
+      {
+        # compose error message
+        if (isset($res->description))
+        {
+          $x = isset($res->error_code)
+            ? '('.$res->error_code.') '.$res->description
+            : $res->description;
+        }
+        else {
+          $x = "incorrect response: █$x█";
+        }
+        throw BotError::text($x);
+      }
+      # success
+      $res = $res->result;
+    }
+    catch (Throwable $e)
+    {
+      # report error
+      $this->log->exception($e);
+      $this->error = $e->getMessage();
+      $res = false;
+    }
+    # remove temporary file (if any)
+    if ($file !== null) {
+      $file->destruct();
+    }
+    # complete
+    return $res;
+  }
+  # }}}
+  function deleteMessage(object $msg): bool # {{{
+  {
+    return !!$this->send('deleteMessage', [
+      'chat_id'    => $msg->chat->id,
+      'message_id' => $msg->message_id,
+    ]);
+  }
+  # }}}
+  function finit(): void # {{{
+  {
+    $this->getUpdatesFinit();
+    if ($this->curl)
+    {
+      curl_close($this->curl);
+      $this->curl = null;
+    }
+  }
+  # }}}
+  public $murl,$query,$poll;
+  function getUpdates(): ?object # {{{
+  {
+    try
+    {
+      # initialize
+      if (!$this->murl && !$this->getUpdatesInit()) {
+        throw BotError::text('failed to initialize');
+      }
+      # perform long polling
+      if ($this->poll && $this->poll->valid()) {
+        $this->poll->send(1);# continue
+      }
+      else {# (re)start
+        $this->poll = $this->getUpdatesPoll();
+      }
+      # check failed
+      if ($a = $this->poll->current()) {
+        throw $a;
+      }
+      # check complete
+      if ($this->poll->valid()) {
+        return null;
+      }
+      # transmission complete,
+      # check HTTP response code
+      if (($a = curl_getinfo($this->curl, CURLINFO_RESPONSE_CODE)) === false) {
+        throw BotError::text('curl_getinfo() failed');
+      }
+      if ($a !== 200) {
+        throw BotError::text("unsuccessful HTTP status: $a");
+      }
+      # get response text
+      if (!($a = curl_multi_getcontent($this->curl))) {
+        return null;
+      }
+      # decode
+      if (($x = json_decode($a, false)) === null &&
+          ($x = json_last_error()) !== JSON_ERROR_NONE)
+      {
+        throw BotError::text(__FUNCTION__,
+          "json_decode[$x]: ".json_last_error_msg()."\n█{$a}█\n"
+        );
+      }
+      # validate response and check its status
+      if (!is_object($x) || !isset($x->ok)) {
+        throw BotError::text(__FUNCTION__, "incorrect response\n█{$a}█\n");
+      }
+      if (!$x->ok)
+      {
+        throw BotError::text(__FUNCTION__,
+          ($x->description ?? "unsuccessful response")
+        );
+      }
+      if (!isset($x->result) || !is_array($x->result)) {
+        throw BotError::text(__FUNCTION__, "incorrect response\n█{$a}█\n");
+      }
+      # shift next query offset
+      if (~($a = count($x->result) - 1)) {
+        $this->query[CURLOPT_POSTFIELDS]['offset'] = 1 + $x->result[$a]->update_id;
+      }
+    }
+    catch (Throwable $e)
+    {
+      $this->log->exception($e);
+      $x = BotError::from($e);
+    }
+    return $x;
+  }
+  # }}}
+  function getUpdatesInit(): bool # {{{
+  {
+    try
+    {
+      # create multi-curl instance
+      if (!($this->murl = curl_multi_init())) {
+        throw BotError::text('curl_multi_init() failed');
+      }
+      # create query
+      $this->query = [
+        CURLOPT_URL => self::URL.$this->bot->cfg->token.'/getUpdates',
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => [
+          'offset'  => 0,
+          'limit'   => 100,
+          'timeout' => 120,# current max=50?!
+        ],
+      ];
+    }
+    catch (Throwable $e)
+    {
+      # report
+      $this->log->exception($e);
+      # cleanup
+      if ($this->murl)
+      {
+        curl_multi_close($this->murl);
+        $this->murl = null;
+      }
+      return false;
+    }
+    return true;
+  }
+  # }}}
+  function getUpdatesPoll(float $timeout = 0.3): Generator # {{{
+  {
+    try
+    {
+      # prepare
+      $error    = null;
+      $attached = false;
+      # set query
+      if (!curl_setopt_array($this->curl, $this->query))
+      {
+        throw BotError::text('curl_setopt_array() failed'.
+          (curl_errno($this->curl) ? ': '.curl_error($this->curl) : '')
+        );
+      }
+      # attach handles
+      if ($a = curl_multi_add_handle($this->murl, $this->curl)) {
+        throw BotError::text('curl_multi_add_handle() failed: '.curl_multi_strerror($a));
+      }
+      # start polling
+      $attached = true;
+      $running  = 1;
+      while ($running)
+      {
+        # execute request
+        if ($a = curl_multi_exec($this->murl, $running)) {
+          throw BotError::text("curl_multi_exec[$a]: ".curl_multi_strerror($a));
+        }
+        # check finished
+        if (!$running) {
+          break;
+        }
+        # wait for activity
+        while (!$a)
+        {
+          if (($a = curl_multi_select($this->murl, $timeout)) < 0)
+          {
+            throw BotError::text(
+              ($a = curl_multi_errno($this->murl))
+                ? "curl_multi_select[$a]: ".curl_multi_strerror($a)
+                : 'system select failed'
+            );
+          }
+          if (!yield) {# ask for continuation
+            throw BotError::skip();
+          }
+        }
+      }
+      # check transfer status
+      if (!($a = curl_multi_info_read($this->murl))) {
+        throw BotError::text('curl_multi_info_read() failed');
+      }
+      if ($a = $a['result']) {
+        throw BotError::text('transfer failed: '.curl_strerror($a));
+      }
+    }
+    catch (Throwable $error) {
+      $error = BotError::from($error);
+    }
+    # detach handles
+    if ($attached && ($a = curl_multi_remove_handle($this->murl, $this->curl)))
+    {
+      $a = BotError::text("curl_multi_remove_handle[$a]: ".curl_multi_strerror($a));
+      $error = $error ? $error->push($a) : $a;
+    }
+    # report any errors
+    $error && yield $error;
+  }
+  # }}}
+  function getUpdatesFinit(): void # {{{
+  {
+    if ($this->murl)
+    {
+      # gracefully terminate polling
+      if ($this->poll)
+      {
+        # complete poll if running
+        $this->poll->valid() &&
+        $this->poll->send(0);
+        # save the last offset at remote (if it was changed)
+        if (($a = &$this->query[CURLOPT_POSTFIELDS])['offset'])
+        {
+          $a['limit']   = 1;
+          $a['timeout'] = 0;
+          curl_setopt_array($this->curl, $this->query) &&
+          curl_exec($this->curl);
+        }
+        unset($a);
+      }
+      # cleanup
+      curl_multi_close($this->murl);
+      $this->murl = $this->query = $this->poll = null;
+    }
+  }
+  # }}}
+}
+# }}}
+class BotApiFile extends CURLFile # {{{
+{
+  public $isTemp;
+  static function construct(string $file, bool $isTemp): self
+  {
+    $o = new static($file);
+    $o->postname = basename($file);
+    $o->isTemp   = $isTemp;
+    return $o;
+  }
+  function destruct(): void
+  {
+    # remove temporary file
+    if ($this->isTemp && $this->name && file_exists($this->name))
+    {
+      @unlink($this->name);
+      $this->name = '';
+    }
+  }
+  function __destruct() {
+    $this->destruct();
+  }
+}
+# }}}
 class BotLog extends BotConfigAccess # {{{
 {
   function __construct(# {{{
@@ -784,23 +1152,24 @@ class BotLog extends BotConfigAccess # {{{
     $this->out(2, 1, ...$msg);
   }
   # }}}
-  function exception(object $e): bool # {{{
+  function exception(object $e): void # {{{
   {
-    # check object type
+    # handle bot error
     if ($e instanceof BotError)
     {
-      if (!$e->origin)
-      {
-        if (!($msg = $e->getMessage())) {
-          return false;# skip
-        }
-        $this->error($msg);
-        return true;
+      if ($e->origin) {
+        $this->exception($e->origin);
       }
-      $e = $e->origin;
+      if ($e->msg) {
+        $this->error(...$e->msg);
+      }
+      if ($e->next) {
+        $this->exception($e->next);
+      }
+      return;
     }
-    $msg = $e->getMessage();
-    # determine trace
+    # handle standard error/exception,
+    # compose trace
     $a = $e->getTraceAsString();
     if ($b = strpos($a, "\n"))
     {
@@ -812,8 +1181,8 @@ class BotLog extends BotConfigAccess # {{{
       ? str_replace(__DIR__, '', $b['file']).'('.$b['line'].')'
       : '---';
     ###
-    $this->out(1, 0, get_class($e), "$msg\n  #0 $b\n  $a");
-    return true;
+    $c = $e->getMessage();
+    $this->out(1, 0, get_class($e), "$c\n  #0 $b\n  $a");
   }
   # }}}
   function commands(): void # {{{
@@ -1170,432 +1539,6 @@ class BotFile # {{{
       ? '' : $lock;
   }
   # }}}
-}
-# }}}
-class BotApi extends BotConfigAccess # {{{
-{
-  const URL = 'https://api.telegram.org/bot';
-  const POLLING_TIMEOUT = 120;# current max=50?
-  const CONFIG = [
-    # {{{
-    CURLOPT_RETURNTRANSFER => true,
-    CURLOPT_CONNECTTIMEOUT => 10,# default(0): 300
-    CURLOPT_TIMEOUT        => 0,# default(0): never
-    CURLOPT_FORBID_REUSE   => false,
-    CURLOPT_FRESH_CONNECT  => false,
-    ###
-    CURLOPT_TCP_NODELAY    => true,
-    CURLOPT_TCP_KEEPALIVE  => 1,
-    CURLOPT_TCP_KEEPIDLE   => 300,
-    CURLOPT_TCP_KEEPINTVL  => 300,
-    #CURLOPT_TCP_FASTOPEN   => true,
-    ###
-    CURLOPT_HTTP_VERSION   => CURL_HTTP_VERSION_1_1,
-    CURLMOPT_PIPELINING    => 0,
-    CURLOPT_PIPEWAIT       => false,
-    CURLOPT_FOLLOWLOCATION => false,
-    #CURLOPT_NOSIGNAL       => true,
-    #CURLOPT_VERBOSE        => true,
-    CURLOPT_SSL_VERIFYSTATUS => false,# require OCSP during the TLS handshake?
-    CURLOPT_SSL_VERIFYHOST   => 0,# are you afraid of MITM?
-    CURLOPT_SSL_VERIFYPEER   => false,# diallow self-signed certs?
-    # }}}
-  ];
-  public $log,$curl,$murl,$error = '';
-  function __construct(public object $bot)# {{{
-  {
-    $this->log = $bot->log->new('api');
-  }
-  # }}}
-  function init(): bool # {{{
-  {
-    $curl = $murl = null;
-    try
-    {
-      # create curl instance
-      if (!($curl = curl_init())) {
-        throw BotError::text('curl_init() failed');
-      }
-      # configure
-      if (!curl_setopt_array($curl, self::CONFIG)) {
-        throw BotError::text('failed to configure');
-      }
-      # create multi-curl instance
-      if (!($murl = curl_multi_init())) {
-        throw BotError::text('curl_multi_init() failed');
-      }
-      # complete
-      $this->curl = $curl;
-      $this->murl = $murl;
-    }
-    catch (Throwable $e)
-    {
-      $this->log->exception($e);
-      $curl && curl_close($curl);
-      $murl && curl_multi_close($murl);
-      return false;
-    }
-    return true;
-  }
-  # }}}
-  function finit(): void # {{{
-  {
-    if ($this->murl)
-    {
-      if (!$this['webhook']) {
-        $this->getUpdates(true);
-      }
-      curl_multi_close($this->murl);
-      $this->murl = null;
-    }
-    if ($this->curl)
-    {
-      curl_close($this->curl);
-      $this->curl = null;
-    }
-  }
-  # }}}
-  function getUpdates(bool $end = false): Generator # {{{
-  {
-    static $POST,$QUERY;
-    try
-    {
-      # prepare {{{
-      $start = false;
-      # check not initialized
-      if (!$POST)
-      {
-        # initialize
-        # skip never called
-        $end && throw BotError::skip();
-        # create post fields
-        $POST = [
-          'offset'  => 0,
-          'limit'   => 100,
-          'timeout' => self::POLLING_TIMEOUT
-        ];
-        # create query
-        $QUERY = [
-          CURLOPT_URL => self::URL.$this->bot->cfg->token.'/getUpdates',
-          CURLOPT_POST => true,
-          CURLOPT_POSTFIELDS => &$POST
-        ];
-      }
-      # check final call
-      if ($end)
-      {
-        # skip never shifted
-        !$POST['offset'] && throw BotError::skip();
-        # set dummy parameters to save current offset at remote
-        $POST['limit']   = 1;
-        $POST['timeout'] = 0;
-      }
-      # configure request
-      if (!curl_setopt_array($this->curl, $QUERY))
-      {
-        $this->log->error(__FUNCTION__,
-          'curl_setopt_array() failed'.
-          (curl_errno($this->curl) ? ': '.curl_error($this->curl) : '')
-        );
-        throw BotError::skip();
-      }
-      # execute final call
-      if ($end)
-      {
-        curl_exec($this->curl);
-        throw BotError::skip();
-      }
-      # }}}
-      # start long polling {{{
-      # combine handles
-      if (!($start = ($a = curl_multi_add_handle($this->murl, $this->curl)) === 0))
-      {
-        $this->log->error(__FUNCTION__,
-          'curl_multi_add_handle() failed: '.curl_multi_strerror($a)
-        );
-        throw BotError::skip();
-      }
-      # send the request
-      $x = 0;
-      if ($a = curl_multi_exec($this->murl, $x))
-      {
-        $this->log->error(__FUNCTION__,
-          'curl_multi_exec() failed: '.curl_multi_strerror($a)
-        );
-        throw BotError::skip();
-      }
-      # wait for response
-      while ($x)
-      {
-        # probe the connection
-        # timeout doesn't work here - that's a php layer problem (2021),
-        # the result is returned instantly. eh
-        if (($a = curl_multi_select($this->murl, 0.3)) > 0) {
-          break;
-        }
-        if ($a < 0)
-        {
-          $a = curl_multi_errno($this->murl);
-          $this->log->error(__FUNCTION__,
-            'curl_multi_select() failed'.
-            ($a ? ': '.curl_multi_strerror($a) : '')
-          );
-          throw BotError::skip();
-        }
-        # no activity
-        yield 1 => null;
-      }
-      # }}}
-      # DELET {{{
-      /***
-      try
-      {
-        $a = 1;
-        while (1)
-        {
-          if ($b = curl_multi_exec($this->murl, $a))
-          {
-            $this->log->error(__FUNCTION__, 'curl_multi_exec() failed: '.curl_multi_strerror($b));
-            return null;
-          }
-          elseif ($a === 0) {
-            break;
-          }
-          while (($b = curl_multi_select($this->murl, 0.5)) === 0)
-          {
-            usleep(Bot::PROCESS_TICK);
-            if (!$this->bot->proc->check()) {
-              return null;
-            }
-          }
-          if ($b === -1)
-          {
-            $this->log->error(__FUNCTION__, curl_multi_strerror(curl_multi_errno($this->murl)));
-            return null;
-          }
-        }
-        # check connection status
-        if (($a = curl_multi_info_read($this->murl)) &&
-            ($a = $a['result']))
-        {
-          $this->log->error(__FUNCTION__, curl_strerror($a));
-          return null;
-        }
-        if (!($a = curl_getinfo($this->curl, CURLINFO_RESPONSE_CODE)))
-        {
-          $this->log->error(__FUNCTION__, 'connection failed');
-          return null;
-        }
-        if ($a !== 200)
-        {
-          $this->log->error(__FUNCTION__, "HTTP status $a");
-          return null;
-        }
-        # get response text
-        if (!($a = curl_multi_getcontent($this->curl))) {
-          return [];
-        }
-      }
-      finally
-      {
-        # cleanup
-        if ($b = curl_multi_remove_handle($this->murl, $this->curl))
-        {
-          $this->log->error(__FUNCTION__, curl_multi_strerror($b));
-          return null;
-        }
-      }
-      /***/
-      # }}}
-      # handle result {{{
-      # check transfer status
-      if (!($a = curl_multi_info_read($this->murl)))
-      {
-        $this->log->error(__FUNCTION__, 'curl_multi_info_read() failed');
-        throw BotError::skip();
-      }
-      if ($a = $a['result'])
-      {
-        $this->log->error(__FUNCTION__,
-          'transfer failed: '.curl_strerror($a)
-        );
-        throw BotError::skip();
-      }
-      # check HTTP response code
-      if (($a = curl_getinfo($this->curl, CURLINFO_RESPONSE_CODE)) === false)
-      {
-        $this->log->error(__FUNCTION__, 'curl_getinfo() failed');
-        throw BotError::skip();
-      }
-      if ($a !== 200)
-      {
-        $this->log->error(__FUNCTION__, "incorrect HTTP status: $a");
-        throw BotError::skip();
-      }
-      # get response text
-      if ($a = curl_multi_getcontent($this->curl))
-      {
-        yield 1 => null;
-        throw BotError::skip();
-      }
-      # decode
-      if (($x = json_decode($a, false)) === null &&
-          json_last_error() !== JSON_ERROR_NONE)
-      {
-        $this->log->error(__FUNCTION__,
-          'failed to decode response: '.json_last_error_msg()."\n█{$a}█\n"
-        );
-        throw BotError::skip();
-      }
-      # check type
-      if (!is_object($x) || !isset($x->ok))
-      {
-        $this->log->error(__FUNCTION__,
-          "incorrect response type\n█{$a}█\n"
-        );
-        throw BotError::skip();
-      }
-      # check status
-      if (!$x->ok || !isset($x->result))
-      {
-        $x = isset($x->description)
-          ? $x->description
-          : "incorrect response\n█{$a}█\n";
-        $this->log->error(__FUNCTION__, $x);
-        throw BotError::skip();
-      }
-      # shift the offset
-      if ($a = count($x->result)) {
-        $POST['offset'] = 1 + $x->result[$a - 1]->update_id;
-      }
-      # complete
-      yield 1 => $x;
-      # }}}
-    }
-    catch (Throwable $e) {
-      $this->log->exception($e);
-    }
-    # cleanup
-    if ($start && ($a = curl_multi_remove_handle($this->murl, $this->curl)))
-    {
-      $this->log->error(__FUNCTION__,
-        'curl_multi_remove_handle() failed: '.curl_multi_strerror($a)
-      );
-    }
-  }
-  # }}}
-  function send(# {{{
-    string  $method,
-    ?array  $req,
-    ?object $file  = null,
-    string  $token = ''
-  ):object|bool
-  {
-    static $FILE_METHOD = [
-      'sendPhoto'     => 'photo',
-      'sendAudio'     => 'audio',
-      'sendDocument'  => 'document',
-      'sendVideo'     => 'video',
-      'sendAnimation' => 'animation',
-      'sendVoice'     => 'voice',
-      'sendVideoNote' => 'video_note',
-    ];
-    try
-    {
-      # determine file attachment
-      if ($file !== null) {
-        $req[$file->postname] = $file;
-      }
-      elseif (isset($FILE_METHOD[$method]) &&
-              isset($req[$a = $FILE_METHOD[$method]]) &&
-              $req[$a] instanceof BotApiFile)
-      {
-        $file = $req[$a];
-      }
-      # determine token
-      $token || ($token = $this->bot->cfg->token);
-      # set request parameters
-      $req = [
-        CURLOPT_URL => self::URL.$token.'/'.$method,
-        CURLOPT_POST => true,
-        CURLOPT_POSTFIELDS => $req,
-      ];
-      if (!curl_setopt_array($this->curl, $req)) {
-        throw BotError::text('failed to setup the request');
-      }
-      # send
-      if (($x = curl_exec($this->curl)) === false) {
-        throw BotError::text('curl failed('.curl_errno($this->curl).'): '.curl_error($this->curl));
-      }
-      # decode response
-      if (!($res = json_decode($x, false))) {
-        throw BotError::text("incorrect response JSON: █$x█");
-      }
-      # check response result
-      if (!($res->ok ?? false) || !isset($res->result))
-      {
-        # compose error message
-        if (isset($res->description))
-        {
-          $x = isset($res->error_code)
-            ? '('.$res->error_code.') '.$res->description
-            : $res->description;
-        }
-        else {
-          $x = "incorrect response: █$x█";
-        }
-        throw BotError::text($x);
-      }
-      # success
-      $res = $res->result;
-    }
-    catch (Throwable $e)
-    {
-      # report error
-      $this->log->exception($e);
-      $this->error = $e->getMessage();
-      $res = false;
-    }
-    # remove temporary file (if any)
-    if ($file !== null) {
-      $file->destruct();
-    }
-    # complete
-    return $res;
-  }
-  # }}}
-  function deleteMessage(object $msg): bool # {{{
-  {
-    return !!$this->send('deleteMessage', [
-      'chat_id'    => $msg->chat->id,
-      'message_id' => $msg->message_id,
-    ]);
-  }
-  # }}}
-}
-# }}}
-class BotApiFile extends CURLFile # {{{
-{
-  public $isTemp;
-  static function construct(string $file, bool $isTemp): self
-  {
-    $o = new static($file);
-    $o->postname = basename($file);
-    $o->isTemp   = $isTemp;
-    return $o;
-  }
-  function destruct(): void
-  {
-    # remove temporary file
-    if ($this->isTemp && $this->name && file_exists($this->name))
-    {
-      @unlink($this->name);
-      $this->name = '';
-    }
-  }
-  function __destruct() {
-    $this->destruct();
-  }
 }
 # }}}
 class BotText implements ArrayAccess # {{{
@@ -5815,12 +5758,13 @@ class BotFormItem extends BotImgItem # {{{
 * ║╬║ ⎜  *  ⎟ ✱✱✱ ✶✶✶ ⨳⨳⨳
 * ╚═╝ ⎝     ⎠ ⟶ ➤ →
 *
-* data separation: each user changes own data until complete
 * server connection: improve errors handling
+* data separation: each user changes own data until complete
 * test: file_id usage
 * handler parse errors: improve, make it more descriptive
 * compatible update: remove unnecessary refresh in private chat
 * solve: old message callback action does ZAP? or.. REFRESH?!
+* getUpdates: own curl handle
 * }}}
 */
 class BotTxtItem extends BotItem # {{{
