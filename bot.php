@@ -897,22 +897,17 @@ class BotApi extends BotConfigAccess # {{{
       if (($x = json_decode($a, false)) === null &&
           ($x = json_last_error()) !== JSON_ERROR_NONE)
       {
-        throw BotError::text(__FUNCTION__,
-          "json_decode[$x]: ".json_last_error_msg()."\n█{$a}█\n"
-        );
+        throw BotError::text("json_decode[$x]: ".json_last_error_msg()."\n█{$a}█\n");
       }
       # validate response and check its status
       if (!is_object($x) || !isset($x->ok)) {
-        throw BotError::text(__FUNCTION__, "incorrect response\n█{$a}█\n");
+        throw BotError::text("incorrect response\n█{$a}█\n");
       }
-      if (!$x->ok)
-      {
-        throw BotError::text(__FUNCTION__,
-          ($x->description ?? "unsuccessful response")
-        );
+      if (!$x->ok) {
+        throw BotError::text(($x->description ?? "unsuccessful response"));
       }
       if (!isset($x->result) || !is_array($x->result)) {
-        throw BotError::text(__FUNCTION__, "incorrect response\n█{$a}█\n");
+        throw BotError::text("incorrect response\n█{$a}█\n");
       }
       # shift next query offset
       if (~($a = count($x->result) - 1)) {
