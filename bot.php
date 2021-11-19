@@ -79,7 +79,7 @@ class Bot # {{{
           $bot->update($b) && $replies++;
         }
       }
-      # handle process communications
+      # handle inter-process communications
       $bot->proc->check();
       # rest
       usleep(Bot::PROCESS_TICK);
@@ -110,7 +110,7 @@ class Bot # {{{
         $bot->id = $bot->cfg->id;
       }
       elseif ($id !== $bot->cfg->id) {
-        throw BotError::text('identifier mismatch: '.$id.'/'.$bot->cfg->id);
+        throw BotError::fail('identifier mismatch: '.$id.'/'.$bot->cfg->id);
       }
       # load dependencies
       require_once $bot->dir->inc.'sm-mustache'.DIRECTORY_SEPARATOR.'mustache.php';
@@ -294,30 +294,48 @@ class Bot # {{{
 # }}}
 class BotError extends Error # {{{
 {
-  public $msg,$origin,$next;
-  static function text(string ...$msg): self
+  static function skip(): self {
+    return new self();
+  }
+  static function warn(string ...$msg): self {
+    return new self(0, $msg);
+  }
+  static function fail(string ...$msg): self
   {
-    $e = new self();
-    if (count($t = $e->getTrace()) > 1) {
-      array_unshift($msg, $t[1]['function'].'·'.$t[0]['line']);
+    # create new error
+    $e = new self(1);
+    # prepend message with details
+    if (count($a = $e->getTrace()) > 1) {
+      array_unshift($msg, $a[1]['function'].'·'.$a[0]['line']);
     }
     $e->msg = $msg;
     return $e;
   }
-  static function skip(): self {
-    return new self();# not an error, used for escaping
-  }
   static function from(object $e): ?self
   {
-    return ($e instanceof BotError)
-      ? ($e->msg
-        ? $e          # as is
-        : null)       # not an error
-      : new self($e); # wrap
+    if ($e instanceof BotError)
+    {
+      # determine total error level
+      $a = $e;
+      $b = $a->level;
+      while ($a->next)
+      {
+        $a  = $a->next;
+        $b += $a->level;
+      }
+      # result with error or no error
+      return $b ? $e : null;
+    }
+    # wrap
+    return new self(1, null, $e);
   }
-  function __construct(?object $origin = null)
+  function __construct(
+    public int      $level  = 0,
+    public array    $msg    = [],
+    public ?object  $origin = null,
+    public ?object  $next   = null
+  )
   {
-    $this->origin = $origin;
     parent::__construct('', -1);
   }
   function push(object $e): self
@@ -419,8 +437,18 @@ class BotConfig implements JsonSerializable # {{{
     'name'   => '',
     'lang'   => '',
     'useFileIds' => false,
-    'BotApi'    => [
-      'webhook' => false,
+    'BotApi'     => [
+      # getUpdates
+      'timeout'  => 60,# polling timeout (telegram's max=50)
+      'limit'    => 100,# polling result limit (100=max)
+      'maxFails' => 0,# max repeated fails until termination (0=unlimited)
+      'pause'    => 10,# pause after repeated failure (seconds)
+      # WebHook
+      'webhook'  => false,# registered?
+      'url'      => '',# HTTPS url of the webhook
+      'cert'     => false,# custom certificate file?
+      'ip'       => '',# fixed IP instead of DNS resolved IP
+      'maxHooks' => 100,# max allowed simultaneous requests (telegram's default=40)
     ],
     'BotLog'      => [
       'debug'     => true,# display debug output?
@@ -735,12 +763,12 @@ class BotApi extends BotConfigAccess # {{{
     {
       # create curl instance
       if (!($this->curl = curl_init())) {
-        throw BotError::text('curl_init() failed');
+        throw BotError::fail('curl_init() failed');
       }
       # configure
       if (!curl_setopt_array($this->curl, self::CONFIG))
       {
-        throw BotError::text(
+        throw BotError::fail(
           'curl_setopt_array() failed'.
           (curl_errno($this->curl) ? ': '.curl_error($this->curl) : '')
         );
@@ -796,15 +824,15 @@ class BotApi extends BotConfigAccess # {{{
         CURLOPT_POSTFIELDS => $req,
       ];
       if (!curl_setopt_array($this->curl, $req)) {
-        throw BotError::text('failed to setup the request');
+        throw BotError::fail('failed to setup the request');
       }
       # send
       if (($x = curl_exec($this->curl)) === false) {
-        throw BotError::text('curl failed('.curl_errno($this->curl).'): '.curl_error($this->curl));
+        throw BotError::fail('curl failed('.curl_errno($this->curl).'): '.curl_error($this->curl));
       }
       # decode response
       if (!($res = json_decode($x, false))) {
-        throw BotError::text("incorrect response JSON: █$x█");
+        throw BotError::fail("incorrect response JSON: █$x█");
       }
       # check response result
       if (!($res->ok ?? false) || !isset($res->result))
@@ -819,7 +847,7 @@ class BotApi extends BotConfigAccess # {{{
         else {
           $x = "incorrect response: █$x█";
         }
-        throw BotError::text($x);
+        throw BotError::fail($x);
       }
       # success
       $res = $res->result;
@@ -860,34 +888,63 @@ class BotApi extends BotConfigAccess # {{{
   public $murl,$query,$poll;
   function getUpdates(): ?object # {{{
   {
+    static $PAUSE=0, $FAILS=0;
     try
     {
       # initialize
       if (!$this->murl && !$this->getUpdatesInit()) {
-        throw BotError::text('failed to initialize');
+        throw BotError::fail('failed to initialize');
+      }
+      # check paused
+      if ($PAUSE)
+      {
+        if ($PAUSE > time()) {
+          return null;
+        }
+        $PAUSE = 0;
       }
       # perform long polling
       if ($this->poll && $this->poll->valid()) {
         $this->poll->send(1);# continue
       }
-      else {# (re)start
-        $this->poll = $this->getUpdatesPoll();
-      }
-      # check failed
-      if ($a = $this->poll->current()) {
-        throw $a;
+      else
+      {
+        # start or re-start
+        $a = $this->query[CURLOPT_POSTFIELDS]['timeout'];
+        $this->poll = $this->getUpdatesPoll($a);
       }
       # check complete
       if ($this->poll->valid()) {
         return null;
       }
-      # transmission complete,
+      # check failed
+      if ($a = $this->poll->getReturn())
+      {
+        # manage non-critical failure
+        if (!$a->level && ++$FAILS > 1)
+        {
+          if (($b = $this['maxFails']) && $FAILS > $b) {
+            $a->push(BotError::fail("too many failures ($b)"));
+          }
+          else {# set retry delay
+            $PAUSE = time() + $this['pause'];
+          }
+        }
+        throw $a;
+      }
+      # transmission successful,
+      # clear repeated fails counter
+      if ($FAILS)
+      {
+        $this->log->info("recovered ($FAILS)");
+        $FAILS = 0;
+      }
       # check HTTP response code
       if (($a = curl_getinfo($this->curl, CURLINFO_RESPONSE_CODE)) === false) {
-        throw BotError::text('curl_getinfo() failed');
+        throw BotError::fail('curl_getinfo() failed');
       }
       if ($a !== 200) {
-        throw BotError::text("unsuccessful HTTP status: $a");
+        throw BotError::fail("unsuccessful HTTP status: $a");
       }
       # get response text
       if (!($a = curl_multi_getcontent($this->curl))) {
@@ -897,17 +954,17 @@ class BotApi extends BotConfigAccess # {{{
       if (($x = json_decode($a, false)) === null &&
           ($x = json_last_error()) !== JSON_ERROR_NONE)
       {
-        throw BotError::text("json_decode[$x]: ".json_last_error_msg()."\n█{$a}█\n");
+        throw BotError::fail("json_decode[$x]: ".json_last_error_msg()."\n█{$a}█\n");
       }
       # validate response and check its status
       if (!is_object($x) || !isset($x->ok)) {
-        throw BotError::text("incorrect response\n█{$a}█\n");
+        throw BotError::fail("incorrect response\n█{$a}█\n");
       }
       if (!$x->ok) {
-        throw BotError::text(($x->description ?? "unsuccessful response"));
+        throw BotError::fail(($x->description ?? "unsuccessful response"));
       }
       if (!isset($x->result) || !is_array($x->result)) {
-        throw BotError::text("incorrect response\n█{$a}█\n");
+        throw BotError::fail("incorrect response\n█{$a}█\n");
       }
       # shift next query offset
       if (~($a = count($x->result) - 1)) {
@@ -928,7 +985,7 @@ class BotApi extends BotConfigAccess # {{{
     {
       # create multi-curl instance
       if (!($this->murl = curl_multi_init())) {
-        throw BotError::text('curl_multi_init() failed');
+        throw BotError::fail('curl_multi_init() failed');
       }
       # create query
       $this->query = [
@@ -936,8 +993,8 @@ class BotApi extends BotConfigAccess # {{{
         CURLOPT_POST => true,
         CURLOPT_POSTFIELDS => [
           'offset'  => 0,
-          'limit'   => 100,
-          'timeout' => 120,# current max=50?!
+          'limit'   => $this['limit'],
+          'timeout' => $this['timeout'],
         ],
       ];
     }
@@ -956,32 +1013,32 @@ class BotApi extends BotConfigAccess # {{{
     return true;
   }
   # }}}
-  function getUpdatesPoll(float $timeout = 0.3): Generator # {{{
+  function getUpdatesPoll(int $timeout, float $wait = 0): Generator # {{{
   {
     try
     {
       # prepare
-      $error    = null;
-      $attached = false;
+      $error   = null;
+      $started = 0;
       # set query
       if (!curl_setopt_array($this->curl, $this->query))
       {
-        throw BotError::text('curl_setopt_array() failed'.
+        throw BotError::fail('curl_setopt_array() failed'.
           (curl_errno($this->curl) ? ': '.curl_error($this->curl) : '')
         );
       }
       # attach handles
       if ($a = curl_multi_add_handle($this->murl, $this->curl)) {
-        throw BotError::text('curl_multi_add_handle() failed: '.curl_multi_strerror($a));
+        throw BotError::fail('curl_multi_add_handle() failed: '.curl_multi_strerror($a));
       }
       # start polling
-      $attached = true;
-      $running  = 1;
-      while ($running)
+      $started = time();
+      $running = 1;
+      while (1)
       {
         # execute request
         if ($a = curl_multi_exec($this->murl, $running)) {
-          throw BotError::text("curl_multi_exec[$a]: ".curl_multi_strerror($a));
+          throw BotError::fail("curl_multi_exec[$a]: ".curl_multi_strerror($a));
         }
         # check finished
         if (!$running) {
@@ -990,38 +1047,42 @@ class BotApi extends BotConfigAccess # {{{
         # wait for activity
         while (!$a)
         {
-          if (($a = curl_multi_select($this->murl, $timeout)) < 0)
+          if (($a = curl_multi_select($this->murl, $wait)) < 0)
           {
-            throw BotError::text(
+            throw BotError::fail(
               ($a = curl_multi_errno($this->murl))
                 ? "curl_multi_select[$a]: ".curl_multi_strerror($a)
                 : 'system select failed'
             );
           }
-          if (!yield) {# ask for continuation
+          # check response timeout
+          if ($timeout && (time() - $started > $timeout)) {
+            throw BotError::warn("response timed out ($timeout)");
+          }
+          # ask for continuation
+          if (!yield) {
             throw BotError::skip();
           }
         }
       }
       # check transfer status
       if (!($a = curl_multi_info_read($this->murl))) {
-        throw BotError::text('curl_multi_info_read() failed');
+        throw BotError::fail('curl_multi_info_read() failed');
       }
       if ($a = $a['result']) {
-        throw BotError::text('transfer failed: '.curl_strerror($a));
+        throw BotError::warn('transfer failed: '.curl_strerror($a));
       }
     }
-    catch (Throwable $error) {
-      $error = BotError::from($error);
-    }
+    catch (Throwable $error)
+    {}
     # detach handles
-    if ($attached && ($a = curl_multi_remove_handle($this->murl, $this->curl)))
+    if ($started && ($a = curl_multi_remove_handle($this->murl, $this->curl)))
     {
-      $a = BotError::text("curl_multi_remove_handle[$a]: ".curl_multi_strerror($a));
+      $a = BotError::fail("curl_multi_remove_handle[$a]: ".curl_multi_strerror($a));
       $error = $error ? $error->push($a) : $a;
     }
-    # report any errors
-    $error && yield $error;
+    # complete
+    return $error;
   }
   # }}}
   function getUpdatesFinit(): void # {{{
@@ -1155,8 +1216,14 @@ class BotLog extends BotConfigAccess # {{{
       if ($e->origin) {
         $this->exception($e->origin);
       }
-      if ($e->msg) {
-        $this->error(...$e->msg);
+      if ($e->msg)
+      {
+        if ($e->level) {
+          $this->error(...$e->msg);
+        }
+        else {
+          $this->warn(...$e->msg);
+        }
       }
       if ($e->next) {
         $this->exception($e->next);
@@ -1177,7 +1244,7 @@ class BotLog extends BotConfigAccess # {{{
       : '---';
     ###
     $c = $e->getMessage();
-    $this->out(1, 0, get_class($e), "$c\n  #0 $b\n  $a");
+    $this->out(1, 0, '✶'.get_class($e), "$c\n  #0 $b\n  $a");
   }
   # }}}
   function commands(): void # {{{
@@ -1465,6 +1532,25 @@ class BotFile # {{{
         self::unlock($file);
       }
     }
+  }
+  # }}}
+  function time(string $file, bool $creat = false): int # {{{
+  {
+    try
+    {
+      $a = $creat ? filectime($file) : filemtime($file);
+      if ($a === false)
+      {
+        $b = $creat ? 'c' : 'm';
+        throw BotError::fail("file{$b}time() failed");
+      }
+    }
+    catch (Throwable $e)
+    {
+      $this->log->exception($e);
+      $a = 0;
+    }
+    return $a;
   }
   # }}}
   static function lock(# {{{
@@ -2047,23 +2133,23 @@ class BotMasterSlave # {{{
       if (($proc = proc_open($cmd, $DESC, $pipe, $home, null, $OPTS)) === false ||
           !is_resource($proc))
       {
-        throw BotError::text("proc_open($cmd) failed");
+        throw BotError::fail("proc_open($cmd) failed");
       }
       # initiate sync protocol
       # create output lockfile
       if (!touch($out)) {
-        throw BotError::text("touch($out) failed");
+        throw BotError::fail("touch($out) failed");
       }
       # pass paths to the process input
       if (fwrite($pipe[0], "$out,$in") === false) {
-        throw BotError::text('fwrite() failed');
+        throw BotError::fail('fwrite() failed');
       }
       # wait output lock removed and input created by the process
       while (file_exists($out) && !file_exists($in))
       {
         usleep(Bot::PROCESS_TICK);
         if (!($a = proc_get_status($proc))['running']) {
-          throw BotError::text('process escaped, exitcode='.$a['exitcode']);
+          throw BotError::fail('process escaped, exitcode='.$a['exitcode']);
         }
       }
       # report success
@@ -2174,19 +2260,19 @@ class BotSlave # {{{
       # do a blocking read of master input
       stream_set_blocking(STDIN, true);
       if (($a = fread(STDIN, Bot::PROCESS_CHUNK)) === false) {
-        throw BotError::text('fread(STDIN) failed');
+        throw BotError::fail('fread(STDIN) failed');
       }
       # parse and check it
       if (!($lock = explode(',', $a)) || count($lock) !== 2) {
-        throw BotError::text("incorrect master input: $a");
+        throw BotError::fail("incorrect master input: $a");
       }
       # check and remove master lock
       if (!file_exists($lock[0]) || !unlink($lock[0])) {
-        throw BotError::text('failed to remove: '.$lock[0]);
+        throw BotError::fail('failed to remove: '.$lock[0]);
       }
       # create slave lock
       if (!touch($lock[1]) || !file_exists($lock[1])) {
-        throw BotError::text('failed to touch: '.$lock[1]);
+        throw BotError::fail('failed to touch: '.$lock[1]);
       }
       # wait unlocked
       for ($a = 0, $b = 10; $a < $b && file_exists($lock[1]); ++$a) {
@@ -2195,7 +2281,7 @@ class BotSlave # {{{
       if ($a === $b)
       {
         unlink($lock[1]);
-        throw BotError::text('master timed out');
+        throw BotError::fail('master timed out');
       }
     }
     catch (Throwable $e)
@@ -3469,15 +3555,15 @@ class BotImgMessage extends BotMessage # {{{
     {
       # create image
       if (($img = imagecreatetruecolor($size[0], $size[1])) === false) {
-        throw BotError::text('imagecreatetruecolor() failed');
+        throw BotError::fail('imagecreatetruecolor() failed');
       }
       # allocate color
       if (($c = imagecolorallocate($img, $color[0], $color[1], $color[2])) === false) {
-        throw BotError::text('imagecolorallocate() failed');
+        throw BotError::fail('imagecolorallocate() failed');
       }
       # fill the background
       if (!imagefill($img, 0, 0, $c)) {
-        throw BotError::text('imagefill() failed');
+        throw BotError::fail('imagefill() failed');
       }
     }
     catch (Throwable $e)
@@ -3504,7 +3590,7 @@ class BotImgMessage extends BotMessage # {{{
     {
       # determine bounding box
       if (!($a = imageftbbox($maxSize, 0, $font, $text))) {
-        throw BotError::text('imageftbbox() failed');
+        throw BotError::fail('imageftbbox() failed');
       }
       # check it fits width and height
       if ($a[2] - $a[0] <= $rect[1] &&
@@ -3522,11 +3608,11 @@ class BotImgMessage extends BotMessage # {{{
     $y = ($rect[2] + ($rect[3] - $y) / 2 + $y) | 0;
     # allocate color
     if (($c = imagecolorallocate($img, $color[0], $color[1], $color[2])) === false) {
-      throw BotError::text('imagecolorallocate() failed');
+      throw BotError::fail('imagecolorallocate() failed');
     }
     # draw
     if (!imagefttext($img, $maxSize, 0, $x, $y, $c, $font, $text)) {
-      throw BotError::text('imagefttext() failed');
+      throw BotError::fail('imagefttext() failed');
     }
   }
   # }}}
@@ -3541,11 +3627,11 @@ class BotImgMessage extends BotMessage # {{{
   {
     # allocate color
     if (($color = imagecolorallocate($img, $color[0], $color[1], $color[2])) === false) {
-      throw BotError::text('imagecolorallocate() failed');
+      throw BotError::fail('imagecolorallocate() failed');
     }
     # draw
     if (!imagefttext($img, $fontSize, 0, $point[0], $point[1], $color, $font, $text)) {
-      throw BotError::text('imagefttext() failed');
+      throw BotError::fail('imagefttext() failed');
     }
   }
   # }}}
@@ -3554,7 +3640,7 @@ class BotImgMessage extends BotMessage # {{{
     if (!($file = tempnam(sys_get_temp_dir(), 'img')) ||
         !imagejpeg($img, $file) || !file_exists($file))
     {
-      throw BotError::text("imagejpeg($file) failed");
+      throw BotError::fail("imagejpeg($file) failed");
     }
     return BotApiFile::construct($file, true);
   }
@@ -3595,7 +3681,7 @@ class BotImgMessage extends BotMessage # {{{
       if ($a = $cfg['file'])
       {
         if (($img = imagecreatefromjpeg($a)) === false) {
-          throw BotError::text("imagecreatefromjpeg($a) failed");
+          throw BotError::fail("imagecreatefromjpeg($a) failed");
         }
       }
       else {
@@ -4179,7 +4265,7 @@ class BotItemData implements ArrayAccess # {{{
     }
   }
   # }}}
-  # data access {{{
+  # access {{{
   function offsetExists(mixed $k): bool {
     return isset($this->data[$k]);
   }
@@ -4218,7 +4304,7 @@ class BotItemData implements ArrayAccess # {{{
   # }}}
 }
 # }}}
-###
+# item types (components)
 class BotImgItem extends BotItem # {{{
 {
   function render(string $func, string $args): ?object # {{{
@@ -5753,7 +5839,6 @@ class BotFormItem extends BotImgItem # {{{
 * ║╬║ ⎜  *  ⎟ ✱✱✱ ✶✶✶ ⨳⨳⨳
 * ╚═╝ ⎝     ⎠ ⟶ ➤ →
 *
-* server connection: improve errors handling
 * data separation: each user changes own data until complete
 * test: file_id usage
 * handler parse errors: improve, make it more descriptive
@@ -5772,7 +5857,7 @@ class BotTxtItem extends BotItem # {{{
 }
 # }}}
 ###
-# HELPER FUNCTIONS
+# HELPERS
 function array_key(array &$a, int $index): int|string|null # {{{
 {
   reset($a);

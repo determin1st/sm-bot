@@ -50,16 +50,13 @@ function startbotsbot(object $item, string $func, string $args): ?array # {{{
     $item->log->out(0, 0, $func, $data['name']);
     switch ($func) {
     case 'start':
-      # recurse upon success
       if ($item->bot->proc->start($id)) {
         return startbotsbot($item, '', $id);
       }
-      # set error
       $data['isError'] = true;
       $data['message'] = $item->bot->text['op-fail'];
       break;
     case 'stop':
-      # same logic
       if ($item->bot->proc->stop($id)) {
         return startbotsbot($item, '', $id);
       }
@@ -227,9 +224,21 @@ function getBotInfo(# {{{
   if (!($cfg = $bot->file->getJSON($fileCfg))) {
     return null;
   }
+  # determine if bot runs from the webhook
+  if ($webhook = $cfg['BotApi']['url'] ?? '') {
+    $isWebhook = $cfg['BotApi']['webhook'] ?? false;
+  }
+  else {
+    $isWebhook = false;
+  }
   # to determine if bot is running,
   # check configuration is locked
-  $isRunning = file_exists($fileCfg.'.lock');
+  if ($isRunning = file_exists($a = $fileCfg.'.lock'))
+  {
+    # determine startup time
+    $isRunning = ($a = $bot->file->time($a, true))
+      ? date('Y-m-d H:i:s', $a) : '⨳';
+  }
   # determine identifier
   if ($isMaster = ($id === 'master'))
   {
@@ -246,11 +255,13 @@ function getBotInfo(# {{{
   $order .= $cfg['source'].$cfg['name'];
   # create base
   $info = [
-    'id'    => $id,
-    'botId' => $botId,
-    'name'  => $cfg['name'],
-    'order' => $order,
-    'type'  => $cfg['source'],
+    'id'        => $id,
+    'botId'     => $botId,
+    'name'      => $cfg['name'],
+    'order'     => $order,
+    'type'      => $cfg['source'],
+    'webhook'   => $webhook,
+    'isWebhook' => $isWebhook,
     'isMaster'  => $isMaster,
     'isRunning' => $isRunning,
   ];
@@ -310,7 +321,7 @@ function getBotClassMap(object $item): ?array # {{{
   try
   {
     if (!($a = scandir($dir))) {
-      throw BotError::text("scandir($dir) failed");
+      throw BotError::fail("scandir($dir) failed");
     }
     foreach ($a as $b)
     {

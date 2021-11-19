@@ -87,9 +87,22 @@
                 '#' => '
                 {{BEG}}
                 {:black_medium_small_square:} <b>class</b>: {{type}}{{BR}}
-                {:black_medium_small_square:} <b>id</b>: <code>{{botId}}</code>{{BR}}
-                {:black_medium_small_square:} <b>state</b>: 
-                {{#isRunning}}{:zap:}started{{|}}──{{/isRunning}}{{BR}}
+                {:black_medium_small_square:} <b>id</b>: <a href="https://t.me/{{name}}">{{botId}}</a>{{BR}}
+                {:black_medium_small_square:} <b>webhook</b>
+                {{#webhook}}
+                  {{#isWebhook}}{:NBSP:}{:zap:}{{|}}:{{/isWebhook}}
+                  {:NBSP:}<code>{{webhook}}</code>
+                {{|}}
+                  {:NBSP:}──
+                {{/webhook}}
+                {{BR}}
+                {:black_medium_small_square:} <b>state</b>
+                {{#isRunning}}
+                  {:NBSP:}{:zap:}{:NBSP:}<code>{{isRunning}}</code>
+                {{|}}
+                  {:NBSP:}──
+                {{/isRunning}}
+                {{BR}}
                 {{#message}}
                   {{BR}}
                   {{#isError}}{:red_circle:}{{|}}{:green_circle:}{{/isError}} 
