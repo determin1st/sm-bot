@@ -5839,7 +5839,8 @@ class BotFormItem extends BotImgItem # {{{
 * ║╬║ ⎜  *  ⎟ ✱✱✱ ✶✶✶ ⨳⨳⨳
 * ╚═╝ ⎝     ⎠ ⟶ ➤ →
 *
-* data separation: each user changes own data until complete
+* stability: masterbot should erase outdated locks of bots that failed for some reason
+* data separation: each user changes its own data until completion
 * test: file_id usage
 * handler parse errors: improve, make it more descriptive
 * compatible update: remove unnecessary refresh in private chat
