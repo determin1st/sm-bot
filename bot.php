@@ -2189,12 +2189,11 @@ class BotMasterSlave # {{{
   {
     # prepare
     $pipe = $this->pipe;
+    $this->log->info('stop');
     # check running
     if ($this->check())
     {
-      # process is still running,
       # send termination command
-      $this->log->info('stop');
       fwrite($pipe[0], 'stop');
       touch($out = $this->lock[1]);
       # wait

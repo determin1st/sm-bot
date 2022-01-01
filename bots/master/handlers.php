@@ -157,13 +157,13 @@ function startbotscreate(# {{{
     $dir  = $bot->dir;
     # get configuration template
     if (!file_exists($a = $dir->inc.BotConfig::FILE_INC) ||
-        !($a = file_get_contents($a)))
+        !($b = file_get_contents($a)))
     {
-      $item->log->error("failed to get: $a");
+      $item->log->error("failed to read: $a");
       return [0];
     }
     # render it
-    $a = $bot->tp->render($a, [
+    $a = $bot->tp->render($b, [
       'class'  => $data['class'],
       'token'  => $data['token'],
       'admins' => $item->user->id,
@@ -231,14 +231,6 @@ function getBotInfo(# {{{
   else {
     $isWebhook = false;
   }
-  # to determine if bot is running,
-  # check configuration is locked
-  if ($isRunning = file_exists($a = $fileCfg.'.lock'))
-  {
-    # determine startup time
-    $isRunning = ($a = $bot->file->time($a, true))
-      ? date('Y-m-d H:i:s', $a) : '⨳';
-  }
   # determine identifier
   if ($isMaster = ($id === 'master'))
   {
@@ -247,6 +239,21 @@ function getBotInfo(# {{{
   }
   else {
     $botId = $id;
+  }
+  # to detect running bot,
+  # check configuration is locked
+  if ($isRunning = file_exists($a = $fileCfg.'.lock'))
+  {
+    # determine startup time
+    $isRunning = ($b = $bot->file->time($a, true))
+      ? date('Y-m-d H:i:s', $b) : '⨳';
+    # make sure the slavebot process is running
+    if (!$isMaster && !$isWebhook && !$bot->proc->get($botId))
+    {
+      $bot->log->warn($cfg['name'], "is not running: removing lockfile ($isRunning)");
+      $isRunning = false;
+      unlink($a);
+    }
   }
   # determine ascending order index:
   # master => running => type => name
