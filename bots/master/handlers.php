@@ -8,7 +8,7 @@ function startbots(object $item): ?array # {{{
 {
   # prepare
   $bot  = $item->bot;
-  $dir  = $bot->dir->dataRoot;
+  $dir  = $bot->cfg->dirDataRoot;
   $data = [];
   # get bot directories
   if (($list = @scandir($dir, SCANDIR_SORT_DESCENDING)) === false)
@@ -154,9 +154,8 @@ function startbotscreate(# {{{
     # prepare
     $bot  = $item->bot;
     $data = $item->data;
-    $dir  = $bot->dir;
     # get configuration template
-    if (!file_exists($a = $dir->inc.BotConfig::FILE_INC) ||
+    if (!file_exists($a = $bot->cfg->dirInc.BotConfig::FILE_INC) ||
         !($b = file_get_contents($a)))
     {
       $item->log->error("failed to read: $a");
@@ -170,7 +169,7 @@ function startbotscreate(# {{{
     ]);
     # create new bot directory and
     # store rendered configuration
-    $b = $dir->dataRoot.$data['id'].DIRECTORY_SEPARATOR;
+    $b = $bot->cfg->dirDataRoot.$data['id'].DIRECTORY_SEPARATOR;
     $c = $b.BotConfig::FILE_INC;
     if ((!file_exists($b) && !mkdir($b)) ||
         !file_put_contents($c, $a))
@@ -218,7 +217,7 @@ function getBotInfo(# {{{
 ):?array
 {
   # determine config file path
-  $dirData = $bot->dir->dataRoot.$id.DIRECTORY_SEPARATOR;
+  $dirData = $bot->cfg->dirDataRoot.$id.DIRECTORY_SEPARATOR;
   $fileCfg = $dirData.BotConfig::FILE_JSON;
   # read bot configuration
   if (!($cfg = $bot->file->getJSON($fileCfg))) {
@@ -286,7 +285,7 @@ function dropCache(object $item, array &$data): bool # {{{
 {
   # prepare
   $bot = $item->bot;
-  $dir = $bot->dir->dataRoot.$data['id'].DIRECTORY_SEPARATOR;
+  $dir = $bot->cfg->dirDataRoot.$data['id'].DIRECTORY_SEPARATOR;
   $cnt = 0;
   # operate
   try
@@ -322,7 +321,7 @@ function getBotClassMap(object $item): ?array # {{{
 {
   # prepare
   $bot = $item->bot;
-  $dir = $bot->dir->srcRoot;
+  $dir = $bot->cfg->dirSrcRoot;
   $map = [];
   # operate
   try

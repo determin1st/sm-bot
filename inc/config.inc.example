@@ -1,0 +1,13 @@
+<?php return [
+  /**
+  * masterbot configuration,
+  * overrides any individual bot configuration
+  * commented keys are optional
+  */
+  #'isProduction' => false,
+  #'dataRoot' => dirname(__DIR__).DIRECTORY_SEPARATOR.'data',
+  #'baseUrl' => 'https://api.telegram.org/bot',
+  #'source' => 'master',
+  'token' => '',
+];
+?>

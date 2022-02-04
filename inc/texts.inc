@@ -97,9 +97,9 @@
     'change'     => 'change',
     'start'      => 'start',
     'stop'       => 'stop',
-    '>string'    => 'input a string',
-    '>int'       => 'input an integer',
-    '>select'    => 'select a value from the list',
+    '>string'    => '{:LINEPAD:}input a string',
+    '>int'       => '{:LINEPAD:}input an integer',
+    '>select'    => '{:LINEPAD:}select a value from the list',
   ],
   # }}}
   'ru' => [# {{{
@@ -144,9 +144,9 @@
     'change'     => 'изменить',
     'start'      => 'запустить',
     'stop'       => 'остановить',
-    '>string'    => 'введите строку',
-    '>int'       => 'введите целое число',
-    '>select'    => 'выберите значение из списка',
+    '>string'    => '{:LINEPAD:}введите строку',
+    '>int'       => '{:LINEPAD:}введите целое число',
+    '>select'    => '{:LINEPAD:}выберите значение из списка',
   ],
   # }}}
 ];
