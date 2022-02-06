@@ -1,27 +1,39 @@
 @echo off
-:: bypass "Terminate Batch Job" prompt
-if "%~1"=="-FIXED_CTRL_C" (
-    :: Remove the -FIXED_CTRL_C parameter
-    shift
-) else (
-    :: Run the batch with <NUL and -FIXED_CTRL_C
-    call <NUL %0 -FIXED_CTRL_C %*
-    goto END
-)
-:: configure
+:: check and remove the bypass parameter
+if "%~1" NEQ "-FIXED_CTRL_C" goto SETUP
+shift
+goto LOOP
+
+:SETUP
+:: select runtime variant (production ~ NTS, opcache+JIT)
 ::set PHP="E:\lab\www\php-nts\php.exe"
 set PHP="E:\lab\www\php\php.exe"
 goto CHECK
 
 :CHECK
 %PHP% -f "%CD%\bots\check.php"
-if %ERRORLEVEL% EQU 0 goto LOOP
+if %ERRORLEVEL% EQU 100 goto START
+if %ERRORLEVEL% EQU 101 goto INSTALL
+goto END
+
+:INSTALL
+::echo [103m                                             [0m
+choice /N /T 10 /D n /M "[43m[93m masterbot is not installed. Install? [Y/N]: [0m[0m"
+if %ERRORLEVEL% NEQ 1 goto END
+%PHP% -f "%CD%\bots\install.php"
+if %ERRORLEVEL% EQU 100 goto START
+goto END
+
+:START
+:: bypass "Terminate Batch Job" prompt
+:: run the batch with <NUL and -FIXED_CTRL_C
+call <NUL %0 -FIXED_CTRL_C %*
 goto END
 
 :LOOP
-echo [104m Press Ctrl+C to restart, Ctrl+Break to stop [0m
-::%PHP% -f "%CD%\start.php"
-::if %ERRORLEVEL% EQU 1 goto LOOP
+echo [104m press Ctrl+C to restart, Ctrl+Break to stop [0m
+%PHP% -f "%CD%\start.php"
+if %ERRORLEVEL% EQU 100 goto LOOP
 goto END
 
 :END

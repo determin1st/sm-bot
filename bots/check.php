@@ -1,7 +1,7 @@
 <?php declare(strict_types=1);
 namespace SM;
 require_once dirname(__DIR__).DIRECTORY_SEPARATOR.'bot.php';
-class BotCheck
+class BotBot
 {
   const DELAY = 100000;
   public $console,$log;
@@ -13,7 +13,7 @@ class BotCheck
   function write(string $s): void {
     fwrite(STDOUT, $s);
   }
-  function assert(): int
+  function check(): int
   {
     try
     {
@@ -55,19 +55,16 @@ class BotCheck
         throw BotError::stop($a, "fail\n$b");
       }
       $this->log->info($a, 'ok'); usleep(self::DELAY);
-      ###
-      ###
-      ###
-      ###
-      throw BotError::stop('under construction..');
+      # determine masterbot installed
+      $a = BotConfig::isInstalled() ? 100 : 101;
     }
     catch (\Throwable $e)
     {
       $this->log->exception($e);
-      return 1;
+      $a = 1;
     }
-    return 0;
+    return $a;
   }
 }
-exit((new BotCheck())->assert());
+exit((new BotBot())->check());
 ?>

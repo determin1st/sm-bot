@@ -147,6 +147,24 @@ function file_get_array(string $file): ?array # {{{
   return $data;
 }
 # }}}
+function file_get_json(string $file): ?array # {{{
+{
+  if (!file_exists($file) ||
+      ($a = file_get_contents($file)) === false ||
+      ($a = json_decode($a, true)) === null ||
+      !is_array($a))
+  {
+    return null;
+  }
+  return $a;
+}
+# }}}
+function file_set_json(string $file, array|object &$data): bool # {{{
+{
+  return (($a = json_encode($data, JSON_UNESCAPED_UNICODE)) !== false &&
+          file_put_contents($file, $a) !== false);
+}
+# }}}
 function dir_make(string $dir, int $perms = 0750): bool # {{{
 {
   try {
@@ -156,6 +174,13 @@ function dir_make(string $dir, int $perms = 0750): bool # {{{
     $a = false;
   }
   return $a;
+}
+# }}}
+function class_name(object $o): string # {{{
+{
+  $a = $o::class;
+  return ($b = strrpos($a, '\\'))
+    ? substr($a, $b + 1) : $a;
 }
 # }}}
 # }}}
@@ -240,12 +265,8 @@ class BotConfig # {{{
     FILE_HANDLERS = 'handlers.php',
     EXP_TOKEN     = '/^\d{8,10}:[a-z0-9_-]{35}$/i';
   public
-    $dirInc,$dirSrcRoot,$dirDataRoot,
-    $dirSrc,$dirData,$dirUsr,$dirGrp,
-    $dirImg = [],$dirFont = [],
-    $isProduction = false,
-    $file,$changed = false,
     $data = [
+      # {{{
       'Bot'             => [
         'source'        => 'master',
         'token'         => '',
@@ -366,8 +387,13 @@ class BotConfig # {{{
           'success'      => [['!repeat','!change'],['!up']],
         ],
       ],
-    ];
-  ###
+      # }}}
+    ],
+    $dirInc,$dirSrcRoot,$dirDataRoot,
+    $dirSrc,$dirData,$dirUsr,$dirGrp,
+    $dirImg = [],$dirFont = [],
+    $isProduction = false,
+    $file,$changed = false;
   # }}}
   static function check(): string # {{{
   {
@@ -387,117 +413,7 @@ class BotConfig # {{{
     if (!file_exists($c = self::getDataRootDir($b))) {
       return "directory not found: $c";
     }
-    return '';
-  }
-  # }}}
-  static function checkToken(string $token): string # {{{
-  {
-    return preg_match(self::EXP_TOKEN, $token)
-      ? substr($token, 0, strpos($token, ':')) : '';
-  }
-  # }}}
-  static function getIncDir(): string # {{{
-  {
-    return __DIR__.DIRECTORY_SEPARATOR.self::DIR_INC.DIRECTORY_SEPARATOR;
-  }
-  # }}}
-  static function getDataRootDir(array &$o): string # {{{
-  {
-    return isset($o['dataRoot'])
-      ? rtrim($o['dataRoot'], '\\/').DIRECTORY_SEPARATOR
-      : __DIR__.DIRECTORY_SEPARATOR.self::DIR_DATA.DIRECTORY_SEPARATOR;
-  }
-  # }}}
-  function __construct(public object $bot) # {{{
-  {
-    # set base directories
-    $this->dirSrcRoot = $a.self::DIR_SRC.DIRECTORY_SEPARATOR;
-    $this->dirInc     = $a = self::getIncDir();
-    # load global config
-    $a = file_get_array($a.self::FILE_CONFIG);
-    $this->dirDataRoot = self::getDataRootDir($a);
-    isset($a[$b = 'isProduction']) && ($this->isProduction = $a[$b]);
-    isset($a[$b = 'baseUrl']) && ($this->data['BotApi'][$b] = $a[$b]);
-    isset($a[$b = 'source'])  && ($this->data['Bot'][$b] = $a[$b]);
-    $this->data['Bot']['token'] = $a['token'];
-  }
-  # }}}
-  function init(string $id): bool # {{{
-  {
-    # prepare
-    $bot = $this->bot;
-    $cfg = &$this->data;
-    # determine identifier
-    if (!$id && !($id = $this->initMaster())) {
-      return false;
-    }
-    # determine data directories
-    $this->dirData = $a = $this->dirDataRoot.$id.DIRECTORY_SEPARATOR;
-    $this->dirUsr  = $a.self::DIR_USER.DIRECTORY_SEPARATOR;
-    $this->dirGrp  = $a.self::DIR_GROUP.DIRECTORY_SEPARATOR;
-    # load bot configuration
-    if (!($a = $bot->file->getJSON($file = $a.self::FILE_BOT_CONFIG))) {
-      return false;
-    }
-    array_sync($cfg, $a);
-    # check identifiers
-    if (($a = $cfg['Bot']['id']) !== $id)
-    {
-      $bot->log->error($file, "identifier mismatch [$a]");
-      return false;
-    }
-    return false;
-    # determine source directory
-    $this->dirSrc = $this->dirSrcRoot.$cfg['Bot']['source'].DIRECTORY_SEPARATOR;
-    # load dependencies
-    require_once $this->dirInc.self::DIR_TP.DIRECTORY_SEPARATOR.self::FILE_TP;
-    require_once $this->dirSrc.self::FILE_HANDLERS;
-    # determine media directories
-    $a = self::DIR_IMG.DIRECTORY_SEPARATOR;
-    file_exists($b = $this->dirData.$a) && ($this->dirImg[] = $b);
-    file_exists($b = $this->dirSrc.$a)  && ($this->dirImg[] = $b);
-    $this->dirImg[] = $this->dirInc.$a;
-    $a = self::DIR_FONT.DIRECTORY_SEPARATOR;
-    file_exists($b = $this->dirData.$a) && ($this->dirFont[] = $b);
-    file_exists($b = $this->dirSrc.$a)  && ($this->dirFont[] = $b);
-    $this->dirFont[] = $this->dirInc.$a;
-    # ...
-    # ...
-    # ...
-    # ...
-    # ...
-    # complete
-    return false;
-  }
-  # }}}
-  function initMaster(): string # {{{
-  {
-    # prepare
-    $log = $this->bot->log;
-    $cfg = &$this->data['Bot'];
-    # check token and extract identifier
-    if (!($cfg['id'] = $id = self::checkToken($a = $cfg['token'])))
-    {
-      $log->error(self::FILE_CONFIG, "incorrect token [$a]");
-      return '';
-    }
-    # check configuration file and try to install masterbot
-    $a = $this->dirDataRoot.$id.DIRECTORY_SEPARATOR.self::FILE_BOT_CONFIG;
-    if (!file_exists($a) && !$this->installMaster()) {
-      return '';
-    }
-    return $id;
-  }
-  # }}}
-  function installMaster(): bool # {{{
-  {
-    # prepare
-    $log = $this->bot->log;
-    # check php extensions
-    # ...
-    # check base files and directories
-    $log->info('checking filesystem..');
-    usleep(100000);
+    /*
     $a = [
       $this->dirSrcRoot,
       $this->dirInc.self::DIR_FONT.DIRECTORY_SEPARATOR,
@@ -513,19 +429,88 @@ class BotConfig # {{{
       $log->info($b, 'ok');
       usleep(100000);
     }
-    # TODO: check data write permissions
-    /***
-    try
-    {
-      $b = true;
+    */
+    return '';
+  }
+  # }}}
+  static function checkToken(string $token): string # {{{
+  {
+    return preg_match(self::EXP_TOKEN, $token)
+      ? self::getId($token) : '';
+  }
+  # }}}
+  static function getId(string $token): string # {{{
+  {
+    return substr($token, 0, strpos($token, ':'));
+  }
+  # }}}
+  static function getSrcRootDir(): string # {{{
+  {
+    return __DIR__.DIRECTORY_SEPARATOR.self::DIR_SRC.DIRECTORY_SEPARATOR;
+  }
+  # }}}
+  static function getIncDir(): string # {{{
+  {
+    return __DIR__.DIRECTORY_SEPARATOR.self::DIR_INC.DIRECTORY_SEPARATOR;
+  }
+  # }}}
+  static function getDataRootDir(array &$o): string # {{{
+  {
+    return isset($o['dataRoot'])
+      ? rtrim($o['dataRoot'], '\\/').DIRECTORY_SEPARATOR
+      : __DIR__.DIRECTORY_SEPARATOR.self::DIR_DATA.DIRECTORY_SEPARATOR;
+  }
+  # }}}
+  static function isInstalled(): bool # {{{
+  {
+    $a = new self(null);
+    $a = $a->dirDataRoot.$a->data['Bot']['id'];
+    return file_exists($a.DIRECTORY_SEPARATOR.self::FILE_BOT_CONFIG);
+  }
+  # }}}
+  function __construct(public ?object $bot, string $id = '') # {{{
+  {
+    # set base directories
+    $this->dirSrcRoot = self::getSrcRootDir();
+    $this->dirInc     = $a = self::getIncDir();
+    # load master config
+    $a = file_get_array($a.self::FILE_CONFIG);
+    $this->dirDataRoot = self::getDataRootDir($a);
+    isset($a[$b = 'isProduction']) && ($this->isProduction = $a[$b]);
+    isset($a[$b = 'baseUrl']) && ($this->data['BotApi'][$b] = $a[$b]);
+    isset($a[$b = 'source'])  && ($this->data['Bot'][$b] = $a[$b]);
+    $this->data['Bot']['token'] = $a = $a['token'];
+    $this->data['Bot']['id']    = $id ?: self::getId($a);
+  }
+  # }}}
+  function init(): bool # {{{
+  {
+    # prepare
+    $cfg = &$this->data['Bot'];
+    # determine data directories and
+    # load configuration
+    $this->dirData = $a = $this->dirDataRoot.$cfg['id'].DIRECTORY_SEPARATOR;
+    $this->dirUsr  = $a.self::DIR_USER.DIRECTORY_SEPARATOR;
+    $this->dirGrp  = $a.self::DIR_GROUP.DIRECTORY_SEPARATOR;
+    if (!($a = file_get_json($file = $a.self::FILE_BOT_CONFIG))) {
+      throw BotError::fail($file);
     }
-    catch (Throwable $e) {
-      $b = false;
-    }
-    /***/
+    array_sync($this->data, $a);
+    # determine source directory and
+    # load handlers
+    $this->dirSrc = $this->dirSrcRoot.$cfg['source'].DIRECTORY_SEPARATOR;
+    require_once $this->dirSrc.self::FILE_HANDLERS;
+    # determine media directories
+    $a = self::DIR_IMG.DIRECTORY_SEPARATOR;
+    file_exists($b = $this->dirData.$a) && ($this->dirImg[] = $b);
+    file_exists($b = $this->dirSrc.$a)  && ($this->dirImg[] = $b);
+    $this->dirImg[] = $this->dirInc.$a;
+    $a = self::DIR_FONT.DIRECTORY_SEPARATOR;
+    file_exists($b = $this->dirData.$a) && ($this->dirFont[] = $b);
+    file_exists($b = $this->dirSrc.$a)  && ($this->dirFont[] = $b);
+    $this->dirFont[] = $this->dirInc.$a;
     # complete
-    $log->info('installing masterbot..');
-    return $this->install($this->data['Bot']);
+    return true;
   }
   # }}}
   function install(array &$o): bool # {{{
@@ -533,26 +518,23 @@ class BotConfig # {{{
     # prepare
     $bot = $this->bot;
     $log = $bot->log->new(__FUNCTION__);
-    $src = $this->dirSrcRoot.$o['source'].DIRECTORY_SEPARATOR;
-    # check id
-    if (!($id = self::checkToken($o['token'])))
-    {
-      $log->error('incorrect token');
-      return false;
-    }
-    $log->info('source='.$o['source'].' id='.$id);
-    usleep(100000);
+    $src = $o['source'];
     # check source
-    $a = [$src, $src.self::FILE_COMMANDS, $src.self::FILE_HANDLERS];
+    $a = $this->dirSrcRoot.$src.DIRECTORY_SEPARATOR;
+    $a = [$a.self::FILE_COMMANDS, $a.self::FILE_HANDLERS];
     foreach ($a as $b)
     {
       if (!file_exists($b))
       {
-        $log->error($b, 'not found');
+        $log->error("failed\nfile not found: $b");
         return false;
       }
-      $log->info($b, 'ok');
-      usleep(100000);
+    }
+    # check id
+    if (!($id = self::checkToken($a = $o['token'])))
+    {
+      $log->error("failed\nincorrect token: $a");
+      return false;
     }
     # request bot information
     if (!($a = $bot->api->send('getMe', null, null, $o['token']))) {
@@ -564,26 +546,24 @@ class BotConfig # {{{
     $o['canJoinGroups'] = $a->can_join_groups ?? false;
     $o['canReadGroups'] = $a->can_read_all_group_messages ?? false;
     $o['isInline']      = $a->supports_inline_queries ?? false;
-    $log->info('name='.$a->username);
-    usleep(100000);
     # create data directories
     if (!dir_make($a = $this->dirDataRoot.$id) ||
         !dir_make($a.DIRECTORY_SEPARATOR.self::DIR_USER) ||
         !dir_make($a.DIRECTORY_SEPARATOR.self::DIR_GROUP))
     {
-      $log->error($a, 'fail');
+      $log->error("failed\ndirectory access: $a");
       return false;
     }
-    $log->info($a, 'ok');
-    usleep(100000);
     # store configuration
     $a = $a.DIRECTORY_SEPARATOR.self::FILE_BOT_CONFIG;
-    $o = ['Bot' => $o];
-    if (!$bot->file->setJSON($a, $o)) {
+    $b = ['Bot' => $o];
+    if (!file_set_json($a, $b))
+    {
+      $log->error("failed\nfile access: $a");
       return false;
     }
     # complete
-    $log->info('ok');
+    $log->info("ok\nsource: $src\nid: $id\nname: ".$o['name']);
     return true;
   }
   # }}}
@@ -604,20 +584,16 @@ abstract class BotConfigAccess implements ArrayAccess # {{{
   function offsetGet(mixed $k): mixed
   {
     static $data;
-    if (!$data)
-    {
-      $data = substr($this::class, 1+strlen(__NAMESPACE__));
-      $data = &$this->bot->cfg->data[$data];
+    if (!$data) {
+      $data = &$this->bot->cfg->data[class_name($this)];
     }
     return $data[$k];
   }
   function offsetSet(mixed $k, mixed $v): void
   {
     static $data;
-    if (!$data)
-    {
-      $data = substr($this::class, 1+strlen(__NAMESPACE__));
-      $data = &$this->bot->cfg->data[$data];
+    if (!$data) {
+      $data = &$this->bot->cfg->data[class_name($this)];
     }
     $data[$k] = $v;
     $this->bot->cfg->changed = true;
@@ -628,56 +604,32 @@ abstract class BotConfigAccess implements ArrayAccess # {{{
 # }}}
 class BotConsole # {{{
 {
-  const FILE_LOG = 'console.log';
-  const FILE_PID = 'console.pid';
-  const BUF_SIZE_MAX = 8000;
-  public $fileIO,$filePID,$buf = '';
-  function __construct(# {{{
-    public object $bot,
-    public bool   $stdout
-  )
+  # {{{
+  const
+    FILE_LOG = 'console.log',
+    FILE_PID = 'console.pid',
+    BUF_SIZE_MAX = 8000;
+  public
+    $fileIO,$filePID,$buf = '';
+  # }}}
+  function __construct(public object $bot) # {{{
   {
-    $dir = $bot->cfg->dirDataRoot;
-    $this->fileIO  = $dir.self::FILE_LOG;
-    $this->filePID = $dir.self::FILE_PID;
+    $a = $bot->cfg->dirDataRoot;
+    $this->fileIO  = $a.self::FILE_LOG;
+    $this->filePID = $a.self::FILE_PID;
   }
   # }}}
   function init(): bool # {{{
   {
-    if ($this->stdout)
-    {
-      # create console pidfile and remove staled logs
-      if (!file_put_contents($this->filePID, $this->bot->pid) ||
-          !file_unlink($this->fileIO))
-      {
-        return false;
-      }
-    }
     return true;
   }
   # }}}
   function read(): void # {{{
-  {
-    if (file_exists($file = $this->fileIO))
-    {
-      if (!file_lock($file) ||
-          ($a = file_get_contents($file)) === false ||
-          !unlink($file) || !file_unlock($file))
-      {
-        throw BotError::fail($file);
-      }
-      fwrite(STDOUT, $a);
-    }
-  }
+  {}
   # }}}
   function write(string $data): void # {{{
   {
-    if ($this->stdout) {
-      fwrite(STDOUT, $data);
-    }
-    else {
-      $this->buf .= $data;
-    }
+    $this->buf .= $data;
   }
   # }}}
   function flush(): void # {{{
@@ -705,12 +657,48 @@ class BotConsole # {{{
   # }}}
   function finit(): void # {{{
   {
-    if ($this->stdout)
+    strlen($this->buf) &&
+    fwrite(STDOUT, $this->buf);
+  }
+  # }}}
+}
+# }}}
+class BotMasterConsole extends BotConsole # {{{
+{
+  function init(): bool # {{{
+  {
+    # remove staled logs and create pidfile
+    return (file_unlink($this->fileIO) &&
+            file_put_contents($this->filePID, $this->bot->pid));
+  }
+  # }}}
+  function read(): void # {{{
+  {
+    if (file_exists($file = $this->fileIO))
     {
-      # remove console pidfile and display remaining logs
-      file_unlink($this->filePID);
-      $this->read();
+      if (!file_lock($file) ||
+          ($a = file_get_contents($file)) === false ||
+          !unlink($file) || !file_unlock($file))
+      {
+        throw BotError::fail($file);
+      }
+      fwrite(STDOUT, $a);
     }
+  }
+  # }}}
+  function write(string $data): void # {{{
+  {
+    fwrite(STDOUT, $data);
+  }
+  # }}}
+  function flush(): void # {{{
+  {}
+  # }}}
+  function finit(): void # {{{
+  {
+    # remove console pidfile and display remaining logs
+    file_unlink($this->filePID);
+    $this->read();
   }
   # }}}
 }
@@ -723,12 +711,13 @@ class BotLog # {{{
     COLOR  = ['green','red','yellow'],  # [info,error,warn]
     SEP    = ['►','◄'],                 # [output,input]
     PROMPT = ['◆','◆','cyan'];          # [linePrefix,blockPrefix,color]
+  public
+    $errorCount = 0;
   # }}}
   function __construct(# {{{
     public object   $bot,
-    public string   $name,
-    public ?object  $parent = null,
-    public int      $errorCount = 0
+    public string   $name   = '',
+    public ?object  $parent = null
   ) {}
   # }}}
   function init(): bool # {{{
@@ -739,15 +728,6 @@ class BotLog # {{{
   # }}}
   function new(string $name): self # {{{
   {
-    return new self($this->bot, $name, $this);
-  }
-  # }}}
-  function newObject(object $o): self # {{{
-  {
-    # determine object class
-    ($i = strrpos($name = $o::class, '\\')) &&
-    ($name = substr($name, $i + 1));
-    # construct
     return new self($this->bot, $name, $this);
   }
   # }}}
@@ -1017,7 +997,13 @@ class BotApi extends BotConfigAccess # {{{
     # }}}
   ];
   public $log,$curl,$error = '';
-  function __construct(public object $bot)# {{{
+  static function getError(object $curl): string # {{{
+  {
+    return ($e = curl_errno($curl))
+      ? "($e) ".curl_error($curl) : '';
+  }
+  # }}}
+  function __construct(public object $bot) # {{{
   {
     $this->log = $bot->log->new('api');
   }
@@ -1026,27 +1012,17 @@ class BotApi extends BotConfigAccess # {{{
   {
     try
     {
-      # create curl instance
       if (!($this->curl = curl_init())) {
-        throw BotError::fail('curl_init() failed');
+        throw BotError::fail('curl_init()');
       }
-      # configure
-      if (!curl_setopt_array($this->curl, self::CONFIG))
-      {
-        throw BotError::fail(
-          'curl_setopt_array() failed'.
-          (curl_errno($this->curl) ? ': '.curl_error($this->curl) : '')
-        );
+      if (!curl_setopt_array($this->curl, self::CONFIG)) {
+        throw BotError::fail("curl_setopt_array()\n".self::getError($this->curl));
       }
     }
     catch (Throwable $e)
     {
       $this->log->exception($e);
-      if ($this->curl)
-      {
-        curl_close($this->curl);
-        $this->curl = null;
-      }
+      $this->finit();
       return false;
     }
     return true;
@@ -1402,10 +1378,13 @@ class BotApiFile extends CURLFile # {{{
   }
 }
 # }}}
-class BotFile extends BotConfigAccess # {{{
+class BotFile # {{{
 {
-  const FILE_JSON = ['fids.json','fonts.json'];
-  public $log,$fids = [],$font;
+  const
+    FILE_IDS = 'file_id.json';
+  public
+    $log,$fids = [],$fonts = [];
+  ###
   function __construct(public object $bot) # {{{
   {
     $this->log = $bot->log->new('file');
@@ -1425,26 +1404,36 @@ class BotFile extends BotConfigAccess # {{{
       }
     }
     # load fonts map
-    if (file_exists($file = $dir.self::FILE_JSON[1]))
+    $this->font = [];
+    foreach ($bot->cfg->dirFont as $dir)
     {
-      if (($this->font = $this->getJSON($file)) === null) {
-        return false;
+      $i = strlen($dir);
+      foreach (glob($dir.'*.ttf', GLOB_NOESCAPE) as $font) {
+        $this->font[substr($font, $i)] = $font;
       }
-    }
-    else
-    {
-      $this->font = [];
-      foreach ($bot->cfg->dirFont as $dir)
-      {
-        $i = strlen($dir);
-        foreach (glob($dir.'*.ttf', GLOB_NOESCAPE) as $font) {
-          $this->font[substr($font, $i)] = $font;
-        }
-      }
-      $this->setJSON($file, $this->font);
     }
     # complete
     return true;
+  }
+  # }}}
+  function getId(string $file): string # {{{
+  {
+    return ($file && $this->fids !== null && isset($this->fids[$file]))
+      ? $this->fids[$file]
+      : '';
+  }
+  # }}}
+  function setId(string $file, string $id): void # {{{
+  {
+    if ($this->bot->cfg->useFileIds && $file)
+    {
+      $this->fids[$file] = $id;
+      if (file_lock($file = $this->bot->cfg->dirData.self::FILE_JSON[0]))
+      {
+        $this->setJSON($file, $this->fids);
+        file_unlock($file);
+      }
+    }
   }
   # }}}
   function getJSON(string $file): ?array # {{{
@@ -1535,26 +1524,6 @@ class BotFile extends BotConfigAccess # {{{
     }
     $this->log->error("font not found: $file");
     return false;
-  }
-  # }}}
-  function getId(string $file): string # {{{
-  {
-    return ($file && $this->fids !== null && isset($this->fids[$file]))
-      ? $this->fids[$file]
-      : '';
-  }
-  # }}}
-  function setId(string $file, string $id): void # {{{
-  {
-    if ($this->bot->cfg->useFileIds && $file)
-    {
-      $this->fids[$file] = $id;
-      if (file_lock($file = $this->bot->cfg->dirData.self::FILE_JSON[0]))
-      {
-        $this->setJSON($file, $this->fids);
-        file_unlock($file);
-      }
-    }
   }
   # }}}
   function time(string $file, bool $creat = false): int # {{{
@@ -2296,7 +2265,7 @@ class BotProcess # {{{
 }
 # }}}
 # }}}
-# request (response) {{{
+# request {{{
 abstract class BotRequest extends BotConfigAccess # {{{
 {
   const PARSE_FIRST = true;
@@ -2314,7 +2283,7 @@ abstract class BotRequest extends BotConfigAccess # {{{
   }
   final function init(object $user): bool
   {
-    $this->log = $user->log->newObject($this);
+    $this->log = $user->log->new(class_name($this));
     return (static::PARSE_FIRST
             ? ($this->parse() && $user->init())
             : ($user->init() && $this->parse())) &&
@@ -2727,7 +2696,7 @@ class BotRequestChat extends BotRequest # {{{
 }
 # }}}
 # }}}
-# user (subject) {{{
+# user {{{
 class BotUser # {{{
 {
   static function construct(# {{{
@@ -3355,7 +3324,7 @@ class BotUserMessages implements JsonSerializable # {{{
 }
 # }}}
 # }}}
-# message (content) {{{
+# message {{{
 abstract class BotMessage extends BotConfigAccess implements JsonSerializable # {{{
 {
   static function construct(object $bot, array &$data): self # {{{
@@ -3755,7 +3724,7 @@ class BotTxtMessage extends BotMessage # {{{
 }
 # }}}
 # }}}
-# item (rendering) {{{
+# item base (rendering) {{{
 abstract class BotItem implements ArrayAccess, JsonSerializable # {{{
 {
   public $root,$id,$text,$caps,$items;
@@ -5842,7 +5811,10 @@ class Bot extends BotConfigAccess {
     MESSAGE_LIFETIME = 48*60*60,
     USERNAME_EXP     = '/^[a-z]\w{4,32}$/i',
     BOTNAME_EXP      = '/^[a-z]\w{1,29}bot$/i',
-    TOKEN_EXP        = '/^\d{8,10}:[a-z0-9_-]{35}$/i';
+    TOKEN_EXP        = '/^\d{8,10}:[a-z0-9_-]{35}$/i',
+    INIT_ORDER       = [
+      'cfg','console','log','api','file','text'
+    ];
   public
     $bot,$pid,$cfg,$console,$log,
     $api,$file,$text,$cmd,$proc,
@@ -5867,7 +5839,7 @@ class Bot extends BotConfigAccess {
     /***/
     # create bot instance
     if (!($bot = self::construct($id))) {
-      exit(3);# failed to construct
+      exit(1);# failed to construct
     }
     # guard against non-recoverable errors
     register_shutdown_function(function() use ($bot) {
@@ -5888,8 +5860,11 @@ class Bot extends BotConfigAccess {
         }
       });
     }
+    else
+    {
+      # NixOS: TODO
+    }
     # report startup
-    $bot->log->info('start');
     $bot->log->commands();
     # start event loop
     $replies = 0;
@@ -5922,46 +5897,17 @@ class Bot extends BotConfigAccess {
     try
     {
       # create instance (assumed safe)
-      $bot = new self();
-      $bot->bot     = $bot;
-      $bot->pid     = strval(getmypid() ?: 0);
-      $bot->cfg     = new BotConfig($bot);
-      $bot->console = new BotConsole($bot, $id === '');
-      $bot->log     = new BotLog($bot, $id ?: 'setup');
-      $bot->api     = new BotApi($bot);
-      $bot->file    = new BotFile($bot);
-      $bot->text    = new BotText($bot);
+      $bot = new self($id);
       # initialize
-      if (!$bot->api->init() || !$bot->cfg->init($id) ||
-          !$bot->log->init() || !$bot->file->init() ||
-          !$bot->text->init())
+      foreach (self::INIT_ORDER as $o)
       {
-        throw BotError::skip();
+        if (!$bot->$o->init()) {
+          throw BotError::stop($o, 'init', 'failed');
+        }
       }
-      throw BotError::skip();
-      # load dependencies
-      require_once $bot->cfg->dirInc.'sm-mustache'.DIRECTORY_SEPARATOR.'mustache.php';
-      require_once $bot->cfg->dirSrc.'handlers.php';
-      # attach template parser
-      $o = [
-        'logger'  => Closure::fromCallable([
-          $bot->log->new('mustache'), 'errorOnly'
-        ]),
-        'helpers' => [
-          'BR'    => "\n",
-          'NBSP'  => "\xC2\xA0",
-          'ZWSP'  => "\xE2\x80\x8B",# zero-width space
-          'ZS'    => "\xE3\x80\x80",# Ideographic Space
-          'LINEPAD' => "\xC2\xAD".str_repeat(' ', 120)."\xC2\xAD",
-          'BEG'   => "\xC2\xAD\n",
-          'END'   => "\xC2\xAD",# SOFT HYPHEN U+00AD
-        ]
-      ];
-      if (!($bot->tp = Mustache::construct($o))) {
-        throw BotError::skip();
-      }
+      throw BotError::stop(__FUNCTION__, 'under construction');
       # attach texts and commands
-      if (!($bot->cmd  = BotCommands::construct($bot)))
+      if (!($bot->cmd = BotCommands::construct($bot)))
       {
         throw BotError::skip();
       }
@@ -5979,6 +5925,20 @@ class Bot extends BotConfigAccess {
       return null;
     }
     return $bot;
+  }
+  # }}}
+  private function __construct(string $id) # {{{
+  {
+    $this->bot = $this;
+    $this->pid = strval(getmypid() ?: 0);
+    $this->cfg = new BotConfig($this, $id);
+    $this->console = ($id === '')
+      ? new BotMasterConsole($this)
+      : new BotConsole($this);
+    $this->log  = new BotLog($this, 'pid:'.$this->pid);
+    $this->api  = new BotApi($this);
+    $this->file = new BotFile($this);
+    $this->text = new BotText($this);
   }
   # }}}
   function update(object $o): bool # {{{
