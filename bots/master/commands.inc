@@ -46,7 +46,7 @@
             'markup'  => [],
             'fields'  => [# bits: 1:required+2:persistent+4:nullable+8:hidden
               'class' => [1, 'select', 1],
-              'token' => [1+8, 'string', 46, \SM\Bot::TOKEN_EXP],
+              'token' => [1+8, 'string', 46, \SM\BotConfig::EXP_TOKEN],
             ],
             'text'  => [
               'en'  => [

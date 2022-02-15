@@ -31,7 +31,6 @@ call <NUL %0 -FIXED_CTRL_C %*
 goto END
 
 :LOOP
-echo [104m press Ctrl+C to restart, Ctrl+Break to stop [0m
 %PHP% -f "%CD%\start.php"
 if %ERRORLEVEL% EQU 100 goto LOOP
 goto END

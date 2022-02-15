@@ -244,7 +244,7 @@ function getBotInfo(# {{{
   if ($isRunning = file_exists($a = $fileCfg.'.lock'))
   {
     # determine startup time
-    $isRunning = ($b = $bot->file->time($a, true))
+    $isRunning = ($b = file_time($a, true))
       ? date('Y-m-d H:i:s', $b) : '⨳';
     # make sure the slavebot process is running
     if (!$isMaster && !$isWebhook && !$bot->proc->get($botId))

@@ -1,9 +1,9 @@
 <?php declare(strict_types=1);
 namespace SM;
 require_once dirname(__DIR__).DIRECTORY_SEPARATOR.'bot.php';
-class BotBot
+class BotTest
 {
-  const DELAY = 100000;
+  const DELAY = 200000;
   public $console,$log;
   function __construct()
   {
@@ -18,30 +18,37 @@ class BotBot
     try
     {
       # check environment requirements
-      $a = 'PHP v8';
+      $a = 'environment';
+      $b = 'PHP version 8.0+';
       if (!defined('PHP_VERSION_ID') || PHP_VERSION_ID < 80000) {
-        throw BotError::stop($a, 'fail');
+        throw BotError::stop($a, "fail\n$b");
       }
-      $this->log->info($a, 'ok'); usleep(self::DELAY);
-      $a = 'CURL v7.76.1';
+      $b = 'extension: Sync';
+      if (!class_exists('SyncMutex', false) ||
+          !class_exists('SyncEvent', false) ||
+          !class_exists('SyncReaderWriter', false) ||
+          !class_exists('SyncSharedMemory', false))
+      {
+        throw BotError::stop($a, "fail\n$b");
+      }
+      $b = 'extension: CURL';
       if (!function_exists('\\curl_version') ||
-          !($b = curl_version()) ||
-          !isset($b['version_number']) ||
-          !isset($b['protocols']) ||
-          $b['version_number'] < 478209 ||
-          array_search('https', $b['protocols'], true) === false)
+          !($c = curl_version()) ||
+          !isset($c['version_number']) ||
+          !isset($c['protocols']) ||
+          $c['version_number'] < 478209 ||
+          array_search('https', $c['protocols'], true) === false)
       {
-        throw BotError::stop($a, 'fail');
+        throw BotError::stop($a, "fail\n$b");
       }
-      $this->log->info($a, 'ok'); usleep(self::DELAY);
-      $a = 'GD v2';
+      $b = 'extension: GD';
       if (!function_exists('\\gd_info') ||
-          !($b = gd_info()) ||
-          !($b['FreeType Support'] ?? false) ||
-          !($b['JPEG Support'] ?? false) ||
-          !($b['PNG Support'] ?? false))
+          !($c = gd_info()) ||
+          !($c['FreeType Support'] ?? false) ||
+          !($c['JPEG Support'] ?? false) ||
+          !($c['PNG Support'] ?? false))
       {
-        throw BotError::stop($a, 'fail');
+        throw BotError::stop($a, "fail\n$b");
       }
       $this->log->info($a, 'ok'); usleep(self::DELAY);
       # check core objects
@@ -66,5 +73,5 @@ class BotBot
     return $a;
   }
 }
-exit((new BotBot())->check());
+exit((new BotTest())->check());
 ?>
