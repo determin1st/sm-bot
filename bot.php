@@ -214,8 +214,7 @@ function class_name(object $o): string # {{{
     ? substr($a, $b + 1) : $a;
 }
 # }}}
-# }}}
-# base {{{
+###
 class BotError extends Error # {{{
 {
   static function skip(): self {
@@ -279,21 +278,608 @@ class BotError extends Error # {{{
   }
 }
 # }}}
+class BotMembuf # {{{
+{
+  public $name,$size,$buf,$overflow = false;
+  function __construct(string $name, int $size) # {{{
+  {
+    $this->name = $name;
+    $this->size = $size = $size + 4;
+    $this->buf  = new SyncSharedMemory($name, $size);
+    if ($this->buf->first()) {
+      $this->reset();
+    }
+  }
+  # }}}
+  function read(bool $noReset = false): string # {{{
+  {
+    # prepare
+    $a = unpack('l', $this->buf->read(0, 4))[1];
+    $b = $this->size - 4;
+    # check
+    if ($a < -1 || $a > $b) {
+      throw BotError::fail("incorrect buffer size: $a");
+    }
+    if ($a === 0) {
+      return '';
+    }
+    if ($this->overflow = ($a === -1)) {
+      $a = $b;
+    }
+    # complete
+    $noReset || $this->reset();
+    return $this->buf->read(4, $a);
+  }
+  # }}}
+  function write(string $data, bool $append = false): int # {{{
+  {
+    # check empty
+    if (($a = strlen($data)) === 0)
+    {
+      $append || $this->reset();
+      return 0;
+    }
+    # determine size and offset
+    if ($append)
+    {
+      # read current
+      $b = unpack('l', $this->buf->read(0, 4))[1];
+      $c = 4 + $b;
+      # check
+      if ($b < -1 || $b > $this->size - 4) {
+        throw BotError::fail("incorrect buffer size: $b");
+      }
+      if ($b === -1)
+      {
+        $this->overflow = true;
+        return 0;
+      }
+    }
+    else
+    {
+      # overwrite
+      $b = 0;
+      $c = 4;
+    }
+    # check overflow
+    if ($this->overflow = (($d = $this->size - $c - $a) < 0))
+    {
+      # write special size-flag
+      $this->buf->write(pack('l', -1), 0);
+      # check no space left
+      if (($a = $a + $d) <= 0) {
+        return 0;
+      }
+      # cut to fit
+      $data = substr($data, 0, $a);
+    }
+    else
+    {
+      # write size
+      $this->buf->write(pack('l', $a + $b), 0);
+    }
+    # write content
+    return $this->buf->write($data, $c);
+  }
+  # }}}
+  function reset(): bool # {{{
+  {
+    return ($this->buf->write("\x00\x00\x00\x00", 0) === 4);
+  }
+  # }}}
+}
+# }}}
+class BotSyncbuf # {{{
+{
+  # {{{
+  public
+    $membuf,$ready,$steady,$timeout,
+    $isReady = false,$isSteady = false;
+  # }}}
+  function __construct(string $name, int $size, int $timeout) # {{{
+  {
+    $this->membuf  = new BotMembuf($name, $size);
+    $this->ready   = new SyncEvent('R'.$name, 1);
+    $this->steady  = new SyncEvent('S'.$name, 1);
+    $this->timeout = $timeout;
+  }
+  # }}}
+  function write(string $data, int $timeout = 0): void # {{{
+  {
+    if (!$this->membuf->write($data)) {
+      throw BotError::fail('failed to write');
+    }
+    if ($this->membuf->overflow) {
+      throw BotError::fail('overflow');
+    }
+    if (!($this->isReady = $this->ready->fire())) {
+      throw BotError::fail('failed to fire');
+    }
+    if (!$this->steady->wait($timeout ?: $this->timeout)) {
+      throw BotError::fail('timed out');
+    }
+    if (!$this->steady->reset()) {
+      throw BotError::fail('failed to reset');
+    }
+  }
+  # }}}
+  function read(int $wait = 0): string # {{{
+  {
+    if (!$this->ready->wait($wait)) {
+      return '';
+    }
+    $data = $this->membuf->read();
+    if (!$this->ready->reset()) {
+      throw BotError::fail('failed to reset');
+    }
+    if ($this->membuf->overflow) {
+      throw BotError::fail('overflow');
+    }
+    if (!($this->isSteady = $this->steady->fire())) {
+      throw BotError::fail('failed to fire');
+    }
+    return $data;
+  }
+  # }}}
+  function writeRead(string $data, int $wait = 200, int $timeout = 0): string # {{{
+  {
+    $this->write($data, $timeout);
+    return $this->read($wait);
+  }
+  # }}}
+  function reset(): void # {{{
+  {
+    if ($this->isReady)
+    {
+      $this->ready->reset();
+      $this->membuf->reset();
+    }
+    if ($this->isSteady) {
+      $this->steady->reset();
+    }
+  }
+  # }}}
+  function __destruct() # {{{
+  {
+    $this->reset();
+  }
+  # }}}
+}
+# }}}
+# }}}
+# base {{{
+class BotConsole # {{{
+{
+  # {{{
+  const
+    UUID     = 'b0778b0492bb482dad6cde6ef72308f1',
+    TIMEOUT  = 1000,
+    BUF_SIZE = 32000; # lines=80*400
+  public
+    $bot,$active,$membuf,$lock,$locked = false;
+  # }}}
+  static function construct(object $bot, bool $master): object # {{{
+  {
+    # create specific instance
+    $I = $master
+      ? new BotMasterConsole()
+      : new self();
+    # set base props
+    $I->bot    = $bot;
+    $I->active = new SyncEvent(self::UUID, 1);
+    $I->membuf = new BotMembuf(self::UUID, self::BUF_SIZE);
+    $I->lock   = new SyncReaderWriter(self::UUID);
+    # done
+    return $I;
+  }
+  # }}}
+  function init(): bool # {{{
+  {
+    return true;
+  }
+  # }}}
+  function write(string $text): void # {{{
+  {
+    if ($this->active->wait(0))
+    {
+      # lock
+      if (!($this->locked = $this->lock->readlock(self::TIMEOUT))) {
+        throw BotError::fail("timed out\nSyncReaderWriter::readlock");
+      }
+      # write
+      $this->membuf->write($text, true);
+      # unlock
+      if ($this->lock->readunlock()) {
+        $this->locked = false;
+      }
+    }
+  }
+  # }}}
+  function finit(): void # {{{
+  {
+    $this->locked && $this->lock->readunlock();
+  }
+  # }}}
+}
+# }}}
+class BotMasterConsole extends BotConsole # {{{
+{
+  function write(string $text): void # {{{
+  {
+    fwrite(STDOUT, $text);
+  }
+  # }}}
+  function read(): void # {{{
+  {
+    # lock
+    if (!($this->locked = $this->lock->writelock(self::TIMEOUT))) {
+      throw BotError::fail("timed out\nSyncReaderWriter::writelock");
+    }
+    # read
+    if ($a = $this->membuf->read())
+    {
+      fwrite(STDOUT, $a);
+      if ($this->membuf->overflow)
+      {
+        fwrite(STDOUT, "...\n");
+        $this->bot->log->warn('overflow');
+      }
+    }
+    # unlock
+    if ($this->lock->writeunlock()) {
+      $this->locked = false;
+    }
+  }
+  # }}}
+  function finit(): void # {{{
+  {
+    # display remaining logs
+    try {$this->read();}
+    catch (Throwable) {}
+    # unlock
+    $this->locked && $this->lock->writeunlock();
+  }
+  # }}}
+}
+# }}}
+class BotLog # {{{
+{
+  # {{{
+  # ●◆◎∙ ▶▼ ■▄ ◥◢◤◣  ►◄
+  const
+    COLOR  = ['green','red','yellow'],# [info,error,warn]
+    SEP    = ['►','◄'],# [output,input]
+    PROMPT = ['◆','◆','cyan'];# [linePrefix,blockPrefix,color]
+  public
+    $errorCount = 0;
+  # }}}
+  static function fgColor(string $str, string $name, int $strong=0): string # {{{
+  {
+    static $z = '[0m';
+    static $COLOR = [
+      'black'   => [30,90],
+      'red'     => [31,91],
+      'green'   => [32,92],
+      'yellow'  => [33,93],
+      'blue'    => [34,94],
+      'magenta' => [35,95],
+      'cyan'    => [36,96],
+      'white'   => [37,97],
+    ];
+    $x = '['.$COLOR[$name][$strong].'m';
+    return strpos($str, $z)
+      ? $x.str_replace($z, $z.$x, $str).$z
+      : $x.$str.$z;
+  }
+  # }}}
+  static function bgColor(string $str, string $name, int $strong=0): string # {{{
+  {
+    static $z = '[0m';
+    static $COLOR = [
+      'black'   => [40,100],
+      'red'     => [41,101],
+      'green'   => [42,102],
+      'yellow'  => [43,103],
+      'blue'    => [44,104],
+      'magenta' => [45,105],
+      'cyan'    => [46,106],
+      'white'   => [47,107],
+    ];
+    $x = '['.$COLOR[$name][$strong].'m';
+    if (strpos($str, $z)) {
+      $str = str_replace($z, $z.$x, $str);
+    }
+    return (strpos($str, "\n") === false)
+      ? $x.$str.$z
+      : $x.str_replace("\n", "$z\n$x", $str).$z;
+  }
+  # }}}
+  static function clearColors(string $s): string # {{{
+  {
+    return (strpos($s, '[') === false)
+      ? $s : preg_replace('/\\[\\d+m/', '', $s);
+  }
+  # }}}
+  static function parseCommands(# {{{
+    ?array &$tree,
+    int    $pad,
+    string $color,
+    array  &$indent = [],
+    int    $level   = 0
+  ):string
+  {
+    # prepare
+    $x = '';
+    $i = 0;
+    $j = count($tree);
+    # iterate
+    foreach ($tree as &$a)
+    {
+      # compose indent
+      $pad && ($x .= str_repeat(' ', $pad));
+      foreach ($indent as $b) {
+        $x .= $b ? self::fgColor('│ ', $color, 1) : '  ';
+      }
+      # compose item line
+      $b  = (++$i === $j);
+      $c  = self::fgColor(($b ? '└─' : '├─'), $color, 1);
+      $x .= $c.$a->skel['name']."\n";
+      # recurse
+      if ($a->items)
+      {
+        $indent[] = !$b;
+        $x .= self::parseCommands($a->items, $pad, $color, $indent, $level + 1);
+        array_pop($indent);
+      }
+    }
+    return $x;
+  }
+  # }}}
+  static function parseBlock(string $s): string # {{{
+  {
+    static $x;
+    if ($x === null)
+    {
+      $x = [
+        self::fgColor('└┬', self::PROMPT[2], 1),
+        self::fgColor(' ├', self::PROMPT[2], 1),
+        self::fgColor(' └', self::PROMPT[2], 1),
+        self::fgColor('└┐', self::PROMPT[2], 1),
+        self::fgColor(' │', self::PROMPT[2], 1),
+        self::fgColor('└─', self::PROMPT[2], 1),
+      ];
+    }
+    # prepare
+    $s = trim($s);
+    $a = explode("\n", self::clearColors($s));
+    $b = explode("\n", $s);
+    # split and determine the last line
+    for ($i = 0,$j = count($a) - 1; ~$j; --$j)
+    {
+      # stop at pad/block character
+      if (strlen($a[$j]) && strpos(' └', $a[$j][0]) === false)
+      {
+        $i = 1;
+        break;
+      }
+      # pad otherwise
+      $b[$j] = '  '.$b[$j];
+    }
+    # check not a block
+    if ($i === 0) {
+      return $s;
+    }
+    # check at the first line
+    if ($j === 0) {
+      return $x[5].implode("\n", $b);
+    }
+    # compose the block
+    for ($i = 0; $i < $j; ++$i)
+    {
+      $k = (strlen($b[$i]) && !ctype_space($b[$i][0])) ? 0 : 3;
+      $i && $k++;
+      $b[$i] = $x[$k].$b[$i];
+    }
+    $b[$j] = $x[2].$b[$j];
+    return implode("\n", $b);
+  }
+  # }}}
+  function __construct(# {{{
+    public object   $bot,
+    public string   $name   = '',
+    public ?object  $parent = null
+  )
+  {
+    if (!$name)
+    {
+      $this->name = $bot->id
+        ? 'bot:'.$bot->id.($bot->tid ? ':'.$bot->tid : '')
+        : 'console';
+    }
+  }
+  # }}}
+  function init(): bool # {{{
+  {
+    if ($this->bot->id) {
+      $this->name = $this->bot['name'];
+    }
+    return true;
+  }
+  # }}}
+  function new(string $name): self # {{{
+  {
+    return new self($this->bot, $name, $this);
+  }
+  # }}}
+  function bannerConsole(): void # {{{
+  {
+    $a = <<<EOD
+███████████████████████████████████████ [[1mq[0m][[1mCtrl+C[0m] ~ quit
+█─▄▄▄▄█▄─▀█▀─▄█▀▀▀▀▀██▄─▄─▀█─▄▄─█─▄─▄─█ [[1mx[0m][[1mCtrl+Break[0m] ~ stop and quit
+█▄▄▄▄─██─█▄█─██████████─▄─▀█─██─███─███ [[1mr[0m] ~ restart
+▀▄▄▄▄▄▀▄▄▄▀▄▄▄▀▀▀▀▀▀▀▀▄▄▄▄▀▀▄▄▄▄▀▀▄▄▄▀▀ [[1ms[0m] ~ suspend/continue
+
+EOD;
+    $a = self::fgColor($a, self::PROMPT[2]);
+    $this->bot->console->write($a);
+  }
+  # }}}
+  function bannerCommands(): void # {{{
+  {
+    $this->info($this->bot['source'],
+      "\n".self::parseCommands($this->bot->cmd->tree, 0, self::PROMPT[2])
+    );
+  }
+  # }}}
+  function out(int $level, int $sep, string ...$msg): void # {{{
+  {
+    # prepare
+    $text  = '';
+    $color = self::COLOR[$level];
+    $sep   = ' '.self::fgColor(self::SEP[$sep], $color).' ';
+    # compose name chain
+    $p = $this;
+    while ($p->parent)
+    {
+      $text = $sep.self::fgColor($p->name, $color).$text;
+      $p = $p->parent;
+    }
+    # compose msg chain
+    for ($i = 0, $j = count($msg) - 1; $i < $j; ++$i) {
+      $text = $text.$sep.self::fgColor($msg[$i], $color, 1);
+    }
+    $a = rtrim($msg[$j]);
+    $text = ($a[0] === "\n")
+      ? $text.$a : $text.$sep.$a;
+    # check multiline
+    if (($n = strpos($text, "\n")) > 0)
+    {
+      $text = substr($text, 0, ++$n).self::parseBlock(substr($text, $n));
+      $n = 1;
+    }
+    else {# single line
+      $n = 0;
+    }
+    # output
+    $this->bot->console->write(
+      self::fgColor(self::PROMPT[$n], self::PROMPT[2], 1).
+      self::fgColor($p->name, self::PROMPT[2], 0).
+      $text."\n"
+    );
+  }
+  # }}}
+  function info(string ...$msg): void # {{{
+  {
+    $this->out(0, 0, ...$msg);
+  }
+  # }}}
+  function infoInput(string ...$msg): void # {{{
+  {
+    $this->out(0, 1, ...$msg);
+  }
+  # }}}
+  function error(string ...$msg): void # {{{
+  {
+    $this->out(1, 0, ...$msg);
+    $this->errorCount += 1;
+  }
+  # }}}
+  function errorInput(string ...$msg): void # {{{
+  {
+    $this->out(1, 1, ...$msg);
+    $this->errorCount += 1;
+  }
+  # }}}
+  function errorOnly(string $msg, int $level): void # {{{
+  {
+    $level && $this->out(1, 0, $msg);
+  }
+  # }}}
+  function warn(string ...$msg): void # {{{
+  {
+    $this->out(2, 0, ...$msg);
+  }
+  # }}}
+  function warnInput(string ...$msg): void # {{{
+  {
+    $this->out(2, 1, ...$msg);
+  }
+  # }}}
+  function exception(object $e): bool # {{{
+  {
+    # handle bot error
+    if ($e instanceof BotError)
+    {
+      if ($e->origin) {
+        $this->exception($e->origin);
+      }
+      if ($e->msg)
+      {
+        if ($e->level) {
+          $this->error(...$e->msg);
+        }
+        else {
+          $this->warn(...$e->msg);
+        }
+      }
+      if ($e->next) {
+        $this->exception($e->next);
+      }
+      return ($e->level !== 0);
+    }
+    # handle standard error/exception,
+    # compose first line
+    $a = $e->getMessage()."\n";
+    $a = $a.$e->getFile().'('.$e->getLine().")\n";
+    # compose trace
+    if ($trace = $e->getTrace())
+    {
+      $b = '';
+      foreach ($trace as $c)
+      {
+        $b .= isset($c['file'])
+          ? $c['file'].'('.$c['line'].')'
+          : 'INTERNAL';
+        $b .= isset($c['class'])
+          ? ': '.$c['class'].$c['type'].$c['function']
+          : ': '.$c['function'];
+        $b .= "\n";
+      }
+      $a .= $b;
+    }
+    $a = str_replace(__DIR__.DIRECTORY_SEPARATOR, '', $a);
+    $this->out(1, 0, '✶', get_class($e), $a);
+    $this->errorCount += 1;
+    return true;
+  }
+  # }}}
+  function dump(mixed $var): void # {{{
+  {
+    if ($proc = $this->bot->proc) {
+      $proc->out(var_export($var, true)."\n");
+    }
+  }
+  # }}}
+  function finit(): void # {{{
+  {}
+  # }}}
+}
+# }}}
 class BotConfig # {{{
 {
   # {{{
   const
-    DIR_INC       = 'inc',
-    DIR_SRC       = 'bots',
-    DIR_FONT      = 'font',
-    DIR_IMG       = 'img',
-    DIR_DATA      = 'data',
-    DIR_USER      = 'usr',
-    DIR_GROUP     = 'grp',
-    FILE_CONFIG   = 'config.inc',
+    DIR_INC         = 'inc',
+    DIR_SRC         = 'bots',
+    DIR_FONT        = 'font',
+    DIR_IMG         = 'img',
+    DIR_DATA        = 'data',
+    DIR_USER        = 'usr',
+    DIR_GROUP       = 'grp',
+    FILE_CONFIG     = 'config.inc',
     FILE_BOT_CONFIG = 'config.json',
-    FILE_HANDLERS = 'handlers.php',
-    EXP_TOKEN     = '/^\d{8,10}:[a-z0-9_-]{35}$/i';
+    FILE_HANDLERS   = 'handlers.php',
+    EXP_TOKEN       = '/^\d{8,10}:[a-z0-9_-]{35}$/i';
   public
     $data = [
       # {{{
@@ -425,7 +1011,6 @@ class BotConfig # {{{
     $dirInc,$dirSrcRoot,$dirDataRoot,
     $dirSrc,$dirData,$dirUsr,$dirGrp,
     $dirImg = [],$dirFont = [],
-    $isProduction = false,
     $file,$changed = false;
   # }}}
   static function check(): string # {{{
@@ -509,7 +1094,6 @@ class BotConfig # {{{
     # load master config
     $a = file_get_array($a.self::FILE_CONFIG);
     $this->dirDataRoot = self::getDataDir($a);
-    isset($a[$b = 'isProduction']) && ($this->isProduction = $a[$b]);
     isset($a[$b = 'baseUrl']) && ($this->data['BotApi'][$b] = $a[$b]);
     isset($a[$b = 'source'])  && ($this->data['Bot'][$b] = $a[$b]);
     $this->data['Bot']['token'] = $a = $a['token'];
@@ -646,445 +1230,6 @@ abstract class BotConfigAccess implements ArrayAccess # {{{
   }
   function offsetUnset(mixed $k): void
   {}
-}
-# }}}
-class BotConsole # {{{
-{
-  # {{{
-  const
-    UUID     = 'b0778b0492bb482dad6cde6ef72308f1',
-    FILE_PID = 'console.pid',
-    TIMEOUT  = 1000,
-    BUF_SIZE = 32000; # lines=80*400
-  public
-    $bot,$file,$active,
-    $lock,$membuf,$locked = false;
-  # }}}
-  static function construct(object $bot, bool $master): object # {{{
-  {
-    # create specific instance
-    $I = $master
-      ? new BotMasterConsole()
-      : new self();
-    # set base props
-    $I->bot    = $bot;
-    $I->file   = $bot->cfg->dirDataRoot.self::FILE_PID;
-    $I->active = new SyncEvent(self::UUID, 1, 0);
-    $I->lock   = new SyncReaderWriter(self::UUID);
-    $I->membuf = new SyncSharedMemory(self::UUID, self::BUF_SIZE);
-    # initialize buffer
-    if ($I->membuf->first()) {
-      $I->membuf->write(pack('L', 0), 0);
-    }
-    # done
-    return $I;
-  }
-  # }}}
-  function init(): bool # {{{
-  {
-    return true;
-  }
-  # }}}
-  function write(string $text): void # {{{
-  {
-    if ($this->active->wait(0) && ($size = strlen($text)))
-    {
-      # lock
-      if (!($this->locked = $this->lock->readlock(self::TIMEOUT))) {
-        throw BotError::fail("timed out\nSyncReaderWriter::readlock");
-      }
-      # determine size and offset
-      $a = unpack('L', $this->membuf->read(0, 4))[1];
-      $b = 4 + $a;
-      # check overflow
-      if (($c = self::BUF_SIZE - $b - $size) < 0 &&
-          ($size = $size + $c) > 0)
-      {
-        $text = substr($text, 0, $size);
-      }
-      # write
-      if ($size > 0)
-      {
-        $this->membuf->write(pack('L', $a + $size), 0);
-        $this->membuf->write($text, $b);
-      }
-      # unlock
-      if ($this->lock->readunlock()) {
-        $this->locked = false;
-      }
-    }
-  }
-  # }}}
-  function finit(): void # {{{
-  {
-    $this->locked && $this->lock->readunlock();
-  }
-  # }}}
-}
-# }}}
-class BotMasterConsole extends BotConsole # {{{
-{
-  function write(string $text): void # {{{
-  {
-    fwrite(STDOUT, $text);
-  }
-  # }}}
-  function read(): void # {{{
-  {
-    # lock
-    if (!($this->locked = $this->lock->writelock(self::TIMEOUT))) {
-      throw BotError::fail("timed out\nSyncReaderWriter::writelock");
-    }
-    # determine and check size
-    $a = unpack('L', $this->membuf->read(0, 4))[1];
-    $b = self::BUF_SIZE - 4;
-    if ($a < 0 || $a > $b) {
-      throw BotError::fail("incorrect buffer size: $a");
-    }
-    # flush
-    fwrite(STDOUT, $this->membuf->read(4, $a));
-    $this->membuf->write(pack('L', 0), 0);
-    # check overflow
-    if ($a === $b)
-    {
-      fwrite(STDOUT, "...\n");
-      $this->bot->log->warn('overflow');
-    }
-    # unlock
-    if ($this->lock->writeunlock()) {
-      $this->locked = false;
-    }
-  }
-  # }}}
-  function finit(): void # {{{
-  {
-    # display remaining logs
-    try {
-      $this->read();
-    }
-    catch (Throwable)
-    {}
-    # unlock
-    $this->locked && $this->lock->writeunlock();
-  }
-  # }}}
-}
-# }}}
-class BotLog # {{{
-{
-  # {{{
-  # ●◆◎∙ ▶▼ ■▄ ◥◢◤◣  ►◄
-  const
-    COLOR  = ['green','red','yellow'],  # [info,error,warn]
-    SEP    = ['►','◄'],                 # [output,input]
-    PROMPT = ['◆','◆','cyan'];          # [linePrefix,blockPrefix,color]
-  public
-    $errorCount = 0;
-  # }}}
-  static function fgColor(string $str, string $name, int $strong=0): string # {{{
-  {
-    static $z = '[0m';
-    static $COLOR = [
-      'black'   => [30,90],
-      'red'     => [31,91],
-      'green'   => [32,92],
-      'yellow'  => [33,93],
-      'blue'    => [34,94],
-      'magenta' => [35,95],
-      'cyan'    => [36,96],
-      'white'   => [37,97],
-    ];
-    $x = '['.$COLOR[$name][$strong].'m';
-    return strpos($str, $z)
-      ? $x.str_replace($z, $z.$x, $str).$z
-      : $x.$str.$z;
-  }
-  # }}}
-  static function bgColor(string $str, string $name, int $strong=0): string # {{{
-  {
-    static $z = '[0m';
-    static $COLOR = [
-      'black'   => [40,100],
-      'red'     => [41,101],
-      'green'   => [42,102],
-      'yellow'  => [43,103],
-      'blue'    => [44,104],
-      'magenta' => [45,105],
-      'cyan'    => [46,106],
-      'white'   => [47,107],
-    ];
-    $x = '['.$COLOR[$name][$strong].'m';
-    if (strpos($str, $z)) {
-      $str = str_replace($z, $z.$x, $str);
-    }
-    return (strpos($str, "\n") === false)
-      ? $x.$str.$z
-      : $x.str_replace("\n", "$z\n$x", $str).$z;
-  }
-  # }}}
-  static function clearColors(string $s): string # {{{
-  {
-    return (strpos($s, '[') === false)
-      ? $s : preg_replace('/\\[\\d+m/', '', $s);
-  }
-  # }}}
-  static function parseCommands(# {{{
-    ?array &$tree,
-    int    $pad,
-    string $color,
-    array  &$indent = [],
-    int    $level   = 0
-  ):string
-  {
-    # prepare
-    $x = '';
-    $i = 0;
-    $j = count($tree);
-    # iterate
-    foreach ($tree as &$a)
-    {
-      # compose indent
-      $pad && ($x .= str_repeat(' ', $pad));
-      foreach ($indent as $b) {
-        $x .= $b ? self::fgColor('│ ', $color, 1) : '  ';
-      }
-      # compose item line
-      $b  = (++$i === $j);
-      $c  = self::fgColor(($b ? '└─' : '├─'), $color, 1);
-      $x .= $c.$a->skel['name']."\n";
-      # recurse
-      if ($a->items)
-      {
-        $indent[] = !$b;
-        $x .= self::parseCommands($a->items, $pad, $color, $indent, $level + 1);
-        array_pop($indent);
-      }
-    }
-    return $x;
-  }
-  # }}}
-  static function parseBlock(string $s): string # {{{
-  {
-    static $x;
-    !$x && ($x = [
-      self::fgColor('└┬', self::PROMPT[2], 1),
-      self::fgColor(' ├', self::PROMPT[2], 1),
-      self::fgColor(' └', self::PROMPT[2], 1),
-      self::fgColor('└┐', self::PROMPT[2], 1),
-      self::fgColor(' │', self::PROMPT[2], 1),
-      self::fgColor('└─', self::PROMPT[2], 1),
-    ]);
-    # split and determine the last line
-    $s = explode("\n", trim($s));
-    for ($j = count($s) - 1; $j; --$j)
-    {
-      # clear any colors
-      $a = self::clearColors($s[$j]);
-      # stop at pad/block character
-      if (strlen($a) && strpos(' └', $a[0]) === false) {
-        break;
-      }
-      # pad otherwise
-      $s[$j] = '  '.$s[$j];
-    }
-    # check at the first line
-    if (!$j) {
-      return $x[5].implode("\n", $s);
-    }
-    # compose the block
-    for ($i = 0; $i < $j; ++$i)
-    {
-      $k = (strlen($s[$i]) && !ctype_space($s[$i][0])) ? 0 : 3;
-      $i && $k++;
-      $s[$i] = $x[$k].$s[$i];
-    }
-    $s[$j] = $x[2].$s[$j];
-    return implode("\n", $s);
-  }
-  # }}}
-  function __construct(# {{{
-    public object   $bot,
-    public string   $name   = '',
-    public ?object  $parent = null
-  ) {}
-  # }}}
-  function init(): bool # {{{
-  {
-    $this->name = $this->name ? $this->bot['name'] : 'console';
-    return true;
-  }
-  # }}}
-  function new(string $name): self # {{{
-  {
-    return new self($this->bot, $name, $this);
-  }
-  # }}}
-  function consoleBanner(): void # {{{
-  {
-    $a = $this->bot->cfg->isProduction;
-    $b = $a ? 'Production' : 'Development';
-    $c = $a ? 'close' : 'restart';
-    $a = <<<EOD
-███████████████████████████████████████ $b
-█─▄▄▄▄█▄─▀█▀─▄█▀▀▀▀▀██▄─▄─▀█─▄▄─█─▄─▄─█ [1mCtrl+C[0m ~ $c
-█▄▄▄▄─██─█▄█─██████████─▄─▀█─██─███─███ [1mCtrl+Break[0m ~ stop
-▀▄▄▄▄▄▀▄▄▄▀▄▄▄▀▀▀▀▀▀▀▀▄▄▄▄▀▀▄▄▄▄▀▀▄▄▄▀▀
-
-EOD;
-    $a = self::fgColor($a, 'cyan');
-    $this->bot->console->write($a);
-  }
-  # }}}
-  function commands(): void # {{{
-  {
-    $this->bot->console->write(
-      self::fgColor(self::PROMPT[1], self::PROMPT[2], 1)."\n".
-      self::parseCommands($this->bot->cmd->tree, 0, self::PROMPT[2])
-    );
-  }
-  # }}}
-  function out(int $level, int $sep, string ...$msg): void # {{{
-  {
-    # file output
-    if (0)
-    {
-      #$a = date(DATE_ATOM).': ';
-      #$b = $name ? implode(' '.$PREFIX, $name) : '';
-      #file_put_contents($f, $a.$b.$msg."\n", FILE_APPEND);
-    }
-    # console output
-    # compose name chain
-    $c = self::COLOR[$level];
-    $s = self::fgColor(self::SEP[$sep], $c);
-    $x = '';
-    $p = $this;
-    while ($p->parent)
-    {
-      #$n = $level
-      #  ? self::bgColor($p->name, $c)
-      #  : self::fgColor($p->name, $c);
-      $n = self::fgColor($p->name, $c);
-      $x = "$n $s $x";
-      $p = $p->parent;
-    }
-    # compose msg chain
-    for ($i = 0, $j = count($msg) - 1; $i < $j; ++$i) {
-      #$x = $x.self::bgColor($msg[$i], $c)." $s ";
-      $x = $x.self::fgColor($msg[$i], $c, 1)." $s ";
-    }
-    # compose block
-    $x = $x.rtrim($msg[$j]);
-    if (($n = strpos($x, "\n")) > 0)
-    {
-      $x = substr($x, 0, ++$n).self::parseBlock(substr($x, $n));
-      $n = 1;
-    }
-    else {
-      $n = 0;
-    }
-    # output
-    $this->bot->console->write(
-      self::fgColor(self::PROMPT[$n], self::PROMPT[2], 1).
-      self::fgColor($p->name, self::PROMPT[2], 0).
-      " $s $x\n"
-    );
-  }
-  # }}}
-  function info(string ...$msg): void # {{{
-  {
-    $this->out(0, 0, ...$msg);
-  }
-  # }}}
-  function infoInput(string ...$msg): void # {{{
-  {
-    $this->out(0, 1, ...$msg);
-  }
-  # }}}
-  function error(string ...$msg): void # {{{
-  {
-    $this->out(1, 0, ...$msg);
-    $this->errorCount += 1;
-  }
-  # }}}
-  function errorInput(string ...$msg): void # {{{
-  {
-    $this->out(1, 1, ...$msg);
-    $this->errorCount += 1;
-  }
-  # }}}
-  function errorOnly(string $msg, int $level): void # {{{
-  {
-    $level && $this->out(1, 0, $msg);
-  }
-  # }}}
-  function warn(string ...$msg): void # {{{
-  {
-    $this->out(2, 0, ...$msg);
-  }
-  # }}}
-  function warnInput(string ...$msg): void # {{{
-  {
-    $this->out(2, 1, ...$msg);
-  }
-  # }}}
-  function exception(object $e): bool # {{{
-  {
-    # handle bot error
-    if ($e instanceof BotError)
-    {
-      if ($e->origin) {
-        $this->exception($e->origin);
-      }
-      if ($e->msg)
-      {
-        if ($e->level) {
-          $this->error(...$e->msg);
-        }
-        else {
-          $this->warn(...$e->msg);
-        }
-      }
-      if ($e->next) {
-        $this->exception($e->next);
-      }
-      return ($e->level !== 0);
-    }
-    # handle standard error/exception,
-    # compose first line
-    $a = $e->getMessage()."\n";
-    $a = $a.$e->getFile().'('.$e->getLine().")\n";
-    # compose trace
-    if ($trace = $e->getTrace())
-    {
-      $b = '';
-      foreach ($trace as $c)
-      {
-        $b .= isset($c['file'])
-          ? $c['file'].'('.$c['line'].')'
-          : 'INTERNAL';
-        $b .= isset($c['class'])
-          ? ': '.$c['class'].$c['type'].$c['function']
-          : ': '.$c['function'];
-        $b .= "\n";
-      }
-      $a .= $b;
-    }
-    $a = str_replace(__DIR__.DIRECTORY_SEPARATOR, '', $a);
-    $this->out(1, 0, '✶', get_class($e), $a);
-    $this->errorCount += 1;
-    return true;
-  }
-  # }}}
-  function dump(mixed $var): void # {{{
-  {
-    if ($proc = $this->bot->proc) {
-      $proc->out(var_export($var, true)."\n");
-    }
-  }
-  # }}}
-  function finit(): void # {{{
-  {}
-  # }}}
 }
 # }}}
 class BotApi extends BotConfigAccess # {{{
@@ -1940,12 +2085,14 @@ class BotProcess extends BotConfigAccess # {{{
 {
   # {{{
   const
-    UUID = '22c4408d490143b5b29f0640755327db',
-    TICK = 200000;# 1/5 sec
+    PROC_UUID = '22c4408d490143b5b29f0640755327db',
+    BUF_UUID  = 'c25de777e80d49f69b6b7b57091d70d5',
+    BUF_SIZE  = 200,
+    TIMEOUT   = 10000;# ms, response timeout
   public
-    $bot,$id,$log,
-    $file,$active,$started = false,
-    $map = [],$delay = 200000;
+    $bot,$id,$log,$file,$active,$syncbuf,
+    $started = false,$map = [],
+    $delay = 200000;
   # }}}
   static function construct(object $bot): object # {{{
   {
@@ -1956,16 +2103,24 @@ class BotProcess extends BotConfigAccess # {{{
         : new self())
       : new BotConsoleProcess();
     # set base props
-    $I->bot  = $bot;
-    $I->id   = strval(getmypid());
-    $I->log  = $bot->log->new('proc');
-    $I->file = $bot->id
-      ? $bot->cfg->dirDataRoot.'bot'.$bot->id.'.pid'
-      : $bot->console->file;
-    $I->active = $bot->id
-      ? new SyncEvent($bot->id.$bot->tid.self::UUID, 1, 0)
-      : $bot->console->active;
-    # done
+    $I->bot = $bot;
+    $I->id  = strval(getmypid());
+    $I->log = $bot->log->new('proc');
+    if ($k = $bot->id.$bot->tid)
+    {
+      # standalone
+      $I->file    = $bot->cfg->dirDataRoot.'bot'.$bot->id.'.pid';
+      $I->active  = new SyncEvent($k.self::PROC_UUID, 1);
+      $I->syncbuf = new BotSyncbuf(
+        $k.self::BUF_UUID, self::BUF_SIZE, self::TIMEOUT
+      );
+    }
+    else
+    {
+      # console
+      $I->file   = $bot->cfg->dirDataRoot.'console.pid';
+      $I->active = $bot->console->active;
+    }
     return $I;
   }
   # }}}
@@ -1975,28 +2130,68 @@ class BotProcess extends BotConfigAccess # {{{
     {
       # check already running
       if ($this->active->wait(0)) {
-        throw BotError::stop("is already running");
+        throw BotError::fail('is already started');
       }
-      # start self
+      # to enforce graceful termination,
+      # handling of termination signals is important
+      if (function_exists($f = 'sapi_windows_set_ctrl_handler'))
+      {
+        # WinOS
+        $self = $this;
+        $f(function (int $e) use ($self) {
+          $self->signal($e === PHP_WINDOWS_EVENT_CTRL_C);
+        });
+      }
+      else
+      {
+        # NixOS
+        # ...
+      }
+      # start
       if (!($this->started = $this->active->fire())) {
-        throw BotError::fail('SyncEvent::fire');
+        throw BotError::fail('failed to fire');
       }
       if (file_put_contents($this->file, $this->id) === false) {
         throw BotError::fail($this->file);
       }
-      # start children
-      foreach ($this->list() as $a)
-      {
-        if (!$this->childStart($a)) {
-          throw BotError::skip();
-        }
-      }
+      $this->startChildren();
     }
     catch (Throwable $e)
     {
       $this->log->exception($e);
-      $this->finit();
+      if ($this->started)
+      {
+        $this->stopChildren();
+        $this->destruct();
+      }
       return false;
+    }
+    return true;
+  }
+  # }}}
+  function signal(bool $interrupt): void # {{{
+  {}
+  # }}}
+  function command(): bool # {{{
+  {
+    # read command
+    if (!strlen($a = $this->syncbuf->read())) {
+      return true;
+    }
+    # operate
+    $this->log->infoInput('command', $a);
+    switch ($a) {
+    case 'stop':
+      return false;
+    case 'info':
+      # compose pid:name
+      $a = $this->bot->tid
+        ? 'task:'.$this->bot->tid
+        : $this->bot['name'];
+      $a = $this->id.':'.$a;
+      # reply
+      $this->syncbuf->write($a);
+      break;
     }
     return true;
   }
@@ -2011,7 +2206,7 @@ class BotProcess extends BotConfigAccess # {{{
       }
     }
     # check self
-    return $this->active->wait(0) && file_exists($this->file);
+    return ($this->active->wait(0) && file_exists($this->file));
   }
   # }}}
   function tick(): void # {{{
@@ -2026,14 +2221,12 @@ class BotProcess extends BotConfigAccess # {{{
       # prepare
       $bot = $this->bot;
       $api = $this->bot->api;
-      $bot->log->commands();
+      $bot->log->bannerCommands();
       # start event loop
       $i = 0;
-      while ($this->check())
+      while ($this->command() && $this->check())
       {
-        $this->log->info('test #'.strval($i++));
-        $this->tick();
-        #sleep(2);
+        # handle updates
         /***
         if ($a = $api->getUpdates())
         {
@@ -2048,20 +2241,23 @@ class BotProcess extends BotConfigAccess # {{{
           $this->tick();
         }
         /***/
+        # tests
+        $this->log->info('test #'.strval($i++));
+        #$this->tick();
+        sleep(1);
       }
     }
-    catch (Throwable $e) {
+    catch (Throwable $e)
+    {
       $this->log->exception($e);
+      $this->syncbuf->reset();
     }
   }
   # }}}
-  function list(): array # {{{
-  {
-    # TODO: tasks
-    return [];
-  }
+  function startChildren(): void # {{{
+  {}
   # }}}
-  function childStart(string $id): bool # {{{
+  function start(string $id): bool # {{{
   {
     if (isset($this->map[$id])) {
       return true;
@@ -2073,8 +2269,9 @@ class BotProcess extends BotConfigAccess # {{{
     return true;
   }
   # }}}
-  function childGet(string $id): ?object # {{{
+  function get(string $id): ?object # {{{
   {
+    /***
     if (!($slave = $this->map[$id] ?? null)) {
       return null;
     }
@@ -2085,10 +2282,13 @@ class BotProcess extends BotConfigAccess # {{{
       return null;
     }
     return $slave;
+    /***/
+    return null;
   }
   # }}}
-  function childStop(string $id): bool # {{{
+  function stop(string $id): bool # {{{
   {
+    /***
     if (!($slave = $this->map[$id] ?? null))
     {
       $this->log->warn(__FUNCTION__."($id): was not started");
@@ -2096,24 +2296,28 @@ class BotProcess extends BotConfigAccess # {{{
     }
     $slave->stop();
     unset($this->map[$id]);
+    /***/
     return true;
+  }
+  # }}}
+  function stopChildren(): void # {{{
+  {
+    foreach ($this->map as $child) {
+      $child->stop();
+    }
+    $this->map = [];
   }
   # }}}
   function finit(): void # {{{
   {
+    $this['list'] = array_keys($this->map);
+    $this->stopChildren();
+  }
+  # }}}
+  function destruct(): void # {{{
+  {
     if ($this->started)
     {
-      # save current childmap
-      #$this['map'] = array_keys($this->map);
-      # stop children
-      if ($this->map)
-      {
-        foreach ($this->map as $child) {
-          $child->active->reset();
-        }
-        $this->map = [];
-      }
-      # stop self
       $this->started = false;
       $this->active->reset();
       file_unlink($this->file);
@@ -2124,38 +2328,21 @@ class BotProcess extends BotConfigAccess # {{{
 # }}}
 class BotConsoleProcess extends BotProcess # {{{
 {
+  function signal(bool $interrupt): void # {{{
+  {
+    $this->log->info('signal', ($interrupt ? 'Ctrl+C' : 'Ctrl+Break'));
+    $this->bot->exitcode = $interrupt
+      ? 101 : 102;
+  }
+  # }}}
   function loop(): void # {{{
   {
     try
     {
-      # prepare
-      $bot = $this->bot;
-      # enforce graceful termination
-      if (function_exists($f = 'sapi_windows_set_ctrl_handler'))
+      $this->log->bannerConsole();
+      while ($this->check() && $this->bot->exitcode === 0)
       {
-        # WinOS
-        $f(function (int $e) use ($bot)
-        {
-          $e = ($e === PHP_WINDOWS_EVENT_CTRL_C);
-          $bot->log->info('signal: '.($e ? 'Ctrl+C' : 'Ctrl+Break'));
-          if ($bot->cfg->isProduction)
-          {
-          }
-          $bot->exitcode = $e
-            ? 1 # restart
-            : 0;# stop
-          $bot->finit();
-        });
-      }
-      else
-      {
-        # NixOS
-      }
-      # start event loop
-      $this->log->consoleBanner();
-      while ($this->check())
-      {
-        $bot->console->read();
+        $this->bot->console->read();
         $this->tick();
       }
     }
@@ -2164,7 +2351,7 @@ class BotConsoleProcess extends BotProcess # {{{
     }
   }
   # }}}
-  function list(): array # {{{
+  function startChildren(): void # {{{
   {
     # get planned and currently running bots
     $a = $this['list'];
@@ -2180,7 +2367,24 @@ class BotConsoleProcess extends BotProcess # {{{
     if (!in_array($c = $this->bot['id'], $a, true)) {
       array_unshift($a, $c);
     }
-    return $a;
+    # start
+    foreach ($a as $c)
+    {
+      if (!$this->start($c)) {
+        throw BotError::skip();
+      }
+    }
+  }
+  # }}}
+  function stopChildren(): void # {{{
+  {
+    if ($this->bot->exitcode !== 101)
+    {
+      foreach ($this->map as $child) {
+        $child->stop();
+      }
+      $this->map = [];
+    }
   }
   # }}}
 }
@@ -2204,21 +2408,23 @@ class BotProcessFork # {{{
   # {{{
   const
     FILE_START = 'start.php',
-    PROC_WAIT  = [500,8], # ms,ticks
+    PROC_WAIT  = 200,# milliseconds
+    PROC_TICKS = 5,# number of waits
+    PROC_WAIT_GO = [500,8],# msec * ticks
     PROC_DESC  = [
       #0 => ['pipe','r'],# stdin
       1 => ['pipe','w'],# stdout
       2 => ['pipe','w'],# stderr
     ],
-    PROC_OPTS = [# WinOS only
+    PROC_OPTS  = [# WinOS only
       'suppress_errors' => false,
       'bypass_shell'    => true,
       'blocking_pipes'  => true,
-      'create_process_group' => false,# allow child to handle CTRL events?
+      'create_process_group' => false,
       'create_new_console'   => false,
     ];
   public
-    $proc,$log,$active;
+    $proc,$pid,$log,$active,$syncbuf;
   # }}}
   static function closePipes(?array $list, bool $read = false): string # {{{
   {
@@ -2242,22 +2448,29 @@ class BotProcessFork # {{{
     return $text;
   }
   # }}}
-  static function construct(object $proc, string $id): ?self # {{{
+  static function construct(object $proc, string $key): ?self # {{{
   {
     try
     {
       # create instance
       $I = new self();
-      $I->proc   = $proc;
-      $I->log    = $proc->log->new($id);
-      $I->active = new SyncEvent($id.BotProcess::UUID, 1, 0);
+      $I->proc    = $proc;
+      $I->log     = $proc->log->new($key);
+      $I->active  = new SyncEvent($key.$proc::PROC_UUID, 1);
+      $I->syncbuf = new BotSyncbuf(
+        $key.$proc::BUF_UUID, $proc::BUF_SIZE, $proc::TIMEOUT
+      );
       # check process is already running or try to start
       if ($I->active->wait(0)) {
         $I->log->info('connected');
       }
-      elseif (!$I->start($id)) {
+      elseif (!$I->start($key)) {
         throw BotError::skip();
       }
+      # get information (pid:name)
+      $a = explode(':', $I->syncbuf->writeRead('info'), 2);
+      $I->id = $a[0];
+      $I->log->name = $a[1];
     }
     catch (Throwable $e)
     {
@@ -2267,13 +2480,13 @@ class BotProcessFork # {{{
     return $I;
   }
   # }}}
-  function start(string $id): bool # {{{
+  function start(string $key): bool # {{{
   {
     try
     {
       # create process
       $dir  = __DIR__.DIRECTORY_SEPARATOR;
-      $cmd  = '"'.PHP_BINARY.'" -f "'.$dir.self::FILE_START.'" '.$id;
+      $cmd  = '"'.PHP_BINARY.'" -f "'.$dir.self::FILE_START.'" '.$key;
       $pipe = null;
       $proc = proc_open(
         $cmd, self::PROC_DESC, $pipe, $dir, null, self::PROC_OPTS
@@ -2283,7 +2496,7 @@ class BotProcessFork # {{{
         throw BotError::fail("failed\nproc_open($cmd)");
       }
       # wait started
-      $wait = self::PROC_WAIT;
+      $wait = self::PROC_WAIT_GO;
       while (!$this->active->wait($wait[0]) && --$wait[1])
       {
         if (!($a = proc_get_status($proc))) {
@@ -2319,8 +2532,42 @@ class BotProcessFork # {{{
     return true;
   }
   # }}}
+  function command(string $cmd): bool # {{{
+  {
+    try
+    {
+      $this->syncbuf->write($cmd);
+      $this->log->info($cmd);
+    }
+    catch (Throwable $e)
+    {
+      $this->log->exception($e);
+      $this->syncbuf->reset();
+      return false;
+    }
+    return true;
+  }
+  # }}}
   function stop(): bool # {{{
   {
+    if (!$this->command('stop'))
+    {
+      $this->active->reset();
+      return false;
+    }
+    # wait process closeup
+    $a = self::PROC_TICKS;
+    $b = self::PROC_WAIT * 1000;# ms => us
+    while ($this->active->wait(0) && $a--) {
+      usleep($b);
+    }
+    # check timed out
+    if (!$a)
+    {
+      $this->log->error(__FUNCTION__, "timed out");
+      $this->active->reset();
+      return false;
+    }
     return true;
   }
   # }}}
@@ -5861,48 +6108,28 @@ class BotTxtItem extends BotItem # {{{
 class Bot extends BotConfigAccess {
   # {{{
   const
-    PROCESS_TICK     = 200000,# 1/5 sec
-    PROCESS_TIMEOUT  = 100,# ticks
     MESSAGE_LIFETIME = 48*60*60,
-    USERNAME_EXP     = '/^[a-z]\w{4,32}$/i',
-    BOTNAME_EXP      = '/^[a-z]\w{1,29}bot$/i',
-    EXP_PIDFILE = '/^bot([-0-9]+)\\.pid$/',
+    EXP_USERNAME = '/^[a-z]\w{4,32}$/i',
+    EXP_BOTNAME  = '/^[a-z]\w{1,29}bot$/i',
+    EXP_PIDFILE  = '/^bot([-0-9]+)\\.pid$/',
     INIT = [
-      # TODO: console+log first!
-      'cfg','console','log','api','text','cmd','file','proc'
+      'console','cfg','log','api','text','cmd','file','proc'
     ];
   public
     $bot,$id,$tid,
-    $cfg,$console,$log,$api,$text,$cmd,$file,$proc,
-    $user,$inited = [],$exitcode = 1;
+    $console,$log,$cfg,$api,$text,$cmd,$file,$proc,
+    $user,$inited = [],$exitcode = 0;
   # }}}
   static function start(string $args = ''): never # {{{
   {
     try
     {
-      # configure environment
-      set_time_limit(0);
-      #ini_set('implicit_flush', '1');
-      ini_set('html_errors', '0');
-      ini_set('log_errors_max_len', '0');
-      set_error_handler(function(int $no, string $msg, string $file, int $line) {
-        # all errors, except supressed (@) must be handled,
-        # unhandled are thrown as an exception
-        if (error_reporting() !== 0) {
-          throw new Exception($msg, $no);
-        }
-        return false;
-      });
       # create instance
       $args = explode(':', $args, 2);
       $bot  = new self($args[0], $args[1] ?? '');
       # initialize
       if ($bot->init())
       {
-        # guard against non-recoverable errors
-        register_shutdown_function(function() use ($bot) {
-          $bot->finit();
-        });
         # operate
         $bot->proc->loop();
         $bot->finit();
@@ -5911,7 +6138,7 @@ class Bot extends BotConfigAccess {
     }
     catch (Throwable $e)
     {
-      fwrite(STDERR, 'fatal: '.$e->getMessage()."\n".$e->getTraceAsString());
+      fwrite(STDOUT, "\nFATAL: ".$e->getMessage()."\n".$e->getTraceAsString()."\n");
       $e = 2;
     }
     exit($e);
@@ -5922,9 +6149,9 @@ class Bot extends BotConfigAccess {
     $this->bot     = $this;# for BotConfigAccess
     $this->id      = $id;
     $this->tid     = $taskId;
-    $this->cfg     = new BotConfig($this, $id);
     $this->console = BotConsole::construct($this, $id === '');
-    $this->log     = new BotLog($this, $id);
+    $this->log     = new BotLog($this);
+    $this->cfg     = new BotConfig($this, $id);
     $this->api     = new BotApi($this);
     $this->text    = new BotText($this);
     $this->cmd     = new BotCommands($this);
@@ -5936,6 +6163,24 @@ class Bot extends BotConfigAccess {
   {
     try
     {
+      # configure environment
+      set_time_limit(0);
+      error_reporting(E_ALL);
+      if ($k = $this->id)
+      {
+        ini_set('log_errors', '1');
+        ini_set('log_errors_max_len', '0');
+        ini_set('display_errors', '0');
+        ini_set('display_startup_errors', '0');
+        ini_set('error_log', $this->cfg->dirData."bot$k.error");
+      }
+      else
+      {
+        ini_set('log_errors', '0');
+        ini_set('display_errors', '1');
+        ini_set('display_startup_errors', '1');
+      }
+      # initialize in the right order
       foreach (self::INIT as $k)
       {
         if (!$this->$k->init()) {
@@ -5943,11 +6188,25 @@ class Bot extends BotConfigAccess {
         }
         array_unshift($this->inited, $k);
       }
-      $this->exitcode = 0;
+      # all errors, except supressed (@) must be handled,
+      # unhandled are thrown as an exception
+      /***
+      set_error_handler(function(int $no, string $msg, string $file, int $line) {
+        if (error_reporting() !== 0) {
+          throw new Exception($msg, $no);
+        }
+        return false;
+      });
+      /***/
+      # guard against non-recoverable errors
+      register_shutdown_function(
+        Closure::fromCallable([$this, 'finit'])
+      );
     }
     catch (Throwable $e)
     {
       $this->log->exception($e);
+      $this->exitcode = 1;
       $this->finit();
       return false;
     }
@@ -6085,6 +6344,7 @@ class Bot extends BotConfigAccess {
         $this->$k->finit();
       }
       $this->inited = [];
+      $this->proc->destruct();
     }
   }
   # }}}

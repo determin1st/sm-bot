@@ -6,9 +6,9 @@ class BotBot
   public $cfg,$console,$log,$api;
   function __construct()
   {
-    $this->cfg = new BotConfig($this);
     $this->console = $this;
     $this->log = new BotLog($this, 'setup');
+    $this->cfg = new BotConfig($this);
     $this->api = new BotApi($this);
   }
   function write(string $s): void {
@@ -22,13 +22,14 @@ class BotBot
       if (!$this->api->init()) {
         throw BotError::skip();
       }
-      # check filesystem
+      # TODO: check filesystem
       $cfg = $this->cfg;
       $dir = $cfg->dirDataRoot;
       #var_dump($dir);
       # ...
+      # ...
       # install masterbot
-      $a = $cfg->install($cfg->data['Bot']) ? 100 : 1;
+      $a = $cfg->install($cfg->data['Bot']) ? 100 : 0;
     }
     catch (\Throwable $e)
     {

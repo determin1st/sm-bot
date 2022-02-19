@@ -17,7 +17,6 @@ if %ERRORLEVEL% EQU 101 goto INSTALL
 goto END
 
 :INSTALL
-::echo [103m                                             [0m
 choice /N /T 10 /D n /M "[43m[93m masterbot is not installed. Install? [Y/N]: [0m[0m"
 if %ERRORLEVEL% NEQ 1 goto END
 %PHP% -f "%CD%\bots\install.php"
