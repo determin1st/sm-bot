@@ -11,15 +11,7 @@ set PHP="E:\lab\www\php\php.exe"
 goto CHECK
 
 :CHECK
-%PHP% -f "%CD%\bots\check.php"
-if %ERRORLEVEL% EQU 100 goto START
-if %ERRORLEVEL% EQU 101 goto INSTALL
-goto END
-
-:INSTALL
-choice /N /T 10 /D n /M "[43m[93m masterbot is not installed. Install? [Y/N]: [0m[0m"
-if %ERRORLEVEL% NEQ 1 goto END
-%PHP% -f "%CD%\bots\install.php"
+%PHP% -f "%CD%\check.php"
 if %ERRORLEVEL% EQU 100 goto START
 goto END
 

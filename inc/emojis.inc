@@ -1,4 +1,4 @@
-<?php return [
+<?php return [# telegram client names
   'arrow_up'                  => "\xE2\xAC\x86",
   'arrow_down'                => "\xE2\xAC\x87",
   'arrow_up_small'            => "\xF0\x9F\x94\xBC",

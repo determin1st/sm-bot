@@ -47,7 +47,7 @@ function startbotsbot(object $item, string $func, string $args): ?array # {{{
   # operate
   if ($func)
   {
-    $item->log->out(0, 0, $func, $data['name']);
+    $item->log->print(0, 0, $func, $data['name']);
     switch ($func) {
     case 'start':
       if ($item->bot->proc->start($id)) {
