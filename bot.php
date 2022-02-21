@@ -421,7 +421,7 @@ class BotSyncbuf # {{{
     return $data;
   }
   # }}}
-  function writeRead(string $data, int $wait = 200, int $timeout = 0): string # {{{
+  function writeRead(string $data, int $wait = 300, int $timeout = 0): string # {{{
   {
     $this->write($data, $timeout);
     return $this->read($wait);
@@ -516,13 +516,13 @@ class BotMasterConsole extends BotConsole # {{{
     fwrite(STDOUT, $text);
   }
   # }}}
-  function read(): void # {{{
+  function flush(): void # {{{
   {
     # lock
     if (!($this->locked = $this->lock->writelock(self::TIMEOUT))) {
       throw BotError::fail("timed out\nSyncReaderWriter::writelock");
     }
-    # read
+    # read and flush
     if ($a = $this->membuf->read())
     {
       fwrite(STDOUT, $a);
@@ -799,10 +799,10 @@ class BotLog # {{{
   function bannerConsole(): void # {{{
   {
     $a = <<<EOD
-███████████████████████████████████████ [[1mq[0m][[1mCtrl+C[0m] ~ quit
-█─▄▄▄▄█▄─▀█▀─▄█▀▀▀▀▀██▄─▄─▀█─▄▄─█─▄─▄─█ [[1mx[0m][[1mCtrl+Break[0m] ~ stop and quit
-█▄▄▄▄─██─█▄█─██████████─▄─▀█─██─███─███ [[1mr[0m] ~ restart
-▀▄▄▄▄▄▀▄▄▄▀▄▄▄▀▀▀▀▀▀▀▀▄▄▄▄▀▀▄▄▄▄▀▀▄▄▄▀▀
+███████████████████████████████████████ Process control:
+█─▄▄▄▄█▄─▀█▀─▄█▀▀▀▀▀██▄─▄─▀█─▄▄─█─▄─▄─█ [[1mq[0m][[1mCtrl+C[0m] ~ quit, keep bots running
+█▄▄▄▄─██─█▄█─██████████─▄─▀█─██─███─███ [[1mx[0m][[1mCtrl+Break[0m] ~ quit, stop bots
+▀▄▄▄▄▄▀▄▄▄▀▄▄▄▀▀▀▀▀▀▀▀▄▄▄▄▀▀▄▄▄▄▀▀▄▄▄▀▀ [[1mr[0m] ~ restart
 
 EOD;
     $a = self::fgColor($a, self::PROMPT[2]);
@@ -2073,40 +2073,31 @@ class BotProcess extends BotConfigAccess # {{{
     PROC_UUID = '22c4408d490143b5b29f0640755327db',
     BUF_UUID  = 'c25de777e80d49f69b6b7b57091d70d5',
     BUF_SIZE  = 200,
-    TIMEOUT   = 10000;# ms, response timeout
+    TIMEOUT   = 15000;# ms, response timeout
   public
-    $bot,$id,$log,$file,$active,$syncbuf,
+    $log,$active,$file,$syncbuf,
     $started = false,$map = [],
-    $delay = 200000;
+    $delay = 200000,$exitcode = 1;
   # }}}
   static function construct(object $bot): object # {{{
   {
     # create specific instance
-    $I = $bot->id
+    return $bot->id
       ? ($bot->tid
-        ? new BotTaskProcess()
-        : new self())
-      : new BotConsoleProcess();
-    # set base props
-    $I->bot = $bot;
-    $I->id  = strval(getmypid());
-    $I->log = $bot->log->new('proc');
-    if ($k = $bot->id.$bot->tid)
-    {
-      # standalone
-      $I->file    = $bot->cfg->dirDataRoot.'bot'.$bot->id.'.pid';
-      $I->active  = new SyncEvent($k.self::PROC_UUID, 1);
-      $I->syncbuf = new BotSyncbuf(
-        $k.self::BUF_UUID, self::BUF_SIZE, self::TIMEOUT
-      );
-    }
-    else
-    {
-      # console
-      $I->file   = $bot->cfg->dirDataRoot.'console.pid';
-      $I->active = $bot->console->active;
-    }
-    return $I;
+        ? new BotTaskProcess($bot)
+        : new self($bot))
+      : new BotConsoleProcess($bot);
+  }
+  # }}}
+  function __construct(public object $bot) # {{{
+  {
+    $k = $bot->id.$bot->tid;
+    $this->log     = $bot->log->new('proc');
+    $this->active  = new SyncEvent($k.self::PROC_UUID, 1);
+    $this->file    = $bot->cfg->dirDataRoot.'bot'.$bot->id.'.pid';
+    $this->syncbuf = new BotSyncbuf(
+      $k.self::BUF_UUID, self::BUF_SIZE, self::TIMEOUT
+    );
   }
   # }}}
   function init(): bool # {{{
@@ -2118,7 +2109,7 @@ class BotProcess extends BotConfigAccess # {{{
         throw BotError::fail('is already started');
       }
       # to enforce graceful termination,
-      # handling of termination signals is important
+      # handle termination signals
       if (function_exists($f = 'sapi_windows_set_ctrl_handler'))
       {
         # WinOS
@@ -2132,14 +2123,19 @@ class BotProcess extends BotConfigAccess # {{{
         # NixOS
         # ...
       }
-      # start
+      # start self
       if (!($this->started = $this->active->fire())) {
         throw BotError::fail('failed to fire');
       }
-      if (file_put_contents($this->file, $this->id) === false) {
+      # create pidfile for bot or console process
+      if (!$this->bot->tid &&
+          file_put_contents($this->file, $this->bot->pid) === false)
+      {
         throw BotError::fail($this->file);
       }
+      # start children and set clean
       $this->startChildren();
+      $this->exitcode = 0;
     }
     catch (Throwable $e)
     {
@@ -2169,11 +2165,12 @@ class BotProcess extends BotConfigAccess # {{{
     case 'stop':
       return false;
     case 'info':
-      # compose pid:name
-      $a = $this->bot->tid
-        ? 'task:'.$this->bot->tid
-        : $this->bot['name'];
-      $a = $this->id.':'.$a;
+      # compose bot <pid:name> string
+      $bot = $this->bot;
+      $a = $bot->tid
+        ? 'task:'.$bot->tid
+        : $bot['name'];
+      $a = $bot->pid.':'.$a;
       # reply
       $this->syncbuf->write($a);
       break;
@@ -2209,9 +2206,9 @@ class BotProcess extends BotConfigAccess # {{{
       $bot->log->bannerCommands();
       # start event loop
       $i = 0;
-      while ($this->command() && $this->check())
+      while ($this->check() && $this->command())
       {
-        # handle updates
+        # work
         /***
         if ($a = $api->getUpdates())
         {
@@ -2236,6 +2233,7 @@ class BotProcess extends BotConfigAccess # {{{
     {
       $this->log->exception($e);
       $this->syncbuf->reset();
+      $this->exitcode = 1;
     }
   }
   # }}}
@@ -2305,7 +2303,9 @@ class BotProcess extends BotConfigAccess # {{{
     {
       $this->started = false;
       $this->active->reset();
-      file_unlink($this->file);
+      if (!$this->bot->tid) {
+        file_unlink($this->file);
+      }
     }
   }
   # }}}
@@ -2313,16 +2313,41 @@ class BotProcess extends BotConfigAccess # {{{
 # }}}
 class BotConsoleProcess extends BotProcess # {{{
 {
+  function __construct(public object $bot) # {{{
+  {
+    $this->log    = $bot->log->new('proc');
+    $this->active = $bot->console->active;
+    $this->file   = $bot->cfg->dirDataRoot.'console.pid';
+  }
+  # }}}
   function signal(bool $interrupt): void # {{{
   {
     $this->log->infoInput('signal', ($interrupt ? 'Ctrl+C' : 'Ctrl+Break'));
-    $this->bot->exitcode = $interrupt
+    $this->exitcode = $interrupt
       ? 101 : 102;
   }
   # }}}
   function command(): bool # {{{
   {
-    return true;
+    $io = $this->bot->console->conio;
+    while (strlen($k = $io->getch()))
+    {
+      if (strpos('rqx', $k = lcfirst($k)) === false) {
+        continue;
+      }
+      $this->log->infoInput(__FUNCTION__, $k);
+      switch ($k) {
+      case 'r':
+        $this->exitcode = 100;
+        return false;
+      case 'q':
+        $this->exitcode = 101;
+        return false;
+      case 'x':
+        return false;
+      }
+    }
+    return ($this->exitcode === 0);
   }
   # }}}
   function loop(): void # {{{
@@ -2330,14 +2355,16 @@ class BotConsoleProcess extends BotProcess # {{{
     try
     {
       $this->log->bannerConsole();
-      while ($this->check() && $this->bot->exitcode === 0)
+      while ($this->check() && $this->command())
       {
-        $this->bot->console->read();
-        $this->tick();
+        $this->bot->console->flush();
+        usleep(200000);# 200ms
       }
     }
-    catch (Throwable $e) {
+    catch (Throwable $e)
+    {
       $this->log->exception($e);
+      $this->exitcode = 1;
     }
   }
   # }}}
@@ -2366,15 +2393,16 @@ class BotConsoleProcess extends BotProcess # {{{
     }
   }
   # }}}
-  function stopChildren(): void # {{{
+  function finit(): void # {{{
   {
-    if ($this->bot->exitcode !== 101)
-    {
-      foreach ($this->map as $child) {
-        $child->stop();
-      }
-      $this->map = [];
+    # store current list
+    $this['list'] = array_keys($this->map);
+    # keep bots running at special quit
+    if ($this->exitcode !== 101) {
+      $this->stopChildren();
     }
+    # flush remaining logs
+    $this->bot->console->flush();
   }
   # }}}
 }
@@ -6108,7 +6136,7 @@ class Bot extends BotConfigAccess {
   public
     $bot,$id,$tid,
     $console,$log,$cfg,$api,$text,$cmd,$file,$proc,
-    $user,$inited = [],$exitcode = 0;
+    $user,$inited = [];
   # }}}
   static function start(string $args = ''): never # {{{
   {
@@ -6124,7 +6152,7 @@ class Bot extends BotConfigAccess {
         $bot->proc->loop();
         $bot->finit();
       }
-      $e = $bot->exitcode;
+      $e = $bot->proc->exitcode;
     }
     catch (Throwable $e)
     {
@@ -6137,6 +6165,7 @@ class Bot extends BotConfigAccess {
   function __construct(string $id, string $taskId) # {{{
   {
     $this->bot     = $this;# for BotConfigAccess
+    $this->pid     = strval(getmypid());
     $this->id      = $id;
     $this->tid     = $taskId;
     $this->console = BotConsole::construct($this);
@@ -6196,7 +6225,6 @@ class Bot extends BotConfigAccess {
     catch (Throwable $e)
     {
       $this->log->exception($e);
-      $this->exitcode = 1;
       $this->finit();
       return false;
     }
