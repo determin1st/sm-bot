@@ -1,8 +1,8 @@
-<?php
+<?php declare(strict_types=1);
 namespace SM\BotItem;
-use SM\{# {{{
-  BotError, BotConfig, BotText, BotFile, BotCommands
-};
+# usage {{{
+use
+  SM\{BotError,BotConfig,BotText,BotFile,BotCommands};
 # }}}
 function startbots(object $item): ?array # {{{
 {
@@ -345,4 +345,4 @@ function getBotClassMap(object $item): ?array # {{{
   return $map;
 }
 # }}}
-?>
+###

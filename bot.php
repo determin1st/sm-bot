@@ -7,7 +7,7 @@ use
   Generator, Closure, CURLFile,
   Throwable, Error, Exception;
 use function
-  set_time_limit,ini_set,register_shutdown_function,error_get_last,
+  set_time_limit,ini_set,register_shutdown_function,set_error_handler,
   class_exists,function_exists,method_exists,
   explode,implode,count,reset,next,key,array_unshift,array_keys,
   in_array,array_search,array_reverse,
@@ -20,6 +20,7 @@ use function
   curl_multi_strerror,curl_multi_info_read,
   curl_multi_remove_handle,curl_multi_close,
   proc_open,is_resource,proc_get_status,proc_terminate,getmypid,
+  ob_start,ob_get_length,ob_flush,ob_end_clean,
   pack,unpack,time,sleep,usleep;
 # }}}
 # helpers {{{
@@ -168,8 +169,8 @@ function file_get_array(string $file): ?array # {{{
 function file_get_json(string $file): ?array # {{{
 {
   if (!file_exists($file) ||
-      ($a = file_get_contents($file)) === false ||
-      ($a = json_decode($a, true)) === null ||
+      !($a = file_get_contents($file)) ||
+      !($a = json_decode($a, true, 128, JSON_THROW_ON_ERROR)) ||
       !is_array($a))
   {
     return null;
@@ -217,16 +218,46 @@ function class_name(object $o): string # {{{
 ###
 class BotError extends Error # {{{
 {
-  static function skip(): self {
+  const TYPE = [# {{{
+    E_ERROR             => 'ERROR',
+    E_WARNING           => 'WARNING',
+    E_PARSE             => 'PARSE',
+    E_NOTICE            => 'NOTICE',
+    E_CORE_ERROR        => 'CORE_ERROR',
+    E_CORE_WARNING      => 'CORE_WARNING',
+    E_COMPILE_ERROR     => 'COMPILE_ERROR',
+    E_COMPILE_WARNING   => 'COMPILE_WARNING',
+    E_USER_ERROR        => 'USER_ERROR',
+    E_USER_WARNING      => 'USER_WARNING',
+    E_USER_NOTICE       => 'USER_NOTICE',
+    E_STRICT            => 'STRICT',
+    E_RECOVERABLE_ERROR => 'RECOVERABLE_ERROR',
+    E_DEPRECATED        => 'DEPRECATED',
+    E_USER_DEPRECATED   => 'USER_DEPRECATED',
+  ];
+  # }}}
+  static function rise(int $no, string $msg): self # {{{
+  {
+    $a = self::TYPE[$no] ?? "UNKNOWN($no)";
+    return new self(2, [$a, $msg]);
+  }
+  # }}}
+  static function skip(): self # {{{
+  {
     return new self(0);
   }
-  static function warn(string ...$msg): self {
+  # }}}
+  static function warn(string ...$msg): self # {{{
+  {
     return new self(0, $msg);
   }
-  static function stop(string ...$msg): self {
+  # }}}
+  static function stop(string ...$msg): self # {{{
+  {
     return new self(1, $msg);
   }
-  static function fail(string ...$msg): self
+  # }}}
+  static function fail(string ...$msg): self # {{{
   {
     # create new error
     $e = new self(1);
@@ -237,11 +268,12 @@ class BotError extends Error # {{{
     $e->msg = $msg;
     return $e;
   }
-  static function from(object $e): ?self
+  # }}}
+  static function from(object $e): ?self # {{{
   {
     if ($e instanceof BotError)
     {
-      # determine total error level
+      # determine error level
       $a = $e;
       $b = $a->level;
       while ($a->next)
@@ -249,13 +281,14 @@ class BotError extends Error # {{{
         $a  = $a->next;
         $b += $a->level;
       }
-      # result with error or no error
+      # select error or no error
       return $b ? $e : null;
     }
     # wrap
     return new self(1, null, $e);
   }
-  function __construct(
+  # }}}
+  function __construct(# {{{
     public int      $level  = 0,
     public array    $msg    = [],
     public ?object  $origin = null,
@@ -264,7 +297,8 @@ class BotError extends Error # {{{
   {
     parent::__construct('', -1);
   }
-  function push(object $e): self
+  # }}}
+  function push(object $e): self # {{{
   {
     if ($e = self::from($e))
     {
@@ -276,6 +310,7 @@ class BotError extends Error # {{{
     }
     return $this;
   }
+  # }}}
 }
 # }}}
 class BotMembuf # {{{
@@ -474,6 +509,8 @@ class BotConsole # {{{
   # }}}
   function init(): bool # {{{
   {
+    # redirect STDOUT
+    ob_start(Closure::fromCallable([$this, 'write']));
     return true;
   }
   # }}}
@@ -494,8 +531,20 @@ class BotConsole # {{{
     }
   }
   # }}}
+  function flush(): void # {{{
+  {
+    ob_get_length() && ob_flush();
+  }
+  # }}}
+  function stdout(string $text, int $phase = 0): string # {{{
+  {
+    $this->write($text);
+    return '';
+  }
+  # }}}
   function finit(): void # {{{
   {
+    ob_end_clean();
     $this->locked && $this->lock->readunlock();
   }
   # }}}
@@ -707,12 +756,80 @@ class BotLog # {{{
     # compose the block
     for ($i = 0; $i < $j; ++$i)
     {
-      $k = (strlen($b[$i]) && !ctype_space($b[$i][0])) ? 0 : 3;
+      $k = (strlen($a[$i]) && strpos(' └', $a[$i][0]) === false)
+        ? 0 : 3;
+      #$k = (strlen($b[$i]) && !ctype_space($b[$i][0])) ? 0 : 3;
       $i && $k++;
       $b[$i] = $x[$k].$b[$i];
     }
     $b[$j] = $x[2].$b[$j];
     return implode("\n", $b);
+  }
+  # }}}
+  static function parseObject(# {{{
+    object  $o,
+    int     $depth = 0
+  ):string
+  {
+    $pad = str_repeat('*', $depth);
+    $equ = ' = ';
+    $a = '';
+    $i = 0;
+    foreach ($o as $k => &$v)
+    {
+      if (is_bool($v)) {
+        $b = $equ.($v ? 'true' : 'false')."\n";
+      }
+      elseif (is_null($v)) {
+        $b = $equ."null\n";
+      }
+      elseif (is_scalar($v)) {
+        $b = $equ.strval($v)."\n";
+      }
+      elseif (is_object($v)) {
+        $b = "\n".self::parseObject($v, $depth + 1);
+      }
+      elseif (is_array($v)) {
+        $b = $equ.'[..] count='.count($v)."\n";
+      }
+      else {
+        $b = "?\n";
+      }
+      $a = $a.$k.$b;
+      $i++;
+    }
+    #var_dump($o);
+    return $a ? self::parseBlock($a)."\n" : '';
+  }
+  # }}}
+  static function parseTrace(object $e, int $from = 0): string # {{{
+  {
+    # prepare
+    $a = '';
+    $b = $from
+      ? array_slice($e->getTrace(), $from)
+      : $e->getTrace();
+    # compose
+    if ($b)
+    {
+      foreach ($b as $c)
+      {
+        $a .= isset($c['file'])
+          ? $c['file'].'('.$c['line'].')'
+          : 'INTERNAL';
+        $a .= isset($c['class'])
+          ? ': '.$c['class'].$c['type'].$c['function']
+          : ': '.$c['function'];
+        $a .= "\n";
+      }
+    }
+    return $a;
+  }
+  # }}}
+  static function separator(int $level, int $sep): string # {{{
+  {
+    $i = ($level === 2) ? 1 : 0;
+    return ' '.self::fgColor(self::SEP[$sep], self::COLOR[$level], $i).' ';
   }
   # }}}
   static function throwableToString(Throwable $e): string # {{{
@@ -749,12 +866,11 @@ class BotLog # {{{
       ? $this : new self($this->bot, $name, $this);
   }
   # }}}
-  function message(int $level, int $sep, array &$msg): string # {{{
+  function message(int $level, string $sep, array &$msg): string # {{{
   {
     # prepare
     $text  = '';
     $color = self::COLOR[$level];
-    $sep   = ' '.self::fgColor(self::SEP[$sep], $color).' ';
     # compose name chain
     $p = $this;
     while ($p->parent)
@@ -766,7 +882,7 @@ class BotLog # {{{
     for ($i = 0, $j = count($msg) - 1; $i < $j; ++$i) {
       $text = $text.$sep.self::fgColor($msg[$i], $color, 1);
     }
-    $text = ($a = rtrim($msg[$j]))
+    $text = (~$j && ($a = rtrim($msg[$j])))
       ? (($a[0] === "\n") ? $text.$a : $text.$sep.$a)
       : $text.$sep;
     # check multiline
@@ -785,15 +901,22 @@ class BotLog # {{{
   # }}}
   function print(int $level, int $sep, string ...$msg): void # {{{
   {
-    $this->bot->console->write(
-      $this->message($level, $sep, $msg)."\n"
-    );
+    $s = self::separator($level, $sep);
+    $this->bot->console->write($this->message($level, $s, $msg)."\n");
+  }
+  # }}}
+  function printObject(object $o, int $level, array &$msg): void # {{{
+  {
+    $a = $this->message($level, self::separator($level, 0), $msg);
+    $b = self::parseObject($o);
+    $this->bot->console->write($a."\n".$b);
   }
   # }}}
   function prompt(string ...$msg): void # {{{
   {
     array_push($msg, '');
-    $this->bot->console->write($this->message(0, 1, $msg));
+    $s = self::separator(0, 1);
+    $this->bot->console->write($this->message(0, $s, $msg));
   }
   # }}}
   function bannerConsole(): void # {{{
@@ -826,6 +949,11 @@ EOD;
     $this->print(0, 1, ...$msg);
   }
   # }}}
+  function infoObject(object $o, string ...$msg): void # {{{
+  {
+    $this->printObject($o, 0, $msg);
+  }
+  # }}}
   function error(string ...$msg): void # {{{
   {
     $this->print(1, 0, ...$msg);
@@ -836,6 +964,11 @@ EOD;
   {
     $this->print(1, 1, ...$msg);
     $this->errorCount += 1;
+  }
+  # }}}
+  function errorObject(object $o, string ...$msg): void # {{{
+  {
+    $this->printObject($o, 1, $msg);
   }
   # }}}
   function errorOnly(string $msg, int $level): void # {{{
@@ -853,52 +986,56 @@ EOD;
     $this->print(2, 1, ...$msg);
   }
   # }}}
-  function exception(object $e): bool # {{{
+  function warnObject(object $o, string ...$msg): void # {{{
   {
-    # handle bot error
+    $this->printObject($o, 2, $msg);
+  }
+  # }}}
+  function exception(object $e): int # {{{
+  {
+    # compose custom error
     if ($e instanceof BotError)
     {
-      if ($e->origin) {
-        $this->exception($e->origin);
-      }
-      if ($e->msg)
+      # check rised (with trace) or informational
+      if (($i = $e->level) > 1)
       {
-        if ($e->level) {
+        # get reduced trace
+        $a = self::parseTrace($e, $i - 1);
+        $a = str_replace(__DIR__.DIRECTORY_SEPARATOR, '', $a);
+        # prepend with bang and append trace
+        array_unshift($e->msg, '✶');
+        $e->msg[count($e->msg) - 1] .= "\n".$a;
+        $this->error(...$e->msg);
+      }
+      elseif ($e->msg)
+      {
+        if ($i) {
           $this->error(...$e->msg);
         }
         else {
           $this->warn(...$e->msg);
         }
       }
+      # check derived from standard
+      if ($e->origin) {
+        $i += $this->exception($e->origin);
+      }
+      # check chained
       if ($e->next) {
-        $this->exception($e->next);
+        $i += $this->exception($e->next);
       }
-      return ($e->level !== 0);
+      return $i;
     }
-    # handle standard error/exception,
-    # compose first line
-    $a = $e->getMessage()."\n";
-    $a = $a.$e->getFile().'('.$e->getLine().")\n";
-    # compose trace
-    if ($trace = $e->getTrace())
-    {
-      $b = '';
-      foreach ($trace as $c)
-      {
-        $b .= isset($c['file'])
-          ? $c['file'].'('.$c['line'].')'
-          : 'INTERNAL';
-        $b .= isset($c['class'])
-          ? ': '.$c['class'].$c['type'].$c['function']
-          : ': '.$c['function'];
-        $b .= "\n";
-      }
-      $a .= $b;
-    }
+    # compose standard error/exception
+    $a = $e->getMessage()."\n".
+      $e->getFile().'('.$e->getLine().")\n".
+      self::parseTrace($e);
+    # remove paths
     $a = str_replace(__DIR__.DIRECTORY_SEPARATOR, '', $a);
-    $this->print(1, 0, '✶', get_class($e), $a);
+    # output
+    $this->print(1, 0, '✱', get_class($e), $a);
     $this->errorCount += 1;
-    return true;
+    return 2;
   }
   # }}}
   function dump(mixed $var): void # {{{
@@ -946,15 +1083,11 @@ class BotConfig # {{{
         'baseUrl'  => 'https://api.telegram.org/bot',
         # getUpdates
         'timeout'  => 60,# polling timeout (telegram's max=50)
-        'limit'    => 100,# polling result limit (100=max)
+        'limit'    => 100,# polling results limit (100=max)
         'maxFails' => 0,# max repeated fails until termination (0=unlimited)
-        'pause'    => 10,# pause after repeated failure (seconds)
+        'pause'    => 10,# pause after repeated fails (seconds)
         # WebHook
-        'webhook'  => false,# registered?
-        'url'      => '',# HTTPS url of the webhook
-        'cert'     => false,# custom certificate file?
-        'ip'       => '',# fixed IP instead of DNS resolved IP
-        'maxHooks' => 100,# max allowed simultaneous requests (telegram's default=40)
+        'webhook'  => false,
       ],
       'BotLog'      => [
         'debug'     => true,# display debug output?
@@ -1262,36 +1395,65 @@ class BotApi extends BotConfigAccess # {{{
     CURLOPT_SSL_VERIFYPEER   => false,# disallow self-signed certs?
     # }}}
   ];
-  public $log,$curl,$murl,$query,$poll;
-  static function getError(object $curl): string # {{{
+  const METHOD_FILE = [
+    # {{{
+    'sendPhoto'     => 'photo',
+    'sendAudio'     => 'audio',
+    'sendDocument'  => 'document',
+    'sendVideo'     => 'video',
+    'sendAnimation' => 'animation',
+    'sendVoice'     => 'voice',
+    'sendVideoNote' => 'video_note',
+    # }}}
+  ];
+  public $log,$curl,$pool,$req;
+  static function error(object $curl): string # {{{
   {
     return ($e = curl_errno($curl))
-      ? "($e) ".curl_error($curl) : '';
+      ? "($e) ".curl_error($curl)
+      : '';
+  }
+  # }}}
+  static function decode(string &$a): object # {{{
+  {
+    if (!($b = json_decode($a, false, 16, JSON_THROW_ON_ERROR)) ||
+        !is_object($b) || !isset($b->ok))
+    {
+      throw BotError::stop("incorrect response\n$a");
+    }
+    if (!$b->ok)
+    {
+      if (isset($b->description))
+      {
+        $a = isset($b->error_code)
+          ? '('.$b->error_code.') '.$b->description
+          : $b->description;
+      }
+      throw BotError::stop("unsuccessful response\n".$a);
+    }
+    if (!isset($b->result)) {
+      throw BotError::stop("incorrect response\n$a");
+    }
+    return $b;
   }
   # }}}
   function __construct(public object $bot) # {{{
   {
     $this->log = $bot->log->new('api');
+    if (!($this->curl = curl_init())) {
+      throw BotError::fail('curl_init');
+    }
+    if (!curl_setopt_array($this->curl, self::CONFIG)) {
+      throw BotError::fail("curl_setopt_array\n".self::error($this->curl));
+    }
   }
   # }}}
   function init(): bool # {{{
   {
-    try
-    {
-      if (!($this->curl = curl_init())) {
-        throw BotError::fail('curl_init()');
-      }
-      if (!curl_setopt_array($this->curl, self::CONFIG)) {
-        throw BotError::fail("curl_setopt_array()\n".self::getError($this->curl));
-      }
-    }
-    catch (Throwable $e)
-    {
-      $this->log->exception($e);
-      $this->finit();
-      return false;
-    }
-    return true;
+    $this->pool = $this['webhook']
+      ? BotApiHook::construct($this)
+      : BotApiPoll::construct($this);
+    return ($this->pool !== null);
   }
   # }}}
   function send(# {{{
@@ -1301,74 +1463,44 @@ class BotApi extends BotConfigAccess # {{{
     string  $token = ''
   ):object|bool
   {
-    static $FILE_METHOD = [
-      'sendPhoto'     => 'photo',
-      'sendAudio'     => 'audio',
-      'sendDocument'  => 'document',
-      'sendVideo'     => 'video',
-      'sendAnimation' => 'animation',
-      'sendVoice'     => 'voice',
-      'sendVideoNote' => 'video_note',
-    ];
     try
     {
       # determine file attachment
       if ($file !== null) {
         $req[$file->postname] = $file;
       }
-      elseif (isset($FILE_METHOD[$method]) &&
-              isset($req[$a = $FILE_METHOD[$method]]) &&
+      elseif (isset(self::METHOD_FILE[$method]) &&
+              isset($req[$a = self::METHOD_FILE[$method]]) &&
               $req[$a] instanceof BotApiFile)
       {
         $file = $req[$a];
       }
-      # determine token
-      $token || ($token = $this->bot['token']);
-      # set request parameters
+      # determine url
+      $url = $token ?: $this->bot['token'];
+      $url = $this['baseUrl'].$url.'/'.$method;
+      # compose
       $req = [
-        CURLOPT_URL  => $this['baseUrl'].$token.'/'.$method,
+        CURLOPT_URL  => $url,
         CURLOPT_POST => true,
         CURLOPT_POSTFIELDS => $req,
       ];
       if (!curl_setopt_array($this->curl, $req)) {
-        throw BotError::fail($method, 'failed to setup the request');
+        throw BotError::fail("curl_setopt_array\n".self::error($this->curl));
       }
-      # send
-      if (($x = curl_exec($this->curl)) === false) {
-        throw BotError::fail($method, 'curl failed('.curl_errno($this->curl).'): '.curl_error($this->curl));
+      # send the request
+      if (!($a = curl_exec($this->curl))) {
+        throw BotError::fail("curl_exec\n".self::error($this->curl));
       }
-      # decode response
-      if (!($res = json_decode($x, false))) {
-        throw BotError::fail($method, "incorrect JSON response\n$x");
-      }
-      # check response result
-      if (!($res->ok ?? false) || !isset($res->result))
-      {
-        # compose error message
-        if (isset($res->description))
-        {
-          $x = isset($res->error_code)
-            ? '('.$res->error_code.') '.$res->description
-            : $res->description;
-        }
-        else {
-          $x = "incorrect response\n$x";
-        }
-        throw BotError::fail($method, $x);
-      }
-      # success
-      $res = $res->result;
+      # decode
+      $res = self::decode($a)->result;
     }
     catch (Throwable $e)
     {
-      # failure
       $this->log->exception($e);
       $res = false;
     }
     # delete temporary file
-    if ($file !== null) {
-      $file->destruct();
-    }
+    $file && $file->destruct();
     # complete
     return $res;
   }
@@ -1381,150 +1513,158 @@ class BotApi extends BotConfigAccess # {{{
     ]);
   }
   # }}}
-  function getUpdates(): ?object # {{{
+  function finit(): void # {{{
   {
-    static $PAUSE=0, $FAILS=0;
+    $this->pool && $this->pool->destruct();
+    $this->pool = null;
+  }
+  # }}}
+  function __destruct() # {{{
+  {
+    $this->curl && curl_close($this->curl);
+    $this->curl = null;
+  }
+  # }}}
+}
+# }}}
+class BotApiPoll extends BotConfigAccess # {{{
+{
+  # {{{
+  public
+    $api,$log,$murl,$qry,$req,$gen,
+    $pause = 0,$fails = 0;
+  # }}}
+  static function error(object $murl): string # {{{
+  {
+    return ($e = curl_multi_errno($murl))
+      ? "($e) ".curl_multi_strerror($e)
+      : '';
+  }
+  # }}}
+  static function construct(object $api) # {{{
+  {
     try
     {
-      # initialize
-      if (!$this->murl && !$this->getUpdatesInit()) {
-        throw BotError::fail('failed to initialize');
+      # create instance
+      $I = new self();
+      $I->api = $api;
+      $I->log = $api->log->new('poll');
+      # attach multi-curl instance
+      if (!($I->murl = curl_multi_init()))
+      {
+        throw BotError::fail('curl_multi_init() failed');
       }
+      # attach query and request
+      $I->qry = [
+        'offset'  => 0,
+        'limit'   => $api['limit'],
+        'timeout' => $api['timeout'],
+      ];
+      $I->req = [
+        CURLOPT_URL  => $api['baseUrl'].$api->bot['token'].'/getUpdates',
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => &$I->qry,
+      ];
+    }
+    catch (Throwable $e)
+    {
+      $api->log->exception($e);
+      if (isset($I) && $I->murl) {
+        curl_multi_close($I->murl);
+      }
+      $I = null;
+    }
+    return $I;
+  }
+  # }}}
+  function &get(): ?array # {{{
+  {
+    try
+    {
       # check paused
-      if ($PAUSE)
+      if ($this->pause)
       {
-        if ($PAUSE > time()) {
-          return null;
+        if ($this->pause > time()) {
+          throw BotError::skip();
         }
-        $PAUSE = 0;
+        $this->pause = 0;
       }
-      # perform long polling
-      if ($this->poll && $this->poll->valid()) {
-        $this->poll->send(1);# continue
+      # check generator
+      if ($this->gen && $this->gen->valid()) {
+        $this->gen->send(1);# continue
       }
-      else
-      {
-        # start or re-start
-        $a = $this->query[CURLOPT_POSTFIELDS]['timeout'];
-        $this->poll = $this->getUpdatesPoll($a);
+      else {# start or re-start
+        $this->gen = $this->pull($this->qry['timeout']);
       }
       # check complete
-      if ($this->poll->valid()) {
-        return null;
+      if ($this->gen->valid()) {
+        throw BotError::skip();
       }
       # check failed
-      if ($a = $this->poll->getReturn())
+      if ($a = $this->gen->getReturn())
       {
-        # manage non-critical failure
-        if (!$a->level && ++$FAILS > 1)
+        # manage non-critical error
+        if (!$a->level && ++$this->fails > 1)
         {
-          if (($b = $this['maxFails']) && $FAILS > $b) {
+          if (($b = $this['maxFails']) && $this->fails > $b) {
             $a->push(BotError::fail("too many failures ($b)"));
           }
           else {# set retry delay
-            $PAUSE = time() + $this['pause'];
+            $this->pause = time() + $this['pause'];
           }
         }
         throw $a;
       }
       # transmission successful,
       # clear repeated fails counter
-      if ($FAILS)
+      if ($this->fails)
       {
-        $this->log->info("recovered ($FAILS)");
-        $FAILS = 0;
+        $this->log->info('recovered ('.$this->fails.')');
+        $this->fails = 0;
       }
       # check HTTP response code
-      if (($a = curl_getinfo($this->curl, CURLINFO_RESPONSE_CODE)) === false) {
-        throw BotError::fail('curl_getinfo() failed');
+      $curl = $this->api->curl;
+      if (($b = curl_getinfo($curl, CURLINFO_RESPONSE_CODE)) === false) {
+        throw BotError::stop("curl_getinfo\n".BotApi::error($curl));
       }
-      if ($a !== 200) {
-        throw BotError::fail("unsuccessful HTTP status: $a");
+      if ($b !== 200) {
+        throw BotError::stop("unsuccessful HTTP status: $b");
       }
       # get response text
-      if (!($a = curl_multi_getcontent($this->curl))) {
-        return null;
+      if (!($c = curl_multi_getcontent($curl))) {
+        throw BotError::skip();# empty
       }
       # decode
-      if (($x = json_decode($a, false)) === null &&
-          ($x = json_last_error()) !== JSON_ERROR_NONE)
-      {
-        throw BotError::fail("json_decode[$x]: ".json_last_error_msg()."\n█{$a}█\n");
-      }
-      # validate response and check its status
-      if (!is_object($x) || !isset($x->ok)) {
-        throw BotError::fail("incorrect response\n█{$a}█\n");
-      }
-      if (!$x->ok) {
-        throw BotError::fail(($x->description ?? "unsuccessful response"));
-      }
-      if (!isset($x->result) || !is_array($x->result)) {
-        throw BotError::fail("incorrect response\n█{$a}█\n");
-      }
-      # shift next query offset
-      if (~($a = count($x->result) - 1)) {
-        $this->query[CURLOPT_POSTFIELDS]['offset'] = 1 + $x->result[$a]->update_id;
+      $res = BotApi::decode($c)->result;
+      # shift to the next offset
+      if ($b = count($res)) {
+        $this->qry['offset'] = 1 + $res[$b - 1]->update_id;
       }
     }
     catch (Throwable $e)
     {
-      $this->log->exception($e);
-      $x = BotError::from($e);
+      if ($this->log->exception($e)) {
+        throw BotError::skip();
+      }
+      $res = null;
     }
-    return $x;
+    return $res;
   }
   # }}}
-  function getUpdatesInit(): bool # {{{
-  {
-    try
-    {
-      # create multi-curl instance
-      if (!($this->murl = curl_multi_init())) {
-        throw BotError::fail('curl_multi_init() failed');
-      }
-      # create query
-      $this->query = [
-        CURLOPT_URL  => $this['baseUrl'].$this->bot['token'].'/getUpdates',
-        CURLOPT_POST => true,
-        CURLOPT_POSTFIELDS => [
-          'offset'  => 0,
-          'limit'   => $this['limit'],
-          'timeout' => $this['timeout'],
-        ],
-      ];
-    }
-    catch (Throwable $e)
-    {
-      # report
-      $this->log->exception($e);
-      # cleanup
-      if ($this->murl)
-      {
-        curl_multi_close($this->murl);
-        $this->murl = null;
-      }
-      return false;
-    }
-    return true;
-  }
-  # }}}
-  function getUpdatesPoll(int $timeout, float $wait = 0): Generator # {{{
+  function pull(int $timeout): Generator # {{{
   {
     try
     {
       # prepare
       $error   = null;
       $started = 0;
-      # set query
-      if (!curl_setopt_array($this->curl, $this->query))
-      {
-        throw BotError::fail('curl_setopt_array() failed'.
-          (curl_errno($this->curl) ? ': '.curl_error($this->curl) : '')
-        );
+      $api     = $this->api;
+      # initialize
+      if (!curl_setopt_array($api->curl, $this->req)) {
+        throw BotError::stop("curl_setopt_array\n".$api::error($api->curl));
       }
-      # attach handles
-      if ($a = curl_multi_add_handle($this->murl, $this->curl)) {
-        throw BotError::fail('curl_multi_add_handle() failed: '.curl_multi_strerror($a));
+      if ($a = curl_multi_add_handle($this->murl, $api->curl)) {
+        throw BotError::stop("curl_multi_add_handle\n".curl_multi_strerror($a));
       }
       # start polling
       $started = time();
@@ -1533,7 +1673,7 @@ class BotApi extends BotConfigAccess # {{{
       {
         # execute request
         if ($a = curl_multi_exec($this->murl, $running)) {
-          throw BotError::fail("curl_multi_exec[$a]: ".curl_multi_strerror($a));
+          throw BotError::stop("curl_multi_exec\n".curl_multi_strerror($a));
         }
         # check finished
         if (!$running) {
@@ -1542,78 +1682,88 @@ class BotApi extends BotConfigAccess # {{{
         # wait for activity
         while (!$a)
         {
-          if (($a = curl_multi_select($this->murl, $wait)) < 0)
+          # check response
+          if (($a = curl_multi_select($this->murl, 0)) < 0)
           {
-            throw BotError::fail(
-              ($a = curl_multi_errno($this->murl))
-                ? "curl_multi_select[$a]: ".curl_multi_strerror($a)
-                : 'system select failed'
-            );
+            $b = self::error($this->murl) ?: 'system select failed';
+            throw BotError::stop("curl_multi_select\n$b");
           }
-          # check response timeout
-          if ($timeout && (time() - $started > $timeout)) {
-            throw BotError::warn("response timed out ($timeout)");
+          # check timeout
+          if (time() - $started > $timeout) {
+            throw BotError::warn("request timed out ($timeout)");
           }
-          # ask for continuation
+          # postpone until continuation
           if (!yield) {
             throw BotError::skip();
           }
         }
       }
       # check transfer status
-      if (!($a = curl_multi_info_read($this->murl))) {
-        throw BotError::fail('curl_multi_info_read() failed');
+      if (!($c = curl_multi_info_read($this->murl))) {
+        throw BotError::stop("curl_multi_info_read\n".self::error($this->murl));
       }
-      if ($a = $a['result']) {
+      if ($a = $c['result']) {
         throw BotError::warn('transfer failed: '.curl_strerror($a));
       }
     }
-    catch (Throwable $error)
-    {}
-    # detach handles
-    if ($started && ($a = curl_multi_remove_handle($this->murl, $this->curl)))
+    catch (Throwable $error) {
+      $error = BotError::from($error);
+    }
+    # finalize
+    if ($started && ($a = curl_multi_remove_handle($this->murl, $api->curl)))
     {
-      $a = BotError::fail("curl_multi_remove_handle[$a]: ".curl_multi_strerror($a));
-      $error = $error ? $error->push($a) : $a;
+      $b = "curl_multi_remove_handle\n".curl_multi_strerror($a);
+      $error = $error
+        ? $error->push(BotError::stop($b))
+        : BotError::stop($b);
     }
     # complete
     return $error;
   }
   # }}}
-  function getUpdatesFinit(): void # {{{
+  function destruct(): void # {{{
   {
-    if ($this->murl)
+    # gracefully terminate polling
+    if ($this->gen)
     {
-      # gracefully terminate polling
-      if ($this->poll)
+      # stop current pull
+      $this->gen->valid() &&
+      $this->gen->send(0);
+      # check current offset is set
+      if (($a = &$this->qry)['offset'])
       {
-        # complete poll if running
-        $this->poll->valid() &&
-        $this->poll->send(0);
-        # save the last offset at remote (if it was changed)
-        if (($a = &$this->query[CURLOPT_POSTFIELDS])['offset'])
-        {
-          $a['limit']   = 1;
-          $a['timeout'] = 0;
-          curl_setopt_array($this->curl, $this->query) &&
-          curl_exec($this->curl);
-        }
-        unset($a);
+        # to confirm handled updates
+        # set simplified parameters
+        $a['limit']   = 1;
+        $a['timeout'] = 0;
+        # update in the response (if any) is discarded,
+        # it will be retrived at the next polling request
+        curl_setopt_array($b = $this->api->curl, $this->req) &&
+        curl_exec($b);
       }
-      # cleanup
-      curl_multi_close($this->murl);
-      $this->murl = $this->query = $this->poll = null;
     }
+    # complete
+    curl_multi_close($this->murl);
   }
   # }}}
-  function finit(): void # {{{
+}
+# }}}
+class BotApiHook extends BotConfigAccess # {{{
+{
+  static function construct(object $api) # {{{
   {
-    $this->getUpdatesFinit();
-    if ($this->curl)
+    try
     {
-      curl_close($this->curl);
-      $this->curl = null;
+      # create instance
+      $I = new self();
+      $I->api = $api;
+      $I->log = $api->log->new('hook');
     }
+    catch (Throwable $e)
+    {
+      $I = null;
+    }
+    return $I;
   }
   # }}}
 }
@@ -2070,14 +2220,21 @@ class BotProcess extends BotConfigAccess # {{{
 {
   # {{{
   const
-    PROC_UUID = '22c4408d490143b5b29f0640755327db',
-    BUF_UUID  = 'c25de777e80d49f69b6b7b57091d70d5',
-    BUF_SIZE  = 200,
-    TIMEOUT   = 15000;# ms, response timeout
+    PROC_UUID       = '22c4408d490143b5b29f0640755327db',
+    BUF_UUID        = 'c25de777e80d49f69b6b7b57091d70d5',
+    BUF_SIZE        = 200,
+    TIMEOUT         = 15000,# ms, response timeout
+    EXP_PIDFILE     = '/^bot([-0-9]+)\\.pid$/',
+    EXIT_CLEAN      = 0,
+    EXIT_DIRTY      = 1,
+    EXIT_UNEXPECTED = 2,
+    EXIT_RESTART    = 100,
+    EXIT_SIGINT     = 101,
+    EXIT_SIGTERM    = 102;
   public
     $log,$active,$file,$syncbuf,
     $started = false,$map = [],
-    $delay = 200000,$exitcode = 1;
+    $delay = 200000,$exitcode = self::EXIT_DIRTY;
   # }}}
   static function construct(object $bot): object # {{{
   {
@@ -2127,15 +2284,15 @@ class BotProcess extends BotConfigAccess # {{{
       if (!($this->started = $this->active->fire())) {
         throw BotError::fail('failed to fire');
       }
-      # create pidfile for bot or console process
+      # create pidfile (bot or console)
       if (!$this->bot->tid &&
           file_put_contents($this->file, $this->bot->pid) === false)
       {
         throw BotError::fail($this->file);
       }
-      # start children and set clean
+      # start children
       $this->startChildren();
-      $this->exitcode = 0;
+      $this->exitcode = self::EXIT_UNEXPECTED;
     }
     catch (Throwable $e)
     {
@@ -2153,13 +2310,34 @@ class BotProcess extends BotConfigAccess # {{{
   function signal(bool $interrupt): void # {{{
   {}
   # }}}
+  function check(): bool # {{{
+  {
+    # check children
+    foreach ($this->map as $id => $child)
+    {
+      if (!$child->active->wait(0))
+      {
+        $child->log->warn('unexpected deactivation');
+        unset($this->map[$id]);
+      }
+    }
+    # check self
+    if (!$this->active->wait(0) || !file_exists($this->file)) {
+      throw BotError::stop('forced deactivation');
+    }
+    # flush console
+    $this->bot->console->flush();
+    # handle commands
+    return $this->command();
+  }
+  # }}}
   function command(): bool # {{{
   {
     # read command
     if (!strlen($a = $this->syncbuf->read())) {
       return true;
     }
-    # operate
+    # reply
     $this->log->infoInput('command', $a);
     switch ($a) {
     case 'stop':
@@ -2171,29 +2349,25 @@ class BotProcess extends BotConfigAccess # {{{
         ? 'task:'.$bot->tid
         : $bot['name'];
       $a = $bot->pid.':'.$a;
-      # reply
+      # send answer
       $this->syncbuf->write($a);
       break;
     }
     return true;
   }
   # }}}
-  function check(): bool # {{{
+  function busy(): void # {{{
   {
-    # check child processes
-    foreach ($this->map as $id => $child)
-    {
-      if (!$child->active->wait(0)) {
-        unset($this->map[$id]);
-      }
-    }
-    # check self
-    return ($this->active->wait(0) && file_exists($this->file));
+    # reset delay
+    # ...
   }
   # }}}
-  function tick(): void # {{{
+  function wait(): void # {{{
   {
+    # cooldown
     usleep($this->delay);
+    # increase delay
+    # ...
   }
   # }}}
   function loop(): void # {{{
@@ -2201,39 +2375,29 @@ class BotProcess extends BotConfigAccess # {{{
     try
     {
       # prepare
-      $bot = $this->bot;
-      $api = $this->bot->api;
-      $bot->log->bannerCommands();
-      # start event loop
-      $i = 0;
-      while ($this->check() && $this->command())
+      $this->log->bannerCommands();
+      $bot  = $this->bot;
+      $pool = $bot->api->pool;
+      # work
+      while ($this->check())
       {
-        # work
-        /***
-        if ($a = $api->getUpdates())
-        {
-          if ($a instanceof BotError) {
-            break;
-          }
-          foreach ($a->result as $b) {
-            $bot->update($b);
-          }
+        if ($list = $pool->get()) {
+          $bot->update($list) && $this->busy();
         }
         else {
-          $this->tick();
+          $this->wait();
         }
-        /***/
-        # tests
-        $this->log->info('test #'.strval($i++));
-        #$this->tick();
-        sleep(1);
+      }
+      # complete
+      if ($this->exitcode === self::EXIT_UNEXPECTED) {
+        $this->exitcode = self::EXIT_CLEAN;
       }
     }
     catch (Throwable $e)
     {
       $this->log->exception($e);
       $this->syncbuf->reset();
-      $this->exitcode = 1;
+      $this->exitcode = self::EXIT_DIRTY;
     }
   }
   # }}}
@@ -2269,6 +2433,23 @@ class BotProcess extends BotConfigAccess # {{{
     return null;
   }
   # }}}
+  function &getActive(): array # {{{
+  {
+    $dir = $this->bot->cfg->dirDataRoot;
+    $lst = [];
+    if (($a = scandir($dir, SCANDIR_SORT_NONE)) === false) {
+      throw BotError::fail('scandir', $dir);
+    }
+    foreach ($a as $b)
+    {
+      $c = null;
+      if (preg_match(self::EXP_PIDFILE, $b, $c)) {
+        $lst[] = $c[1];
+      }
+    }
+    return $lst;
+  }
+  # }}}
   function stop(string $id): bool # {{{
   {
     /***
@@ -2301,6 +2482,21 @@ class BotProcess extends BotConfigAccess # {{{
   {
     if ($this->started)
     {
+      # report exit state
+      switch ($this->exitcode) {
+      case self::EXIT_CLEAN:
+      case self::EXIT_SIGINT:
+      case self::EXIT_SIGTERM:
+        $this->log->info('exit', 'clean');
+        break;
+      case self::EXIT_DIRTY:
+        $this->log->error('exit', 'dirty');
+        break;
+      case self::EXIT_UNEXPECTED:
+        $this->log->error('exit', 'unexpected');
+        break;
+      }
+      # terminate
       $this->started = false;
       $this->active->reset();
       if (!$this->bot->tid) {
@@ -2324,7 +2520,8 @@ class BotConsoleProcess extends BotProcess # {{{
   {
     $this->log->infoInput('signal', ($interrupt ? 'Ctrl+C' : 'Ctrl+Break'));
     $this->exitcode = $interrupt
-      ? 101 : 102;
+      ? self::EXIT_SIGINT
+      : self::EXIT_SIGTERM;
   }
   # }}}
   function command(): bool # {{{
@@ -2338,16 +2535,17 @@ class BotConsoleProcess extends BotProcess # {{{
       $this->log->infoInput(__FUNCTION__, $k);
       switch ($k) {
       case 'r':
-        $this->exitcode = 100;
+        $this->exitcode = self::EXIT_RESTART;
         return false;
       case 'q':
-        $this->exitcode = 101;
+        $this->exitcode = self::EXIT_SIGINT;
         return false;
       case 'x':
+        $this->exitcode = self::EXIT_CLEAN;
         return false;
       }
     }
-    return ($this->exitcode === 0);
+    return ($this->exitcode === self::EXIT_UNEXPECTED);
   }
   # }}}
   function loop(): void # {{{
@@ -2355,16 +2553,14 @@ class BotConsoleProcess extends BotProcess # {{{
     try
     {
       $this->log->bannerConsole();
-      while ($this->check() && $this->command())
-      {
-        $this->bot->console->flush();
+      while ($this->check()) {
         usleep(200000);# 200ms
       }
     }
     catch (Throwable $e)
     {
       $this->log->exception($e);
-      $this->exitcode = 1;
+      $this->exitcode = self::EXIT_DIRTY;
     }
   }
   # }}}
@@ -2372,7 +2568,7 @@ class BotConsoleProcess extends BotProcess # {{{
   {
     # get planned and currently running bots
     $a = $this['list'];
-    $b = $this->bot->getActiveIds();
+    $b = $this->getActive();
     # combine both lists
     foreach ($b as $c)
     {
@@ -2397,8 +2593,8 @@ class BotConsoleProcess extends BotProcess # {{{
   {
     # store current list
     $this['list'] = array_keys($this->map);
-    # keep bots running at special quit
-    if ($this->exitcode !== 101) {
+    # keep bots running at interruption, stop otherwise
+    if ($this->exitcode !== self::EXIT_SIGINT) {
       $this->stopChildren();
     }
     # flush remaining logs
@@ -2595,20 +2791,81 @@ class BotProcessFork # {{{
 # request {{{
 abstract class BotRequest extends BotConfigAccess # {{{
 {
-  const PARSE_FIRST = true;
-  final function __construct(
-    public ?object  $bot,
-    public ?object  $data,
-    public ?object  $log  = null,
-    public ?object  $item = null,
-    public string   $func = '',
-    public string   $args = ''
-  ) {}
-  final function response(): bool
+  public $user,$item,$func,$args;
+  static function construct(object $bot, object $update): ?object # {{{
   {
-    return $this->finit($this->init($this->bot->user));
+    while (1)
+    {
+      if ($q = $update->callback_query ?? null)
+      {
+        # {{{
+        if (!isset($q->from)) {
+          break;
+        }
+        if (isset($q->data))
+        {
+          if (!($chat = $q->message->chat ?? null)) {
+            break;
+          }
+          return new BotRequestCallback($q, $q->from, $chat);
+        }
+        if (isset($q->game_short_name))
+        {
+          #return = new BotRequestGame($q, $q->from);
+          break;
+        }
+        break;
+        # }}}
+      }
+      if ($q = $update->message ?? null)
+      {
+        # {{{
+        if (!isset($q->from) || !isset($q->chat)) {
+          break;
+        }
+        return (isset($q->text) && ($q->text[0] === '/'))
+          ? new BotRequestCommand($q, $q->from, $q->chat)
+          : new BotRequestInput($q, $q->from, $q->chat);
+        # }}}
+      }
+      if ($q = $update->my_chat_member ?? null)
+      {
+        # {{{
+        if (!isset($q->from) || !isset($q->chat) || !isset($q->date) ||
+            !isset($q->old_chat_member) || !isset($q->new_chat_member))
+        {
+          break;
+        }
+        return new BotRequestChat($q, $q->from, $q->chat);
+        # }}}
+      }
+      if ($q = $update->inline_query ?? null)
+      {
+        # {{{
+        if (!isset($q->from)) {
+          break;
+        }
+        #return new BotRequestInline($q, $q->from, null);
+        break;
+        # }}}
+      }
+      if ($q = $update->edited_message ?? null)
+      {
+      }
+      $bot->log->warnObject($update, 'update', 'unknown');
+      return null;
+    }
+    $bot->log->errorObject($update, 'update', 'incorrect');
+    return null;
   }
-  final function init(object $user): bool
+  # }}}
+  final function __construct(# {{{
+    public ?object  $data,
+    public ?object  $from,
+    public ?object  $chat
+  ) {}
+  # }}}
+  final function init(object $user): bool # {{{
   {
     $this->log = $user->log->new(class_name($this));
     return (static::PARSE_FIRST
@@ -2616,7 +2873,13 @@ abstract class BotRequest extends BotConfigAccess # {{{
             : ($user->init() && $this->parse())) &&
            $this->reply($this->attach($user));
   }
-  final function attach(object $user): ?object
+  # }}}
+  final function response(): bool # {{{
+  {
+    return $this->finit($this->init($this->bot->user));
+  }
+  # }}}
+  final function attach(object $user): ?object # {{{
   {
     return
       (($item = $this->item) === null ||
@@ -2624,20 +2887,21 @@ abstract class BotRequest extends BotConfigAccess # {{{
       ? $user
       : null;
   }
-  final function finit(bool $ok): bool
+  # }}}
+  final function finit(bool $ok): bool # {{{
   {
     $this->item?->detach($ok);
     $this->bot = $this->data =
     $this->log = $this->item = null;
     return $ok;
   }
+  # }}}
   abstract function parse(): bool;
   abstract function reply(?object $user): bool;
 }
 # }}}
 class BotRequestInput extends BotRequest # {{{
 {
-  const PARSE_FIRST = false;
   function parse(): bool # {{{
   {
     # prepare
@@ -3024,6 +3288,24 @@ class BotRequestChat extends BotRequest # {{{
 # }}}
 # }}}
 # user {{{
+class BotDispatcher # {{{
+{
+  public $users = [];
+  function __construct(public object $bot) # {{{
+  {
+  }
+  # }}}
+  function init(): bool # {{{
+  {
+    return true;
+  }
+  # }}}
+  function finit(): void # {{{
+  {
+  }
+  # }}}
+}
+# }}}
 class BotUser # {{{
 {
   static function construct(# {{{
@@ -6095,24 +6377,6 @@ class BotFormItem extends BotImgItem # {{{
   # }}}
 }
 # }}}
-/***
-* TODO {{{
-* ╔═╗ ⎛     ⎞ ★★☆☆☆
-* ║╬║ ⎜  *  ⎟ ✱✱✱ ✶✶✶ ⨳⨳⨳
-* ╚═╝ ⎝     ⎠ ⟶ ➤ →
-*
-* IPC: through files not standard process pipes (STDIN/OUT/ERR)
-* IPC: standalone console process
-* WebHook: operate through fast-cgi (nginx)
-* stability: masterbot should erase outdated locks of bots that failed for some reason
-* data separation: each user changes its own data until completion
-* test: file_id usage
-* handler parse errors: improve, make it more descriptive
-* compatible update: remove unnecessary refresh in private chat
-* solve: old message callback action does ZAP? or.. REFRESH?!
-* getUpdates: own curl handle
-* }}}
-*/
 class BotTxtItem extends BotItem # {{{
 {
   function render(string $func, string $args): ?object # {{{
@@ -6123,13 +6387,28 @@ class BotTxtItem extends BotItem # {{{
 }
 # }}}
 # }}}
+# TODO {{{
+/***
+* ╔═╗ ⎛     ⎞ ★★☆☆☆
+* ║╬║ ⎜  *  ⎟ ✱✱✱ ✶✶✶ ⨳⨳⨳
+* ╚═╝ ⎝     ⎠ ⟶ ➤ →
+*
+* WebHook: operate through fast-cgi (nginx)
+* stability: masterbot should erase outdated locks of bots that failed for some reason
+* data separation: each user changes its own data until completion
+* test: file_id usage
+* handler parse errors: improve, make it more descriptive
+* compatible update: remove unnecessary refresh in private chat
+* solve: old message callback action does ZAP? or.. REFRESH?!
+* getUpdates: own curl handle?
+*/
+# }}}
 class Bot extends BotConfigAccess {
   # {{{
   const
     MESSAGE_LIFETIME = 48*60*60,
     EXP_USERNAME = '/^[a-z]\w{4,32}$/i',
     EXP_BOTNAME  = '/^[a-z]\w{1,29}bot$/i',
-    EXP_PIDFILE  = '/^bot([-0-9]+)\\.pid$/',
     INIT = [
       'console','cfg','log','api','text','cmd','file','proc'
     ];
@@ -6156,7 +6435,8 @@ class Bot extends BotConfigAccess {
     }
     catch (Throwable $e)
     {
-      fwrite(STDOUT, "\nFATAL\n".BotLog::throwableToString($e));
+      $e = "\n".__METHOD__."\n".BotLog::throwableToString($e);
+      $args ? error_log($e) : fwrite(STDOUT, $e);
       $e = 2;
     }
     exit($e);
@@ -6195,10 +6475,14 @@ class Bot extends BotConfigAccess {
       }
       else
       {
-        #ini_set('log_errors', '0');
         ini_set('display_errors', '1');
         ini_set('display_startup_errors', '1');
       }
+      # any mild error types (warnings/notices/deprecations),
+      # except supressed (@), are rised to exception level
+      set_error_handler(function(int $no, string $msg, string $file, int $line) {
+        throw BotError::rise($no, $msg);
+      });
       # initialize in the right order
       foreach (self::INIT as $k)
       {
@@ -6207,16 +6491,6 @@ class Bot extends BotConfigAccess {
         }
         array_unshift($this->inited, $k);
       }
-      # all errors, except supressed (@) must be handled,
-      # unhandled are thrown as an exception
-      /***
-      set_error_handler(function(int $no, string $msg, string $file, int $line) {
-        if (error_reporting() !== 0) {
-          throw new Exception($msg, $no);
-        }
-        return false;
-      });
-      /***/
       # guard against non-recoverable errors
       register_shutdown_function(
         Closure::fromCallable([$this, 'finit'])
@@ -6231,101 +6505,24 @@ class Bot extends BotConfigAccess {
     return true;
   }
   # }}}
-  function update(object $o): bool # {{{
+  function update(array &$list): bool # {{{
   {
-    # parse update opbject and
-    # construct specific request
-    $q = $u = $c = null;
-    if (isset($o->callback_query))
+    # construct request objects
+    $q = [];
+    foreach ($list as $u)
     {
-      # {{{
-      if (!isset(($q = $o->callback_query)->from))
-      {
-        $this->log->warn('incorrect callback');
-        $this->log->dump($o);
-        return false;
+      $this->log->infoObject($u);
+      if ($u = BotRequest::construct($this, $u)) {
+        $q[] = $u;
       }
-      $u = $q->from;
-      if (isset($q->game_short_name))
-      {
-        #$x = new BotRequestGame(this, $q);
-        return false;
-      }
-      elseif (isset($q->data))
-      {
-        if (!isset($q->message) ||
-            !isset($q->message->chat))
-        {
-          $this->log->warn('incorrect data callback');
-          $this->log->dump($o);
-          return false;
-        }
-        $c = $q->message->chat;
-        $q = new BotRequestCallback($this, $q);
-      }
-      else {
-        return false;
-      }
-      # }}}
     }
-    elseif (isset($o->inline_query))
-    {
-      # {{{
-      if (!isset(($q = $o->inline_query)->from))
-      {
-        $this->log->warn('incorrect inline query');
-        $this->log->dump($o);
-        return false;
-      }
-      $u = $q->from;
-      #$q = new BotRequestInline(this, $q);
-      return false;
-      # }}}
-    }
-    elseif (isset($o->message))
-    {
-      # {{{
-      if (!isset(($q = $o->message)->from) ||
-          !isset($q->chat))
-      {
-        $this->log->warn('incorrect message');
-        $this->log->dump($o);
-        return false;
-      }
-      $u = $q->from;
-      $c = $q->chat;
-      $q = (isset($q->text) && ($q->text[0] === '/'))
-        ? new BotRequestCommand($this, $q)
-        : new BotRequestInput($this, $q);
-      # }}}
-    }
-    elseif (isset($o->my_chat_member))
-    {
-      # {{{
-      if (!isset(($q = $o->my_chat_member)->from) ||
-          !isset($q->chat) || !isset($q->date) ||
-          !isset($q->old_chat_member) ||
-          !isset($q->new_chat_member))
-      {
-        $this->log->warn('incorrect member update');
-        $this->log->dump($o);
-        return false;
-      }
-      $u = $q->from;
-      $c = $q->chat;
-      $q = new BotRequestChat($this, $q);
-      # }}}
-    }
-    elseif (isset($o->edited_message))
-    {
+    if (!count($q)) {
       return false;
     }
-    else
-    {
-      $this->log->warn('unknown update type');
-      $this->log->dump($o);
-      return false;
-    }
+    # group requests by user
+    #$this->log->infoObject($q[0]);
+    # ...
+    /***
     # construct and attach user
     if (!($this->user = BotUser::construct($this, $u, $c))) {
       return false;
@@ -6333,25 +6530,9 @@ class Bot extends BotConfigAccess {
     # reply and detach
     $this->user->destruct($q->response());
     $this->user = null;
+    /***/
     # complete
     return true;
-  }
-  # }}}
-  function &getActiveIds(): array # {{{
-  {
-    $dir = $this->cfg->dirDataRoot;
-    $lst = [];
-    if (($a = scandir($dir, SCANDIR_SORT_NONE)) === false) {
-      throw BotError::fail('scandir', $dir);
-    }
-    foreach ($a as $b)
-    {
-      $c = null;
-      if (preg_match(self::EXP_PIDFILE, $b, $c)) {
-        $lst[] = $c[1];
-      }
-    }
-    return $lst;
   }
   # }}}
   function finit(): void # {{{
@@ -6367,4 +6548,3 @@ class Bot extends BotConfigAccess {
   }
   # }}}
 }
-?>

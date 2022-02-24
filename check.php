@@ -8,7 +8,10 @@ $o = new class {
   function __construct()
   {
     $this->console = $this;
-    $this->log = new BotLog($this, 'check');
+    $this->log     = new BotLog($this, 'check');
+    set_error_handler(function(int $no, string $msg, string $file, int $line) {
+      throw BotError::rise($no, $msg);
+    });
   }
   function write(string $s): void {
     fwrite(STDOUT, $s);
@@ -185,9 +188,6 @@ $o = new class {
     {
       # prepare
       $this->api = new BotApi($this);
-      if (!$this->api->init()) {
-        throw BotError::skip();
-      }
       $this->log->warn('masterbot is not installed');
       $this->log->name = 'install';
       # ask
@@ -215,4 +215,3 @@ $o = new class {
   # }}}
 };
 exit($o->check());
-?>
