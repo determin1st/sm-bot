@@ -10,7 +10,7 @@ $o = new class {
     $this->console = $this;
     $this->log     = new BotLog($this, 'check');
     set_error_handler(function(int $no, string $msg, string $file, int $line) {
-      throw BotError::rise($no, $msg);
+      throw ErrorEx::rise($no, $msg);
     });
   }
   function write(string $s): void {
@@ -25,7 +25,7 @@ $o = new class {
       $a = 'environment';
       $b = 'required: PHP version 8+';
       if (!defined('PHP_VERSION_ID') || PHP_VERSION_ID < 80000) {
-        throw BotError::stop($a, "fail\n$b");
+        throw ErrorEx::stop($a, "fail\n$b");
       }
       $b = 'required extension:';
       if (!function_exists('\\curl_version') ||
@@ -35,7 +35,7 @@ $o = new class {
           $c['version_number'] < 478209 ||
           array_search('https', $c['protocols'], true) === false)
       {
-        throw BotError::stop($a, "fail\n$b cURL");
+        throw ErrorEx::stop($a, "fail\n$b cURL");
       }
       if (!function_exists('\\gd_info') ||
           !($c = gd_info()) ||
@@ -43,40 +43,40 @@ $o = new class {
           !($c['JPEG Support'] ?? false) ||
           !($c['PNG Support'] ?? false))
       {
-        throw BotError::stop($a, "fail\n$b GD");
+        throw ErrorEx::stop($a, "fail\n$b GD");
       }
       if (!class_exists('SyncMutex', false) ||
           !class_exists('SyncEvent', false) ||
           !class_exists('SyncReaderWriter', false) ||
           !class_exists('SyncSharedMemory', false))
       {
-        throw BotError::stop($a, "fail\n$b Sync");
+        throw ErrorEx::stop($a, "fail\n$b Sync");
       }
       if (!class_exists('FFI', false)) {
-        throw BotError::stop($a, "fail\n$b FFI");
+        throw ErrorEx::stop($a, "fail\n$b FFI");
       }
       $this->log->info($a, 'ok');
       # check core objects
       $a = 'configuration';
       if ($b = $this->checkConfig()) {
-        throw BotError::stop($a, "fail\n$b");
+        throw ErrorEx::stop($a, "fail\n$b");
       }
       $this->log->info($a, 'ok');
       $a = 'console';
       if ($b = $this->checkConsole()) {
-        throw BotError::stop($a, "fail\n$b");
+        throw ErrorEx::stop($a, "fail\n$b");
       }
       $this->log->info($a, 'ok');
       $a = 'texts';
       if ($b = $this->checkText()) {
-        throw BotError::stop($a, "fail\n$b");
+        throw ErrorEx::stop($a, "fail\n$b");
       }
       $this->log->info($a, 'ok');
       # check installed
       $a = $this->cfg->dirDataRoot.$this->cfg->data['Bot']['id'];
-      $a = $a.DIRECTORY_SEPARATOR.BotConfig::FILE_BOT_CONFIG;
+      $a = $a.DIRECTORY_SEPARATOR.BotConfig::FILE_BOT;
       if (!file_exists($a) && !$this->install()) {
-        throw BotError::skip();
+        throw ErrorEx::skip();
       }
       $a = 100;
     }
@@ -90,7 +90,7 @@ $o = new class {
   # }}}
   function checkConfig(): string # {{{
   {
-    $a = BotConfig::getIncDir().BotConfig::FILE_CONFIG;
+    $a = BotConfig::getIncDir().BotConfig::FILE_MASTER;
     if (!file_exists($a)) {
       return "file not found: $a";
     }
@@ -195,7 +195,7 @@ $o = new class {
       $a = ucfirst($this->console->choice(10));
       $this->console->write($a."\n");
       if ($a === 'N') {
-        throw BotError::skip();
+        throw ErrorEx::skip();
       }
       # TODO: check filesystem
       #$dir = $this->cfg->dirDataRoot;

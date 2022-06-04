@@ -1,7 +1,7 @@
 <?php
 namespace SM\BotItem;
 use SM\{# {{{
-  BotError, BotConfig, BotText, BotFile, BotCommands
+  ErrorEx, BotConfig, BotText, BotFile, BotCommands
 };
 # }}}
 function start11111111(object $item, string $func, string $args): ?array # {{{
