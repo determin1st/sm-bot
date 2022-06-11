@@ -2303,6 +2303,7 @@ class BotApiFile extends CURLFile # {{{
 # update {{{
 class BotUpdate
 {
+  # TODO: async queue
   public $log,$loadable = true,$queue = [];
   function __construct(public object $bot) # {{{
   {
@@ -2341,7 +2342,7 @@ class BotUpdate
     $done = 0;
     foreach ($this->queue as $id => &$q)
     {
-      if ($q[0]->resp->complete())
+      if ($q[0]->complete())
       {
         if (count($q) === 1) {
           unset($this->queue[$id]);
@@ -2553,7 +2554,7 @@ class BotCommands implements ArrayAccess
         }
       }
       unset($a,$b,$c);
-      # construct item (command)
+      # construct command item
       $node = $this->map[$id] = new $type($this->bot, $node, $parent);
       # construct children (recurse)
       if ($node->items && $this->build($node->items, $node)) {
@@ -3347,7 +3348,7 @@ class Bot extends BotConfigAccess
   public
     $bot,$id,$task,
     $console,$log,$cfg,$api,$update,$text,$cmd,$file,$proc,$inited = [],
-    $users = [],$chats = [],$user,$chat;
+    $users = [],$chats = [],$chat;
   # }}}
   static function start(string $args = ''): never # {{{
   {
@@ -3448,17 +3449,6 @@ class Bot extends BotConfigAccess
     return $this->update->complete();
   }
   # }}}
-  # TODO: request attachment routine
-  function _up(object $req): bool # {{{
-  {
-    # attach
-    $this->user = $req->user;
-    $this->chat = $req->chat;
-    $this->text->lang = $req->chat->lang;
-    # complete
-    return $req->resp->complete();
-  }
-  # }}}
   function finit(): void # {{{
   {
     if ($this->inited)
@@ -3473,7 +3463,7 @@ class Bot extends BotConfigAccess
   # }}}
 }
 # }}}
-# mediators
+# mediator
 # request {{{
 abstract class BotRequest extends BotConfigAccess # {{{
 {
@@ -3560,10 +3550,19 @@ abstract class BotRequest extends BotConfigAccess # {{{
       : $chat->log;
   }
   # }}}
-  final function complete(): int # {{{
+  final function complete(): bool # {{{
   {
-    # substitute promise
-    return ($this->resp = $this->render()) ? 0 : 1;
+    # intertwine
+    $bot = $this->bot;
+    $bot->chat = $chat = $this->chat;
+    $bot->text->lang = $chat->info->lang ?: $this->user->lang;
+    $chat->user = $this->user;
+    # respond
+    if ($this->resp) {
+      return $this->resp->complete() !== 0;
+    }
+    # render response
+    return !($this->resp = $this->render());
   }
   # }}}
   abstract function parse(): bool;
@@ -3868,47 +3867,6 @@ class BotRequestMember extends BotRequest # {{{
 }
 # }}}
 # }}}
-# user {{{
-class BotUser
-{
-  public $name,$username,$lang,$fullname;
-  static function construct(object $bot, object $user): ?object # {{{
-  {
-    try
-    {
-      if (isset($bot->users[$id = strval($user->id)])) {
-        $user = $bot->users[$id];
-      }
-      else
-      {
-        $user = new self($bot, $id, $user);
-        $bot->users[$id] = $user;
-      }
-    }
-    catch (Throwable $e)
-    {
-      $bot->log->exception($e);
-      return null;
-    }
-    return $user;
-  }
-  # }}}
-  function __construct(# {{{
-    public object $bot,
-    public string $id,
-    object $user
-  )
-  {
-    $this->name     = trim($user->first_name);
-    $this->username = $user->username ?? '';
-    $this->lang     = $user->language_code ?? $bot['lang'];
-    $this->fullname = $this->username
-      ? '@'.$this->username
-      : $this->name.'#'.$id;
-  }
-  # }}}
-}
-# }}}
 # chat {{{
 abstract class BotChat # {{{
 {
@@ -3916,7 +3874,7 @@ abstract class BotChat # {{{
   public
     $isUser = false,$isGroup = false,$isChannel = false,
     $name,$username,$fullname,$log,$dir,
-    $time,$info,$view;
+    $time,$info,$view,$user;
   # }}}
   static function construct(# {{{
     object  $bot,
@@ -3995,16 +3953,14 @@ abstract class BotChat # {{{
   # }}}
   function action(object $req): ?object # {{{
   {
-    # get item of interest
-    $req->log->info('chat->action()');
-    return null;
+    # get target item
     if (!($item1 = $req->item)) {
       return null;
     }
     try
     {
       # get current item
-      $item0 = ($node0 = $this->view->nodeOfItem($item1))
+      $item0 = ($node0 = $this->view->getNodeOfItem($item1))
         ? $node0->item : null;
       # handle common navigation
       switch ($req->func) {
@@ -4043,7 +3999,11 @@ abstract class BotChat # {{{
           throw ErrorEx::skip();
         }
       case 2:# create
-        $b = $this->conf[$item1->id]?->node ? 1 : 0;
+        # to determine event type,
+        # check configuration exists
+        $b = $this->conf[$item1->id]?->node
+          ? 1 # open
+          : 0;# init
         if (!$item1->event($b, $req)) {
           throw ErrorEx::skip();
         }
@@ -4598,14 +4558,65 @@ class BotNoChat extends BotChat # {{{
 }
 # }}}
 # }}}
-# service (components)
-# base {{{
+# user {{{
+class BotUser
+{
+  public $name,$username,$fullname,$lang;
+  static function construct(object $bot, object $user): ?object # {{{
+  {
+    try
+    {
+      if (isset($bot->users[$id = strval($user->id)])) {
+        $user = $bot->users[$id];
+      }
+      else
+      {
+        $user = new self($bot, $id, $user);
+        $bot->users[$id] = $user;
+      }
+    }
+    catch (Throwable $e)
+    {
+      $bot->log->exception($e);
+      return null;
+    }
+    return $user;
+  }
+  # }}}
+  function __construct(# {{{
+    public object $bot,
+    public string $id,
+    object $user
+  )
+  {
+    # set names
+    $this->name     = trim($user->first_name);
+    $this->username = $uname = $user->username ?? '';
+    $this->fullname = $uname
+      ? '@'.$uname
+      : $this->name.'#'.$id;
+    # set language
+    if (isset($user->language_code) &&
+        isset($bot->text->texts[$lang = $user->language_code]))
+    {
+      $this->lang = $lang;
+    }
+    else {
+      $this->lang = $bot['lang'];
+    }
+  }
+  # }}}
+}
+# }}}
+# service (core)
+# item {{{
 abstract class BotItem implements ArrayAccess, JsonSerializable # {{{
 {
   # {{{
   public
-    $root,$id,$text,$caps,$items,$exEvent,$exRender,
-    $log,$cfg,$opts,$data;
+    $root,$id,$text,$caps,$opts,$items,
+    $xEvent,$xRender,
+    $log,$chat,$conf,$data;
   # }}}
   function __construct(# {{{
     public object   $bot,
@@ -4618,7 +4629,7 @@ abstract class BotItem implements ArrayAccess, JsonSerializable # {{{
     $this->text = new BotItemText($this);
     $this->caps = new BotItemCaptions($this);
     $this->opts = new BotItemOptions($this);
-    if ($a = $this->opts['data']) {
+    if ($a = $this->opts['data.scope']) {
       $this->data = new BotItemData($this, $a);
     }
     if (isset($skel[$a = 'items'])) {
@@ -4627,10 +4638,10 @@ abstract class BotItem implements ArrayAccess, JsonSerializable # {{{
     # set extra handlers
     $b = '\\'.__CLASS__;
     if (function_exists($a = $b.'on_'.$id)) {
-      $this->exEvent = Closure::bind(Closure::fromCallable($a), $this);
+      $this->xEvent = Closure::bind(Closure::fromCallable($a), $this);
     }
     if (function_exists($a = $b.$id)) {
-      $this->exRender = Closure::bind(Closure::fromCallable($a), $this);
+      $this->xRender = Closure::bind(Closure::fromCallable($a), $this);
     }
   }
   # }}}
@@ -4650,33 +4661,57 @@ abstract class BotItem implements ArrayAccess, JsonSerializable # {{{
   {
     static $EVENT = ['init','open','close','change'];
     # attach
-    $this->log = $req->log;
-    $this->cfg = $req->chat->conf->obtain($this->id);
-    $this->opts->node = $req->chat->opts->obtain($this->id);
+    $this->log  = $req->log;
+    $this->chat = $req->chat;
+    $view = $req->chat->view;
+    $this->opts->node = $view->opts->obtain($this->id);
+    $this->conf = $view->conf->obtain($this->id);
     if ($this->data && !$this->data->init()) {
       return false;
     }
-    # ...
-    switch ($evt) {
+    # invoke default handler
+    $x = match ($evt) {
+      0 => $this->eventOpen($req, true),
+      1 => $this->eventOpen($req, false),
+      2 => $this->eventClose($req),
+      3 => $this->eventChange($req),
+    };
+    if (!$x) {
+      return false;
     }
-    # complete
-    return ($f = $this->exEvent)
-      ? $f($EVENT[$evt], $req->func, $req->args)
+    # invoke custom handler and complete
+    return ($f = $this->xEvent)
+      ? $f($req, $EVENT[$evt])
       : true;
+  }
+  # }}}
+  function eventOpen(object $req, bool $init): bool # {{{
+  {
+    return true;
+  }
+  # }}}
+  function eventClose(object $req): bool # {{{
+  {
+    return true;
+  }
+  # }}}
+  function eventChange(object $req): bool # {{{
+  {
+    return true;
   }
   # }}}
   # [cfg] access {{{
   function offsetExists(mixed $k): bool {
-    return isset($this->cfg[$k]);
+    return isset($this->conf[$k]);
   }
   function offsetGet(mixed $k): mixed {
-    return $this->cfg[$k];
+    return $this->conf[$k];
   }
   function offsetSet(mixed $k, mixed $v): void {
-    $this->cfg[$k] = $v;
+    $this->conf[$k] = $v;
   }
   function offsetUnset(mixed $k): void {
-    $this->cfg[$k] = null;
+    $this->conf[$k] = null;
   }
   # }}}
   function renderMarkup(array &$mkup, ?array $flags = null): string # {{{
@@ -4956,32 +4991,32 @@ class BotItemOptionsGrab implements ArrayAccess # {{{
 # }}}
 class BotItemData implements ArrayAccess # {{{
 {
-  # {{{
-  const
-    PREFIX = '@',
-    SCOPE  = ['global'=>0,'bot'=>1,'chat'=>2,'user'=>3];
-  public
-    $scope,$data;
-  # }}}
+  const PREFIX = '@';
+  public $scope,$node;
   function __construct(public object $item, string $scope) # {{{
   {
-    $this->scope = self::SCOPE[$scope];
+    $this->scope = match ($scope) {
+      'global' => 0,
+      'bot'    => 1,
+      'chat'   => 2,
+    };
   }
   # }}}
   function init(): bool # {{{
   {
     # prepare
-    $bot  = $this->item->bot;
-    $file = self::PREFIX.$this->item->id;
+    $item = $this->item;
+    $bot  = $item->bot;
+    $file = $item->opts['data.name'] ?? self::PREFIX.$this->item->id;
     # determine file path
     switch ($this->scope) {
-    case 0:# any bot
+    case 0:
       $file = $bot->cfg->dirDataRoot.$file;
       break;
-    case 1:# any chat
+    case 1:
       $file = $bot->cfg->dirData.$file;
       break;
-    case 2:# any user
+    case 2:
       $file = $bot->chat->dir.$file;
       break;
     case 3:# user
@@ -5070,42 +5105,6 @@ class BotItemData implements ArrayAccess # {{{
     }
   }
   # }}}
-}
-# }}}
-abstract class BotMessage extends BotConfigAccess implements JsonSerializable # {{{
-{
-  static function construct(object $bot, array &$data): self # {{{
-  {
-    $m = new static($bot, 0, '', $data);
-    $m->init();
-    return $m;
-  }
-  # }}}
-  function __construct(# {{{
-    public object   $bot,
-    public int      $id,
-    public string   $hash,
-    public ?array   &$data = null
-  ) {}
-  # }}}
-  function jsonSerialize(): array # {{{
-  {
-    return [$this::class, $this->id, $this->hash];
-  }
-  # }}}
-  function delete(): bool # {{{
-  {
-    # common operation
-    return $this->bot->api->send('deleteMessage', [
-      'chat_id'    => $this->bot->user->chat->id,
-      'message_id' => $this->id,
-    ]);
-  }
-  # }}}
-  abstract function init(): void;
-  abstract function send(): bool;
-  abstract function edit(object $msg): bool;
-  abstract function zap(): bool;
 }
 # }}}
 class BotItemMessages implements JsonSerializable # {{{
@@ -5229,6 +5228,44 @@ class BotItemMessages implements JsonSerializable # {{{
 }
 # }}}
 # }}}
+# message {{{
+abstract class BotMessage extends BotConfigAccess implements JsonSerializable
+{
+  static function construct(object $bot, array &$data): self # {{{
+  {
+    $m = new static($bot, 0, '', $data);
+    $m->init();
+    return $m;
+  }
+  # }}}
+  function __construct(# {{{
+    public object   $bot,
+    public int      $id,
+    public string   $hash,
+    public ?array   &$data = null
+  ) {}
+  # }}}
+  function jsonSerialize(): array # {{{
+  {
+    return [$this::class, $this->id, $this->hash];
+  }
+  # }}}
+  function delete(): bool # {{{
+  {
+    # common operation
+    return $this->bot->api->send('deleteMessage', [
+      'chat_id'    => $this->bot->user->chat->id,
+      'message_id' => $this->id,
+    ]);
+  }
+  # }}}
+  abstract function init(): void;
+  abstract function send(): bool;
+  abstract function edit(object $msg): bool;
+  abstract function zap(): bool;
+}
+# }}}
+# service (components)
 # img {{{
 class BotImgItem extends BotItem # {{{
 {
@@ -5257,8 +5294,8 @@ class BotImgItem extends BotItem # {{{
   # }}}
   function render(object $req): ?array # {{{
   {
-    # prepare
-    if ($f = $this->exRender)
+    # invoke custom renderer
+    if ($f = $this->xRender)
     {
       if (($msg = $f($req->func, $req->args)) === null) {
         return null;

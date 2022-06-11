@@ -7,7 +7,12 @@
       ['!up'],
     ],
     'text' => [
-      'bots' => 'bots',
+      'en' => [
+        'bots' => 'bot list',
+      ],
+      'ru' => [
+        'bots' => 'список ботов',
+      ],
     ],
     'items' => [
       'bots' => # {{{
