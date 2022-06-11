@@ -2,7 +2,7 @@
 namespace SM;
 # used globals {{{
 use
-  JsonSerializable, ArrayAccess,
+  JsonSerializable, ArrayAccess, Iterator,
   SyncEvent, SyncReaderWriter, SyncSharedMemory,
   Generator, Closure, CURLFile,
   Throwable, Error, Exception;
@@ -12,8 +12,9 @@ use function
   explode,implode,count,reset,next,key,array_unshift,array_keys,
   in_array,array_search,array_reverse,
   strpos,strrpos,strlen,trim,rtrim,strval,uniqid,ucfirst,lcfirst,
-  file_put_contents,file_get_contents,clearstatcache,file_exists,unlink,
-  filemtime,mkdir,scandir,fwrite,fread,fclose,glob,
+  file_put_contents,file_get_contents,clearstatcache,file_exists,
+  unlink,filesize,filemtime,
+  mkdir,scandir,fwrite,fread,fclose,glob,
   curl_init,curl_setopt_array,curl_exec,
   curl_errno,curl_error,curl_strerror,curl_close,
   curl_multi_init,curl_multi_add_handle,curl_multi_exec,curl_multi_select,
@@ -25,7 +26,6 @@ use function
 # }}}
 # helpers
 # functions {{{
-# array
 function array_key(array &$a, int $index): int|string|null # {{{
 {
   reset($a);
@@ -85,7 +85,6 @@ function array_import_new(array &$to, array &$from): void # {{{
   }
 }
 # }}}
-###
 function file_persist(string $file): bool # {{{
 {
   clearstatcache(true, $file);
@@ -125,10 +124,14 @@ function &file_get_json(string $file): ?array # {{{
   return $a;
 }
 # }}}
-function file_set_json(string $file, array|object &$data): bool # {{{
+function file_set_json(string $file, array|object &$data): int # {{{
 {
-  return (($a = json_encode($data, JSON_UNESCAPED_UNICODE)) !== false &&
-          file_put_contents($file, $a) !== false);
+  if (($a = json_encode($data, JSON_UNESCAPED_UNICODE)) === false ||
+      ($b = file_put_contents($file, $a)) === false)
+  {
+    return 0;# json file cant be empty
+  }
+  return $b;
 }
 # }}}
 function file_time(string $file, bool $creat = false): int # {{{
@@ -281,8 +284,9 @@ class ErrorEx extends Error # {{{
   # }}}
 }
 # }}}
-class ArrayNode implements ArrayAccess, JsonSerializable # {{{
+class ArrayNode implements ArrayAccess, Iterator, JsonSerializable # {{{
 {
+  public $i = 0,$count = 0;
   function __construct(# {{{
     public array    $node,
     public ?object  $root   = null,
@@ -291,7 +295,7 @@ class ArrayNode implements ArrayAccess, JsonSerializable # {{{
     public int      $depth  = 0
   )
   {
-    $this->_restruct();
+    $this->restruct($limit);
   }
   # }}}
   function __debugInfo(): array # {{{
@@ -299,9 +303,13 @@ class ArrayNode implements ArrayAccess, JsonSerializable # {{{
     return $this->node;
   }
   # }}}
-  function _restruct(): void # {{{
+  function restruct(int $limit): self # {{{
   {
-    if (($limit = $this->limit - 1) >= 0)
+    if ($this->limit != $limit) {
+      $this->limit = $limit;
+    }
+    if (($this->count = count($this->node)) &&
+        ($limit = $limit - 1) >= 0)
     {
       $depth = $this->depth + 1;
       foreach ($this->node as $k => &$v)
@@ -311,6 +319,7 @@ class ArrayNode implements ArrayAccess, JsonSerializable # {{{
         }
       }
     }
+    return $this;
   }
   # }}}
   # [node] access {{{
@@ -322,16 +331,22 @@ class ArrayNode implements ArrayAccess, JsonSerializable # {{{
   }
   function offsetSet(mixed $k, mixed $v): void
   {
+    $set = isset($this->node[$k]);
     if ($v === null)
     {
-      if (isset($this->node[$k]))
+      if ($set)
       {
+        if ($this->i && $this->i >= $this->indexOf($k)) {
+          $this->i--;# fix iteration index
+        }
+        $this->count--;
         unset($this->node[$k]);
         $this->root?->change($this, $k);
       }
     }
-    elseif (!isset($this->node[$k]) || $v !== $this->node[$k])
+    elseif (!$set || $v !== $this->node[$k])
     {
+      $set || $this->count++;
       $this->node[$k] = (is_array($v) && ($i = $this->limit))
         ? new self($v, $this->root, $i - 1, $this, $this->depth + 1)
         : $v;
@@ -342,9 +357,52 @@ class ArrayNode implements ArrayAccess, JsonSerializable # {{{
     $this->offsetSet($k, null);
   }
   # }}}
+  # [node] iterator {{{
+  function rewind(): void
+  {
+    $this->i = 0;
+    reset($this->node);
+  }
+  function valid(): bool {
+    return $this->i < $this->count;
+  }
+  function current(): mixed {
+    return current($this->node);
+  }
+  function key(): mixed {
+    return key($this->node);
+  }
+  function next(): void
+  {
+    $this->i++;
+    next($this->node);
+  }
+  # }}}
   function jsonSerialize(): array # {{{
   {
     return $this->node;
+  }
+  # }}}
+  function indexOf(string $k): int # {{{
+  {
+    # prepare
+    if (($c = $this->count) === 0) {
+      return -1;
+    }
+    $a = &$this->node;
+    $i = 0;
+    # search key index
+    reset($a);
+    while ($k !== strval(key($a))) {
+      $i++; next($a);
+    }
+    # restore pointer
+    $j = $i;
+    while ($j--) {
+      prev($a);
+    }
+    # complete
+    return $i;
   }
   # }}}
   function obtain(string $k): ?object # {{{
@@ -355,6 +413,7 @@ class ArrayNode implements ArrayAccess, JsonSerializable # {{{
     if (($limit = $this->limit - 1) >= 0) {
       return null;
     }
+    $this->count++;
     return $this->node[$k] = new self(
       [], $this->root, $limit, $this, $this->depth + 1
     );
@@ -379,7 +438,7 @@ class ArrayNode implements ArrayAccess, JsonSerializable # {{{
   function set(array &$node): void # {{{
   {
     $this->node = $node;
-    $this->_restruct();
+    $this->restruct($this->limit);
     $this->root?->change($this, $k);
   }
   # }}}
@@ -654,19 +713,24 @@ class PromiseAll extends PromiseOne # {{{
 {
   function complete(): int # {{{
   {
+    # check already complete
     if ($this->status) {
       return $this->status;
     }
+    # prepare
+    $q = &$this->queue;
     $i = 0;
-    foreach ($this->queue as $a)
+    # invoke actions
+    foreach ($q as $a)
     {
       if ($a->status || $a()) {
         $i++;
       }
     }
-    if (count($this->queue) === $i)
+    # check complete
+    if (count($q) === $i)
     {
-      foreach ($this->queue as $a)
+      foreach ($q as $a)
       {
         if ($a->status < 0) {
           return $this->status = -1;
@@ -1263,9 +1327,9 @@ class BotConfig # {{{
     DIR_INC       = 'inc',
     DIR_SRC       = 'bots',
     DIR_DATA      = 'data',
-    DIR_USER      = 'users',
-    DIR_GROUP     = 'groups',
-    DIR_CHAN      = 'channels',
+    DIR_USER      = 'user',
+    DIR_GROUP     = 'group',
+    DIR_CHAN      = 'channel',
     FILE_MASTER   = 'config.inc',
     FILE_BOT      = 'config.json',
     FILE_HANDLERS = 'handlers.php',
@@ -1298,8 +1362,8 @@ class BotConfig # {{{
   # }}}
   static function getDataDir(array &$o): string # {{{
   {
-    return isset($o['dataRoot'])
-      ? rtrim($o['dataRoot'], '\\/').DIRECTORY_SEPARATOR
+    return isset($o['dir'])
+      ? rtrim($o['dir'], '\\/').DIRECTORY_SEPARATOR
       : __DIR__.DIRECTORY_SEPARATOR.self::DIR_DATA.DIRECTORY_SEPARATOR;
   }
   # }}}
@@ -1318,21 +1382,19 @@ class BotConfig # {{{
         'lang'          => $o['lang'] ?? 'en',
         'token'         => $o['token'],
         'id'            => $id ?: self::getId($o['token']),
+        'apiUrl'        => $o['url'] ?? 'https://api.telegram.org/bot',
+        'apiPull'       => true,# hook otherwise
         'admins'        => [],
         'name'          => '',
         'canJoinGroups' => false,
         'canReadGroups' => false,
         'isInline'      => false,
       ],
-      'BotApi'     => [
-        'baseUrl'  => $o['baseUrl'] ?? 'https://api.telegram.org/bot',
-        # getUpdates
+      'BotApiPull' => [# getUpdates (long polling)
         'timeout'  => 60,# polling timeout (telegram's max=50)
         'limit'    => 100,# polling results limit (100=max)
         'maxFails' => 0,# max repeated fails until termination (0=unlimited)
         'pause'    => 10,# pause after repeated fails (seconds)
-        # WebHook
-        'webhook'  => false,
       ],
       'BotLog'      => [
         'debug'     => true,# display debug output?
@@ -1373,9 +1435,19 @@ class BotConfig # {{{
     $bot = $this->bot;
     # set data directories
     $this->dirData = $a = $this->dirDataRoot.$bot['id'].DIRECTORY_SEPARATOR;
-    $this->dirUsr  = $a.self::DIR_USER.DIRECTORY_SEPARATOR;
-    $this->dirGrp  = $a.self::DIR_GROUP.DIRECTORY_SEPARATOR;
-    $this->dirChan = $a.self::DIR_CHAN.DIRECTORY_SEPARATOR;
+    $b = [
+      $this->dirUsr  = $a.self::DIR_USER.DIRECTORY_SEPARATOR,
+      $this->dirGrp  = $a.self::DIR_GROUP.DIRECTORY_SEPARATOR,
+      $this->dirChan = $a.self::DIR_CHAN.DIRECTORY_SEPARATOR,
+    ];
+    foreach ($b as $c)
+    {
+      if (!dir_check_make($c))
+      {
+        $bot->log->error($c);
+        return false;
+      }
+    }
     # load bot configuration
     if (!($b = file_get_json($file = $a.self::FILE_BOT)))
     {
@@ -1452,6 +1524,11 @@ class BotConfig # {{{
     return true;
   }
   # }}}
+  function change(object $node, string $k): void # {{{
+  {
+    $this->changed = true;
+  }
+  # }}}
   function sync(): bool # {{{
   {
     if ($this->changed && ($file = $this->file))
@@ -1462,11 +1539,6 @@ class BotConfig # {{{
       $this->changed = false;
     }
     return true;
-  }
-  # }}}
-  function change(object $node, string $k): void # {{{
-  {
-    $this->changed = true;
   }
   # }}}
   function finit(): void # {{{
@@ -1508,7 +1580,7 @@ abstract class BotConfigAccess implements ArrayAccess # {{{
 # }}}
 # }}}
 # api {{{
-class BotApi extends BotConfigAccess # {{{
+class BotApi # {{{
 {
   # {{{
   const
@@ -1545,7 +1617,7 @@ class BotApi extends BotConfigAccess # {{{
       'sendVideoNote' => 'video_note',
     ];
   public
-    $log,$curl,$murl,$acts = [],$gen,$pool;
+    $log,$curl,$actions,$reciever;
   # }}}
   static function cError(object $curl): string # {{{
   {
@@ -1595,45 +1667,45 @@ class BotApi extends BotConfigAccess # {{{
     if (!curl_setopt_array($this->curl, self::CONFIG)) {
       throw ErrorEx::fail("curl_setopt_array\n".self::cError($this->curl));
     }
-    if (!($this->murl = curl_multi_init())) {
-      throw ErrorEx::fail('curl_multi_init');
-    }
   }
   # }}}
   function init(): bool # {{{
   {
-    $this->pool = $this['webhook']
-      ? BotApiHook::construct($this)
-      : BotApiPoll::construct($this);
-    return ($this->pool !== null);
+    $this->actions = new BotApiActions($this);
+    $this->reciever = $this->bot['apiPull']
+      ? new BotApiPull($this) # long polling
+      : new BotApiHook($this);# webhook
+    return
+      $this->actions->init() &&
+      $this->reciever->init();
   }
   # }}}
-  function set(# {{{
-    array   &$q,
-    ?object &$file,
-    string  &$token,
-    string  &$method
+  function setup(# {{{
+    string  $method,
+    array   &$query,
+    ?object &$file = null,
+    string  $token = ''
   ):void
   {
     # handle file attachment
     if ($file) {
-      $q[$file->postname] = $file;# put into query
+      $query[$file->postname] = $file;# put into
     }
     elseif (isset(self::METHOD_FILE[$method]) &&
-            isset($q[$a = self::METHOD_FILE[$method]]) &&
-            $q[$a] instanceof BotApiFile)
+            isset($query[$a = self::METHOD_FILE[$method]]) &&
+            $query[$a] instanceof BotApiFile)
     {
-      $file = $q[$a];# set from query
+      $file = $query[$a];# get from
     }
     # determine token
     if (strlen($token) === 0) {
       $token = $this->bot['token'];
     }
     # compose the request
-    $q = [
-      CURLOPT_URL  => $this['baseUrl'].$token.'/'.$method,
+    $query = [
+      CURLOPT_URL => $this->bot['apiUrl'].$token.'/'.$method,
       CURLOPT_POST => true,
-      CURLOPT_POSTFIELDS => $q,
+      CURLOPT_POSTFIELDS => $query,
     ];
   }
   # }}}
@@ -1648,7 +1720,7 @@ class BotApi extends BotConfigAccess # {{{
     {
       # prepare
       $curl = $this->curl;
-      $this->set($req, $file, $token, $method);
+      $this->setup($method, $req, $file, $token);
       # operate
       if (!curl_setopt_array($curl, $req)) {
         throw ErrorEx::fail("curl_setopt_array\n".self::cError($curl));
@@ -1676,99 +1748,8 @@ class BotApi extends BotConfigAccess # {{{
     string  $token = ''
   ):?object
   {
-    $this->set($req, $file, $token, $method);
-    return ($a = BotApiAction::construct($this, $req, $file))
-      ? ($this->acts[] = $a)
-      : null;
-  }
-  # }}}
-  function actionLoop(): bool # {{{
-  {
-    # check generator
-    if (($gen = $this->gen) && $gen->valid()) {
-      $gen->send(1);# continue
-    }
-    else {# start or restart
-      $this->gen = $gen = $this->actionGen();
-    }
-    # check non-finished or successfull
-    if ($gen->valid() || $gen->getReturn()) {
-      return true;
-    }
-    # failed, cleanup
-    foreach ($this->acts as $a) {
-      $a->destruct();
-    }
-    $this->acts = [];
-    return false;
-  }
-  # }}}
-  function actionGen(): Generator # {{{
-  {
-    try
-    {
-      # prepare
-      $murl  = $this->murl;
-      $count = $running = count($this->acts);
-      # operate
-      while (1)
-      {
-        # execute requests
-        if ($a = curl_multi_exec($murl, $running)) {
-          throw ErrorEx::fail("curl_multi_exec\n".curl_multi_strerror($a));
-        }
-        # check any transfers ready
-        if ($running !== $count) {
-          break;
-        }
-        # wait for activity
-        while (!$a)
-        {
-          # check response
-          if (($a = curl_multi_select($murl, 0)) < 0)
-          {
-            $b = BotApi::mError($murl) ?: 'system select failed';
-            throw ErrorEx::fail("curl_multi_select\n$b");
-          }
-          # postpone until continuation
-          if (!yield) {
-            throw ErrorEx::skip();
-          }
-        }
-        # update as the new handles may be added
-        $count = count($this->acts);
-      }
-      # check transfers
-      while ($c = curl_multi_info_read($murl))
-      {
-        # find and complete the action
-        foreach ($this->acts as $a => $action)
-        {
-          if ($action->curl === $c['handle'])
-          {
-            $running++;# rise back
-            array_splice($this->acts, $a, 1);
-            $action->complete($c['result']);
-            break;
-          }
-        }
-      }
-      # the number of transfers must match,
-      # otherwise, there is an error
-      if ($running !== $count)
-      {
-        $b = ($b = self::mError($murl))
-          ? "curl_multi_info_read\n".$b
-          : 'incomplete transfers remained';
-        throw ErrorEx::fail($b);
-      }
-    }
-    catch (Throwable $e)
-    {
-      $this->log->exception($e);
-      return false;
-    }
-    return true;
+    $this->setup($method, $req, $file, $token);
+    return $this->actions->get($req, $file);
   }
   # }}}
   function deleteMessage(object $msg): bool # {{{
@@ -1779,215 +1760,77 @@ class BotApi extends BotConfigAccess # {{{
     ]);
   }
   # }}}
+  function getChat(string|int $id): ?object # {{{
+  {
+    $x = $this->send('getChat', [
+      'chat_id' => $id
+    ]);
+    return $x ?: null;
+  }
+  # }}}
   function &recieve(): array # {{{
   {
-    # prepare
-    $bot = $this->bot;
-    $res = [];
-    # get updates
-    if (!($a = $this->pool->get())) {
-      return $res;
-    }
-    # create requests
-    foreach ($a as $b)
-    {
-      if ($c = BotRequest::fromUpdate($bot, $b))
-      {
-        if ($c instanceof ErrorEx)
-        {
-          if ($c->level) {
-            $this->log->errorObject($b, 'update', $c->getMsg('incorrect'));
-          }
-          else {
-            $this->log->warnObject($b, 'update', 'unknown');
-          }
-        }
-        else {
-          $res[] = $c;
-        }
-      }
-    }
-    return $res;
+    return $this->reciever->get();
   }
   # }}}
   function finit(): void # {{{
   {
-    $this->pool->destruct();
-    $this->pool = null;
+    $this->reciever->finit();
+    $this->actions->finit();
   }
   # }}}
   function __destruct() # {{{
   {
     curl_close($this->curl);
-    curl_multi_close($this->murl);
   }
   # }}}
 }
 # }}}
-class BotApiAction # {{{
+abstract class BotApiExt extends BotConfigAccess # {{{
 {
-  public $api,$req,$file,$curl,$status = 0,$result;
-  static function construct(object $api, array &$req, ?object $file) # {{{
+  public $bot,$log;
+  final function __construct(public object $api)
   {
-    $I = new self();
-    $I->api  = $api;
-    $I->req  = $req;
-    $I->file = $file;
-    if ($I->init()) {
-      return $I;
-    }
-    $file && $file->destruct();
-    return null;
+    $this->bot = $api->bot;
+    $this->log = $api->log->new(static::LOGNAME);
   }
-  # }}}
+  abstract function init(): bool;
+  abstract function finit(): void;
+}
+# }}}
+class BotApiPull extends BotApiExt # {{{
+{
+  const LOGNAME = 'pull';
+  public $murl,$qry,$req,$gen,$pause = 0,$fails = 0;
   function init(): bool # {{{
   {
     try
     {
-      # create new instance
-      if (!($this->curl = $curl = curl_init())) {
-        throw ErrorEx::fail('curl_init');
+      # attach multi-curl instance
+      if (!($this->murl = curl_multi_init())) {
+        throw ErrorEx::fail('curl_multi_init');
       }
-      # configure
-      if (!curl_setopt_array($curl, BotApi::CONFIG) ||
-          !curl_setopt_array($curl, $this->req))
-      {
-        throw ErrorEx::fail("curl_setopt_array\n".BotApi::cError($curl));
-      }
-      if ($a = curl_multi_add_handle($this->api->murl, $curl)) {
-        throw ErrorEx::fail("curl_multi_add_handle\n".curl_multi_strerror($a));
-      }
+      # configure query
+      $this->req = [
+        'offset'  => 0,
+        'limit'   => $this['limit'],
+        'timeout' => $this['timeout'],
+      ];
+      $this->api->setup('getUpdates', $this->req);
+      $this->qry = &$this->req[CURLOPT_POSTFIELDS];
     }
     catch (Throwable $e)
     {
       $this->api->log->exception($e);
-      $curl && curl_close($curl);
+      if ($this->murl) {
+        curl_multi_close($this->murl);
+      }
       return false;
     }
     return true;
   }
   # }}}
-  function __invoke(): int # {{{
-  {
-    # cycle if not complete
-    if (!$this->status && !$this->api->actionLoop()) {
-      return $this->status = -1;
-    }
-    # check complete
-    if ($a = $this->status)
-    {
-      if ($a === -2 && $this->init()) {
-        return $this->status = 0;# retry
-      }
-      $this->destruct();
-    }
-    return $a;
-  }
-  # }}}
-  function complete(int $error): void # {{{
-  {
-    try
-    {
-      # check failed
-      if ($error)
-      {
-        $msg = "transfer failed\n[$error] ".curl_strerror($error);
-        throw ErrorEx::warn($msg);
-      }
-      # check HTTP response code
-      $curl = $this->curl;
-      if (($error = curl_getinfo($curl, CURLINFO_RESPONSE_CODE)) === false) {
-        throw ErrorEx::stop("curl_getinfo\n".BotApi::cError($curl));
-      }
-      if ($error !== 200) {
-        throw ErrorEx::stop("unsuccessful HTTP status: $error");
-      }
-      # get and decode response text
-      $msg = curl_multi_getcontent($curl);
-      $this->result = ($msg !== null && strlen($msg))
-        ? BotApi::decode($msg)->result
-        : null;
-      # success
-      $this->status = 1;
-    }
-    catch (Throwable $e)
-    {
-      # failure
-      $this->result = null;
-      $this->status = $this->api->log->exception($e)
-        ? -1 # critical
-        : -2;# recoverable
-    }
-    $this->finit();
-  }
-  # }}}
-  function finit(): void # {{{
-  {
-    if ($a = curl_multi_remove_handle($this->api->murl, $this->curl)) {
-      $this->api->log->error("curl_multi_remove_handle\n".curl_multi_strerror($a));
-    }
-    curl_close($this->curl);
-    $this->curl = null;
-  }
-  # }}}
-  function destruct(): void # {{{
-  {
-    $this->curl && $this->finit();
-    if ($this->file)
-    {
-      $this->file->destruct();
-      $this->file = null;
-    }
-    if (!$this->status) {
-      $this->status = -1;
-    }
-  }
-  # }}}
-}
-# }}}
-class BotApiPoll # {{{
-{
-  # {{{
-  public
-    $api,$log,$murl,$qry,$req,$gen,
-    $pause = 0,$fails = 0;
-  # }}}
-  static function construct(object $api) # {{{
-  {
-    try
-    {
-      # create instance
-      $I = new self();
-      $I->api = $api;
-      $I->log = $api->log->new('poll');
-      # attach multi-curl instance
-      if (!($I->murl = curl_multi_init())) {
-        throw ErrorEx::fail('curl_multi_init');
-      }
-      # attach query and request
-      $I->qry = [
-        'offset'  => 0,
-        'limit'   => $api['limit'],
-        'timeout' => $api['timeout'],
-      ];
-      $I->req = [
-        CURLOPT_URL  => $api['baseUrl'].$api->bot['token'].'/getUpdates',
-        CURLOPT_POST => true,
-        CURLOPT_POSTFIELDS => &$I->qry,
-      ];
-    }
-    catch (Throwable $e)
-    {
-      $api->log->exception($e);
-      if (isset($I) && $I->murl) {
-        curl_multi_close($I->murl);
-      }
-      $I = null;
-    }
-    return $I;
-  }
-  # }}}
-  function &get(): ?array # {{{
+  function &get(): array # {{{
   {
     try
     {
@@ -2004,7 +1847,7 @@ class BotApiPoll # {{{
         $this->gen->send(1);# continue
       }
       else {# start or re-start
-        $this->gen = $this->pull($this->qry['timeout']);
+        $this->gen = $this->getGen($this->qry['timeout']);
       }
       # check non-finished
       if ($this->gen->valid()) {
@@ -2056,12 +1899,12 @@ class BotApiPoll # {{{
       if ($this->log->exception($e)) {
         throw ErrorEx::skip();# critical
       }
-      $res = null;
+      $res = [];
     }
     return $res;
   }
   # }}}
-  function pull(int $timeout): Generator # {{{
+  function getGen(int $timeout): Generator # {{{
   {
     try
     {
@@ -2132,7 +1975,7 @@ class BotApiPoll # {{{
     return $error;
   }
   # }}}
-  function destruct(): void # {{{
+  function finit(): void # {{{
   {
     # gracefully terminate polling
     if ($this->gen)
@@ -2159,8 +2002,9 @@ class BotApiPoll # {{{
   # }}}
 }
 # }}}
-class BotApiHook # {{{
+class BotApiHook extends BotApiExt # {{{
 {
+  const LOGNAME = 'hook';
   static function construct(object $api) # {{{
   {
     try
@@ -2175,6 +2019,258 @@ class BotApiHook # {{{
       $I = null;
     }
     return $I;
+  }
+  # }}}
+  function init(): bool # {{{
+  {
+    return true;
+  }
+  # }}}
+  function finit(): void # {{{
+  {
+  }
+  # }}}
+}
+# }}}
+class BotApiActions extends BotApiExt # {{{
+{
+  const LOGNAME = 'action';
+  public $murl,$gen,$acts = [];
+  function init(): bool # {{{
+  {
+    if (!($this->murl = curl_multi_init()))
+    {
+      $this->log->error('curl_multi_init');
+      return false;
+    }
+    return true;
+  }
+  # }}}
+  function get(array &$req, ?object $file = null): ?object # {{{
+  {
+    $a = new BotApiAction($this, $req, $file);
+    if ($a->init()) {
+      return $this->acts[] = $a;
+    }
+    $file && $file->destruct();
+    return null;
+  }
+  # }}}
+  function spin(): bool # {{{
+  {
+    # check generator
+    if (($gen = $this->gen) && $gen->valid()) {
+      $gen->send(1);# continue
+    }
+    else {# start or restart
+      $this->gen = $gen = $this->getGen();
+    }
+    # check non-finished or successfull
+    if ($gen->valid() || $gen->getReturn()) {
+      return true;
+    }
+    # failed
+    $this->stop();
+    return false;
+  }
+  # }}}
+  function getGen(): Generator # {{{
+  {
+    try
+    {
+      # prepare
+      $murl  = $this->murl;
+      $count = $running = count($this->acts);
+      # operate
+      while (1)
+      {
+        # execute requests
+        if ($a = curl_multi_exec($murl, $running)) {
+          throw ErrorEx::fail("curl_multi_exec\n".curl_multi_strerror($a));
+        }
+        # check any transfers ready
+        if ($running !== $count) {
+          break;
+        }
+        # wait for activity
+        while (!$a)
+        {
+          # check response
+          if (($a = curl_multi_select($murl, 0)) < 0)
+          {
+            $b = BotApi::mError($murl) ?: 'system select failed';
+            throw ErrorEx::fail("curl_multi_select\n$b");
+          }
+          # postpone until continuation
+          if (!yield) {
+            throw ErrorEx::skip();
+          }
+        }
+        # update as the new handles may be added
+        $count = count($this->acts);
+      }
+      # check transfers
+      while ($c = curl_multi_info_read($murl))
+      {
+        # find and complete the action
+        foreach ($this->acts as $a => $action)
+        {
+          if ($action->curl === $c['handle'] &&
+              $action->complete($c['result']))
+          {
+            $running++;# rise back
+            array_splice($this->acts, $a, 1);
+            break;
+          }
+        }
+      }
+      # the number of transfers must match,
+      # otherwise, there is an error
+      if ($running !== $count)
+      {
+        $b = ($b = self::mError($murl))
+          ? "curl_multi_info_read\n".$b
+          : 'incomplete transfers remained';
+        throw ErrorEx::fail($b);
+      }
+    }
+    catch (Throwable $e)
+    {
+      $this->log->exception($e);
+      return false;
+    }
+    return true;
+  }
+  # }}}
+  function stop(): void # {{{
+  {
+    if ($this->gen?->valid()) {
+      $this->gen->send(0);# stop
+    }
+    foreach ($this->acts as $a) {
+      $a->destruct();
+    }
+    $this->gen = null;
+    $this->acts = [];
+  }
+  # }}}
+  function finit(): void # {{{
+  {
+    $this->stop();
+    curl_multi_close($this->murl);
+  }
+  # }}}
+}
+# }}}
+class BotApiAction # {{{
+{
+  public $curl,$result,$status = 0;
+  function __construct(# {{{
+    public object   $act,
+    public array    &$req,
+    public ?object  $file
+  ) {}
+  # }}}
+  function init(): bool # {{{
+  {
+    try
+    {
+      # create new instance
+      if (!($this->curl = $curl = curl_init())) {
+        throw ErrorEx::fail('curl_init');
+      }
+      # configure
+      if (!curl_setopt_array($curl, BotApi::CONFIG) ||
+          !curl_setopt_array($curl, $this->req))
+      {
+        throw ErrorEx::fail("curl_setopt_array\n".BotApi::cError($curl));
+      }
+      if ($a = curl_multi_add_handle($this->act->murl, $curl)) {
+        throw ErrorEx::fail("curl_multi_add_handle\n".curl_multi_strerror($a));
+      }
+    }
+    catch (Throwable $e)
+    {
+      $this->act->log->exception($e);
+      $curl && curl_close($curl);
+      return false;
+    }
+    return true;
+  }
+  # }}}
+  function __invoke(): int # {{{
+  {
+    # spin if not complete
+    if (!$this->status && !$this->act->spin()) {
+      return $this->status = -1;
+    }
+    return $this->status;
+  }
+  # }}}
+  function complete(int $x): bool # {{{
+  {
+    try
+    {
+      # check failed (non-zero)
+      if ($x)
+      {
+        $msg = "transfer failed\n[$x] ".curl_strerror($x);
+        throw ErrorEx::warn($msg);
+      }
+      # check HTTP response code
+      $curl = $this->curl;
+      if (($x = curl_getinfo($curl, CURLINFO_RESPONSE_CODE)) === false) {
+        throw ErrorEx::stop("curl_getinfo\n".BotApi::cError($curl));
+      }
+      if ($x !== 200) {
+        throw ErrorEx::stop("unsuccessful HTTP status: $x");
+      }
+      # get and decode response text
+      $msg = curl_multi_getcontent($curl);
+      $this->result = ($msg !== null && strlen($msg))
+        ? BotApi::decode($msg)->result
+        : null;
+      # success
+      $this->status = 1;
+    }
+    catch (Throwable $e)
+    {
+      # failure
+      $this->result = null;
+      if ($this->act->log->exception($e)) {
+        $this->status = -1;# critical
+      }
+    }
+    # complete
+    $this->finit();
+    if ($this->status) {
+      return true;
+    }
+    # retry (recoverable failure)
+    $this->init();
+    return false;
+  }
+  # }}}
+  function finit(): void # {{{
+  {
+    if ($a = curl_multi_remove_handle($this->act->murl, $this->curl)) {
+      $this->act->log->error("curl_multi_remove_handle\n".curl_multi_strerror($a));
+    }
+    curl_close($this->curl);
+    $this->curl = null;
+  }
+  # }}}
+  function destruct(): void # {{{
+  {
+    $this->curl && $this->finit();
+    if ($this->file)
+    {
+      $this->file->destruct();
+      $this->file = null;
+    }
+    if (!$this->status) {
+      $this->status = -1;
+    }
   }
   # }}}
 }
@@ -2203,6 +2299,63 @@ class BotApiFile extends CURLFile # {{{
   }
 }
 # }}}
+# }}}
+# update {{{
+class BotUpdate
+{
+  public $log,$loadable = true,$queue = [];
+  function __construct(public object $bot) # {{{
+  {
+    $this->log = $bot->log->new('update');
+  }
+  # }}}
+  function load(object $upd): bool # {{{
+  {
+    if (!($q = BotRequest::fromUpdate($this->bot, $upd))) {
+      return false;
+    }
+    if ($q instanceof ErrorEx)
+    {
+      if ($q->level) {
+        $this->log->errorObject($upd, $q->getMsg('incorrect'));
+      }
+      else {
+        $this->bot->log->warnObject($upd, 'unknown');
+      }
+      return false;
+    }
+    if (isset($this->queue[$id = $q->chat->id])) {
+      $this->queue[$id][] = $q;
+    }
+    else {
+      $this->queue[$id] = [$q];
+    }
+    return true;
+  }
+  # }}}
+  function complete(): int # {{{
+  {
+    if (!$this->queue) {
+      return 0;
+    }
+    $done = 0;
+    foreach ($this->queue as $id => &$q)
+    {
+      if ($q[0]->resp->complete())
+      {
+        if (count($q) === 1) {
+          unset($this->queue[$id]);
+        }
+        else {
+          array_shift($q);
+        }
+        $done++;
+      }
+    }
+    return $done;
+  }
+  # }}}
+}
 # }}}
 # text {{{
 class BotText implements ArrayAccess
@@ -2387,7 +2540,7 @@ class BotCommands implements ArrayAccess
       $this->bot->text->refine($node[$a]);
       # set secondary languages
       $a = &$node[$a];
-      foreach ($this->bot->text->langs as $b)
+      foreach ($this->bot->text->texts as $b => &$c)
       {
         if ($b === 'en') {
           continue;
@@ -2396,10 +2549,10 @@ class BotCommands implements ArrayAccess
           $a[$b] = $a['en'];# copy primary
         }
         elseif (count($a[$b]) < count($a['en'])) {
-          array_sync_new($a[$b], $a['en']);# fill the gaps
+          array_import_new($a[$b], $a['en']);# fill gaps
         }
       }
-      unset($a,$b);
+      unset($a,$b,$c);
       # construct item (command)
       $node = $this->map[$id] = new $type($this->bot, $node, $parent);
       # construct children (recurse)
@@ -2548,9 +2701,9 @@ class BotFile
   }
   # }}}
 }
-class BotFileData implements ArrayAccess
+class BotFileData implements ArrayAccess, Iterator
 {
-  public $node,$time,$changed;
+  public $node,$time = 0,$changed = 0;
   function __construct(# {{{
     public object $log,
     public string $file,
@@ -2584,6 +2737,23 @@ class BotFileData implements ArrayAccess
     $this->node[$k] = null;
   }
   # }}}
+  # [node] iterator {{{
+  function rewind(): void {
+    $this->node->rewind();
+  }
+  function valid(): bool {
+    return $this->node->valid();
+  }
+  function current(): mixed {
+    return $this->node->current();
+  }
+  function key(): mixed {
+    return $this->node->key();
+  }
+  function next(): void {
+    $this->node->next();
+  }
+  # }}}
   function change(): void # {{{
   {
     $this->changed++;
@@ -2593,7 +2763,7 @@ class BotFileData implements ArrayAccess
   {
     if ($this->changed)
     {
-      if (!file_set_json($this->file, $this->node))
+      if (!($a = file_set_json($this->file, $this->node)))
       {
         $this->log->error('set', $this->file);
         return false;
@@ -2766,7 +2936,7 @@ class BotProcess extends BotConfigAccess # {{{
       # work
       while ($this->check())
       {
-        $bot->spin()
+        $bot->operate()
           ? $this->busy()
           : $this->wait();
       }
@@ -3163,10 +3333,9 @@ class BotProcessFork # {{{
 }
 # }}}
 # }}}
-# TODO: bot {{{
+# bot {{{
 class Bot extends BotConfigAccess
 {
-  # TODO: request attachment routine
   # {{{
   const
     MESSAGE_LIFETIME = 48*60*60,
@@ -3176,10 +3345,9 @@ class Bot extends BotConfigAccess
       'console','cfg','log','api','text','cmd','file','proc'
     ];
   public
-    $bot,$pid,$id,$tid,
-    $console,$log,$cfg,$api,$text,$cmd,$file,$proc,$inited = [],
-    $chats = [],$users = [],$queue = [],
-    $chat,$user;
+    $bot,$id,$task,
+    $console,$log,$cfg,$api,$update,$text,$cmd,$file,$proc,$inited = [],
+    $users = [],$chats = [],$user,$chat;
   # }}}
   static function start(string $args = ''): never # {{{
   {
@@ -3215,6 +3383,7 @@ class Bot extends BotConfigAccess
     $this->log     = new BotLog($this);
     $this->cfg     = new BotConfig($this, $id);
     $this->api     = new BotApi($this);
+    $this->update  = new BotUpdate($this);
     $this->text    = new BotText($this);
     $this->cmd     = new BotCommands($this);
     $this->file    = new BotFile($this);
@@ -3268,54 +3437,26 @@ class Bot extends BotConfigAccess
     return true;
   }
   # }}}
-  function spin(): int # {{{
+  function operate(): int # {{{
   {
-    # load requests into individual queues
-    if (($count = count($this->queue)) < 1000)
+    if ($this->update->loadable)
     {
-      foreach ($this->api->recieve() as $req)
-      {
-        if (isset($this->queue[$id = $req->chat->id])) {
-          $this->queue[$id][] = $req;
-        }
-        else
-        {
-          $this->queue[$id] = [$req];
-          $count++;
-        }
+      foreach ($this->api->recieve() as $upd) {
+        $this->update->load($upd);
       }
     }
-    # work
-    $done = 0;
-    while ($count && $done < 100)
-    {
-      foreach ($this->queue as $id => &$q)
-      {
-        if ($q[0]->complete())
-        {
-          if (count($q) === 1)
-          {
-            unset($this->queue[$id]);
-            $count--;
-          }
-          else {
-            array_shift($q);
-          }
-          $done++;
-        }
-      }
-    }
-    # cleanup
-    # ...
-    # done
-    return $done;
+    return $this->update->complete();
   }
   # }}}
-  function update(object $req): bool # {{{
+  # TODO: request attachment routine
+  function _up(object $req): bool # {{{
   {
+    # attach
     $this->user = $req->user;
     $this->chat = $req->chat;
     $this->text->lang = $req->chat->lang;
+    # complete
+    return $req->resp->complete();
   }
   # }}}
   function finit(): void # {{{
@@ -3332,15 +3473,11 @@ class Bot extends BotConfigAccess
   # }}}
 }
 # }}}
-# processing
+# mediators
 # request {{{
 abstract class BotRequest extends BotConfigAccess # {{{
 {
-  # {{{
-  public
-    $bot,$data,$user,$chat,$log,
-    $item,$func = '',$args = '',$resp;
-  # }}}
+  public $resp,$log,$item,$func = '',$args = '';
   final static function fromUpdate(object $bot, object $upd): ?object # {{{
   {
     if ($o = $upd->callback_query ?? null)
@@ -3399,40 +3536,34 @@ abstract class BotRequest extends BotConfigAccess # {{{
     ?object $chat
   ):?object
   {
-    # construct user and chat
-    if (!($user = BotUser::construct($bot, $user))) {
+    # get user and chat
+    if (!($user = BotUser::construct($bot, $user)) ||
+        !($chat = BotChat::construct($bot, $user, $chat)))
+    {
       return null;
     }
-    $chat = $chat
-      ? BotChat::construct($bot, $chat)
-      : $user->getChat();
-    if (!$chat) {
-      return null;
-    }
-    # create and initialize instance
-    $I = new static();
-    $I->bot  = $bot;
-    $I->data = $data;
-    $I->user = $user;
-    $I->chat = $chat;
-    $I->log  = $chat->isGroup()
-      ? $chat->log->new($user->fullname)
-      : $chat->log;
-    # complete
+    # create new instance
+    $I = new static($bot, $data, $user, $chat);
     return $I->parse() ? $I : null;
   }
   # }}}
-  final function complete(): bool # {{{
+  final function __construct(# {{{
+    public object $bot,
+    public object $data,
+    public object $user,
+    public object $chat
+  )
   {
-    # attach
-    $this->bot->chat = $this->chat;
-    $this->bot->user = $this->user;
-    # reply
-    if ($this->resp) {
-      return ($this->resp->complete() !== 0);
-    }
-    # render response
-    return !($this->resp = $this->render());
+    $this->resp = $this;
+    $this->log  = $chat->isGroup
+      ? $chat->log->new($user->fullname)
+      : $chat->log;
+  }
+  # }}}
+  final function complete(): int # {{{
+  {
+    # substitute promise
+    return ($this->resp = $this->render()) ? 0 : 1;
   }
   # }}}
   abstract function parse(): bool;
@@ -3629,7 +3760,7 @@ class BotRequestCommand extends BotRequest # {{{
     if (($a = strlen($msg->text)) < 2 || $a > self::MAX_LENGTH ||
         !preg_match_all(self::SYNTAX_EXP, $msg->text, $a))
     {
-      if ($chat->isUser())
+      if ($chat->isUser)
       {
         $this->log->warnInput("incorrect", $msg->text);
         return true;
@@ -3641,8 +3772,8 @@ class BotRequestCommand extends BotRequest # {{{
     $func = $a[3][0];
     $args = $a[5][0];
     $name = $a[7][0];
-    # check different bot addressed
-    if ($name && $name !== $bot['name'] && $chat->isGroup()) {
+    # check different bot addressed in a groupchat
+    if ($chat->isGroup && $name && $name !== $bot['name']) {
       return false;# ignore
     }
     # check deep linking (tg://<BOTNAME>?start=<ARGS>)
@@ -3664,7 +3795,7 @@ class BotRequestCommand extends BotRequest # {{{
     # check item exists
     if (!isset($bot->cmd[$item]))
     {
-      if ($chat->isUser())
+      if ($chat->isUser)
       {
         $this->log->warnInput("unknown", $msg->text);
         return true;
@@ -3681,12 +3812,12 @@ class BotRequestCommand extends BotRequest # {{{
   # }}}
   function render(): ?object # {{{
   {
-    $data = $this->data;
+    $a = $this->data;
     return PromiseAll::construct(
       $this->chat->action($this),
       $this->bot->api->action('deleteMessage', [
-        'chat_id'    => $data->chat->id,
-        'message_id' => $data->message_id,
+        'chat_id'    => $a->chat->id,
+        'message_id' => $a->message_id,
       ])
     );
   }
@@ -3737,58 +3868,21 @@ class BotRequestMember extends BotRequest # {{{
 }
 # }}}
 # }}}
-# TODO: chat {{{
-class BotChat # {{{
+# user {{{
+class BotUser
 {
-  # {{{
-  const
-    FILE_CHAT = 'chat.json',
-    FILE_CONF = 'config.json',
-    CHAT_TYPE = [
-      'private'=>0,
-      'group'=>1,'supergroup'=>1,
-      'channel'=>2,
-    ],
-    CHAT_NAME = ['user','group','channel'];
-  public
-    $bot,$time,$id,$type,$name,$username,$log,$dir,
-    $view,$conf,$opts,$lang,$info,$changed = false;
-  # }}}
-  static function construct(object $bot, object $chat) # {{{
+  public $name,$username,$lang,$fullname;
+  static function construct(object $bot, object $user): ?object # {{{
   {
-    # check object already exists
-    if (isset($bot->chats[$id = strval($chat->id)])) {
-      return $bot->chats[$id];
-    }
     try
     {
-      # create new instance
-      $I = new self();
-      $I->bot  = $bot;
-      $I->time = time();
-      $I->id   = $id;
-      $I->type = $type = self::CHAT_TYPE[$chat->type];
-      $I->name = ($type === 0)
-        ? ($chat->first_name ?? '')
-        : ($chat->title ?? '');
-      $I->username = $chat->username ?? '';
-      # set logger
-      $a = $I->username
-        ? '@'.$I->username
-        : $I->name.'#'.$id;
-      $I->log = $bot->log->new(self::CHAT_NAME[$type])->new($a);
-      # set working directory
-      $a = match ($type) {
-        0 => $bot->cfg->dirUsr,
-        1 => $bot->cfg->dirGrp,
-        2 => $bot->cfg->dirChan,
-      };
-      if (!dir_check_make($I->dir = $a.$id.DIRECTORY_SEPARATOR)) {
-        throw ErrorEx::fail($a);
+      if (isset($bot->users[$id = strval($user->id)])) {
+        $user = $bot->users[$id];
       }
-      # initialize
-      if (!$I->init() || !$I->sync()) {
-        throw ErrorEx::skip();
+      else
+      {
+        $user = new self($bot, $id, $user);
+        $bot->users[$id] = $user;
       }
     }
     catch (Throwable $e)
@@ -3796,75 +3890,91 @@ class BotChat # {{{
       $bot->log->exception($e);
       return null;
     }
-    # store and complete
-    return $bot->chats[$id] = $I;
+    return $user;
+  }
+  # }}}
+  function __construct(# {{{
+    public object $bot,
+    public string $id,
+    object $user
+  )
+  {
+    $this->name     = trim($user->first_name);
+    $this->username = $user->username ?? '';
+    $this->lang     = $user->language_code ?? $bot['lang'];
+    $this->fullname = $this->username
+      ? '@'.$this->username
+      : $this->name.'#'.$id;
+  }
+  # }}}
+}
+# }}}
+# chat {{{
+abstract class BotChat # {{{
+{
+  # {{{
+  public
+    $isUser = false,$isGroup = false,$isChannel = false,
+    $name,$username,$fullname,$log,$dir,
+    $time,$info,$view;
+  # }}}
+  static function construct(# {{{
+    object  $bot,
+    object  $user,
+    ?object $chat
+  ):?object
+  {
+    try
+    {
+      # determine id
+      $id = $chat ? strval($chat->id) : '';
+      # check cached
+      if (isset($bot->chats[$id]))
+      {
+        $chat = $bot->chats[$id];
+        throw ErrorEx::skip();
+      }
+      # construct specific instance
+      $chat = match ($chat->type ?? 'none') {
+        'private' => new BotUserChat($bot, $id, $user),
+        'group','supergroup' => new BotGroupChat($bot, $id, $chat),
+        'channel' => new BotChanChat($bot, $id, $chat),
+        'none' => new BotNoChat($bot),
+      };
+      # initialize
+      if (!$chat->init()) {
+        throw ErrorEx::stop();
+      }
+      # store
+      $bot->chats[$id] = $chat;
+    }
+    catch (Throwable $e)
+    {
+      # fail upon error
+      if ($bot->log->exception($e)) {
+        return null;
+      }
+    }
+    # update access timestamp
+    $chat->time = time();
+    # complete
+    return $chat;
   }
   # }}}
   function init(): bool # {{{
   {
-    # get chat configuration
-    $file = $this->dir.self::FILE_CONF;
-    if (($a = file_get_json($file)) === null)
+    # check working directory
+    if (!dir_check_make($a = $this->dir))
     {
-      $this->log->error($file);
+      $this->log->error($a);
       return false;
     }
-    # initialize
-    if ($a)
+    if (!($this->info = BotChatInfo::construct($this)) ||
+        !($this->view = BotChatView::construct($this)))
     {
-      # previous
-      $this->view = new BotChatView($this, $a[0]);
-      $this->conf = new BotChatConfig($this, $a[1]);
-      $this->opts = new BotChatConfig($this, $a[2]);
-      $this->lang = $a[3];
-      $this->info = $a[4];
-    }
-    else
-    {
-      # new
-      $a = ['chat_id' => $this->id];
-      if (!($a = $this->bot->api->send('getChat', $a)))
-      {
-        $this->log->error('failed to get chat details');
-        return false;
-      }
-      $this->log->infoObject($a, 'new chat');
-      $this->view = new BotChatView($this);
-      $this->conf = new BotChatConfig($this);
-      $this->opts = new BotChatConfig($this);
-      $this->lang = $this->bot['lang'];
-      $this->info = (array)$a;
-      $this->changed = true;
+      return false;
     }
     return true;
-  }
-  # }}}
-  function reset(): bool # {{{
-  {
-    $this->changed = false;
-    return $this->init();
-  }
-  # }}}
-  function sync(): bool # {{{
-  {
-    if ($this->changed)
-    {
-      $a = $this->dir.self::FILE_CONF;
-      $b = [
-        $this->view, $this->conf, $this->opts,
-        $this->lang, $this->info
-      ];
-      if (!file_set_json($a, $b)) {
-        return false;
-      }
-      $this->changed = false;
-    }
-    return true;
-  }
-  # }}}
-  function change(): void # {{{
-  {
-    $this->changed = false;
   }
   # }}}
   function update(object $req): ?object # {{{
@@ -3886,6 +3996,8 @@ class BotChat # {{{
   function action(object $req): ?object # {{{
   {
     # get item of interest
+    $req->log->info('chat->action()');
+    return null;
     if (!($item1 = $req->item)) {
       return null;
     }
@@ -3966,51 +4078,148 @@ class BotChat # {{{
     return new BotChatAction($this, $node0, $node1);
   }
   # }}}
-  function isUser(): bool # {{{
+  function finit(): bool # {{{
   {
-    return $this->type === 0;
-  }
-  # }}}
-  function isGroup(): bool # {{{
-  {
-    return $this->type === 1;
-  }
-  # }}}
-  function isChannel(): bool # {{{
-  {
-    return $this->type === 2;
   }
   # }}}
 }
 # }}}
-class BotChatView implements JsonSerializable # {{{
+abstract class BotChatFile implements JsonSerializable # {{{
 {
-  public $queue = [];
-  function __construct(public object $chat, array &$queue = []) # {{{
+  public $changed = 0;
+  static function construct(object $chat): ?object # {{{
   {
-    foreach ($queue as &$a)
+    $I = new static($chat, $chat->dir.static::FILE);
+    return $I->load() ? $I : null;
+  }
+  # }}}
+  function __construct(# {{{
+    public object $chat,
+    public string $file
+  ) {}
+  # }}}
+  function change(): void # {{{
+  {
+    $this->changed++;
+  }
+  # }}}
+  function sync(): bool # {{{
+  {
+    if ($this->changed)
     {
-      if ($item = $chat->bot->cmd[$a[0]])
-      {
-        foreach ($a[1] as &$msg) {
-          $msg = new $msg[0]($chat->bot, $msg[1], $msg[2]);
-        }
-        $this->queue[] = new BotChatNode($chat, $item, $a[1], $a[2], $a[3]);
+      if (!file_set_json($this->file, $this)) {
+        return false;
       }
-      else {
-        $chat->changed = true;
+      $this->changed = 0;
+    }
+    return true;
+  }
+  # }}}
+  abstract function load(): bool;
+  abstract function jsonSerialize(): array;
+}
+# }}}
+class BotChatInfo extends BotChatFile # {{{
+{
+  const FILE = 'chat.json';
+  public $info,$lang;
+  function load(): bool # {{{
+  {
+    try
+    {
+      # prepare
+      $chat = $this->chat;
+      # load data
+      if (($data = file_get_json($this->file)) === null) {
+        throw ErrorEx::stop($this->file);
+      }
+      # check empty
+      if ($data)
+      {
+        # restore
+        $this->info = $data[0];
+        $this->lang = $data[1];
+      }
+      else
+      {
+        # request details
+        if (!($a = $chat->bot->api->getChat($chat->id))) {
+          throw ErrorEx::stop('failed to get chat details');
+        }
+        # initialize
+        $chat->log->infoObject($a, 'new');
+        $this->info = (array)$a;
+        $this->lang = '';
+        $this->changed++;
+        $this->sync();
       }
     }
+    catch (Throwable $e)
+    {
+      $chat->log->exception($e);
+      return false;
+    }
+    return true;
   }
   # }}}
   function jsonSerialize(): array # {{{
   {
-    return $this->queue;
+    return [$this->info, $this->lang];
   }
   # }}}
-  function nodeOfItem(object $item): ?object # {{{
+}
+# }}}
+class BotChatView extends BotChatFile # {{{
+{
+  const FILE = 'view.json';
+  public $view,$conf,$opts;
+  function load(): bool # {{{
   {
-    foreach ($this->queue as $i => $node)
+    try
+    {
+      # prepare
+      $chat = $this->chat;
+      # load data
+      if (($data = file_get_json($this->file)) === null) {
+        throw ErrorEx::stop($this->file);
+      }
+      if (!$data) {
+        $data = [[],[],[]];
+      }
+      # construct nodes
+      $this->changed = 0;
+      foreach ($data[0] as $i => &$a)
+      {
+        if ($item = $chat->bot->cmd[$a[0]]) {
+          $a = new BotItemMessages($item, $a[1], $a[2], $a[3]);
+        }
+        else
+        {
+          unset($data[0][$i]);
+          $this->changed++;
+        }
+      }
+      # complete
+      $this->view = $data[0];
+      $this->conf = new BotChatViewItems($this, $data[1]);
+      $this->opts = new BotChatViewItems($this, $data[2]);
+    }
+    catch (Throwable $e)
+    {
+      $chat->log->exception($e);
+      return false;
+    }
+    return true;
+  }
+  # }}}
+  function jsonSerialize(): array # {{{
+  {
+    return [$this->view, $this->conf, $this->opts];
+  }
+  # }}}
+  function getNodeOfItem(object $item): ?object # {{{
+  {
+    foreach ($this->view as $i => $node)
     {
       if ($node->item === $item ||
           $node->item->root === $item->root)
@@ -4021,11 +4230,11 @@ class BotChatView implements JsonSerializable # {{{
     return null;
   }
   # }}}
-  function nodeOfMessage(int $id): ?object # {{{
+  function getNodeOfMessage(int $id): ?object # {{{
   {
-    foreach ($this->queue as $node)
+    foreach ($this->view as $node)
     {
-      foreach ($node->msg as $msg)
+      foreach ($node->msgs as $msg)
       {
         if ($msg->id === $id) {
           return $node;
@@ -4035,7 +4244,7 @@ class BotChatView implements JsonSerializable # {{{
     return null;
   }
   # }}}
-  ###
+  # TODO
   function queueMessageItem(int $messageId): ?object # {{{
   {
     foreach ($this->queue as $m)
@@ -4122,179 +4331,36 @@ class BotChatView implements JsonSerializable # {{{
   # }}}
 }
 # }}}
-class BotChatConfig extends ArrayNode # {{{
+class BotChatViewItems extends ArrayNode # {{{
 {
-  function __construct(public object $chat, array &$node = [])
+  function __construct(object $view, array &$list)
   {
-    # check and clear data from non-existent items
-    foreach ($node as $id => &$cfg)
+    # filter unknown items
+    foreach ($list as $id => &$cfg)
     {
-      if (!isset($chat->bot->cmd[$id]))
+      if (!isset($view->bot->cmd[$id]))
       {
-        unset($node[$id]);
-        $chat->changed = true;
+        unset($list[$id]);
+        $view->changed++;
       }
     }
-    parent::__construct($node, $chat, 1);
+    parent::__construct($list, $view, 1);
   }
   function jsonSerialize(): array
   {
-    # serializer is called upon saving,
-    # remove empty containers
-    foreach ($this->node as $id => $cfg)
+    # filter empty containers
+    $a = $this->node;
+    foreach ($a as $id => $cfg)
     {
-      if (!$cfg->node) {
-        unset($this->node[$id]);
+      if ($cfg->count === 0) {
+        unset($a[$id]);
       }
     }
-    return $this->node;
+    return $a;
   }
 }
 # }}}
-class BotChatNode implements JsonSerializable # {{{
-{
-  static function load(object $chat, array &$data): ?self # {{{
-  {
-    if (!($item = $chat->bot->cmd[$data[0]])) {
-      return null;
-    }
-    foreach ($data[1] as &$msg) {
-      $msg = new $msg[0]($chat->bot, $msg[1], $msg[2]);
-    }
-    return new self(
-      $chat, $item, $data[1], $data[2], $data[3]
-    );
-  }
-  # }}}
-  static function send(object $chat, object $item): ?self # {{{
-  {
-    # prepare
-    $time = time();
-    # send item messages
-    foreach ($item->msgs as $m)
-    {
-      if (!$m->send()) {
-        return null;
-      }
-    }
-    # construct
-    return new self(
-      $chat, $item, $time, $item->msgs, $chat->user->id
-    );
-  }
-  # }}}
-  function __construct(# {{{
-    public object  $chat,
-    public object  $item,
-    public array   $msg,
-    public string  $owner = '',
-    public int     $time  = 0
-  ) {}
-  # }}}
-  function jsonSerialize(): array # {{{
-  {
-    return [
-      $this->item->id, $this->msg,
-      $this->owner, $this->time
-    ];
-  }
-  # }}}
-  function compatible(object $item): bool # {{{
-  {
-    # check current messages are fresh enough
-    if ((time() - $this->time) > 0.8 * Bot::MESSAGE_LIFETIME) {
-      return false;
-    }
-    # get message counts
-    $a = count($this->list);
-    $b = count($item->msgs);
-    # new message block must be smaller or
-    # equal to the current, check otherwise
-    if ($a < $b) {
-      return false;
-    }
-    # check message types
-    for ($i = 0; $i < $b; ++$i)
-    {
-      if ($this->list[$i]::class !== $item->msgs[$i]::class) {
-        return false;
-      }
-    }
-    return true;
-  }
-  # }}}
-  function edit(object $item): int # {{{
-  {
-    # prepare
-    $a = count($this->list);
-    $b = count($item->msgs);
-    $c = 0;
-    # delete first messages which type doesnt match
-    if ($a > $b)
-    {
-      for ($i = 0; $i < $a; ++$i)
-      {
-        if ($this->list[$i]::class === $item->msgs[$i]::class) {
-          break;
-        }
-        $this->list[$i]->delete() && $c++;
-      }
-      if ($i)
-      {
-        $a = $a - $i;
-        array_splice($this->list, 0, $i);
-      }
-    }
-    # edit messages which hashes differ
-    for ($i = 0; $i < $b; ++$i)
-    {
-      if ($this->list[$i]->hash === $item->msgs[$i]->hash) {
-        continue;
-      }
-      $this->list[$i]->edit($item->msgs[$i]) && $c++;
-    }
-    # delete any extra messages left
-    if ($a > $b)
-    {
-      for ($i = $b; $i < $a; ++$i) {
-        $this->list[$i]->delete() && $c++;
-      }
-      array_splice($this->list, $b);
-    }
-    # replace item
-    $this->item = $item;
-    # complete
-    return $c;
-  }
-  # }}}
-  function delete(): bool # {{{
-  {
-    # telegram allows to delete only "fresh" messages, so,
-    # check item's creation timestamp
-    if (($a = time() - $this->time) >= 0 &&
-        ($a < Bot::MESSAGE_LIFETIME))
-    {
-      # iterate and delete messages
-      foreach ($this->list as $a => $msg)
-      {
-        if (!$msg->delete() && $a === 0) {
-          return false;# interrupt at first failed attempt
-        }
-      }
-    }
-    else
-    {
-      # iterate and zap messages
-      foreach ($this->list as $msg) {
-        $msg->zap();
-      }
-    }
-    # done
-    return true;
-  }
-  # }}}
-}
-# }}}
+###
 class BotChatAction # {{{
 {
   function __construct(# {{{
@@ -4457,37 +4523,82 @@ class BotChatAction # {{{
   # }}}
 }
 # }}}
-class BotUser # {{{
+###
+class BotUserChat extends BotChat # {{{
 {
-  public $bot,$id,$name,$username,$lang,$fullname;
-  static function construct(object $bot, object $from) # {{{
+  public $isUser = true;
+  function __construct(# {{{
+    public object $bot,
+    public string $id,
+    object $user
+  )
   {
-    # check object already exists
-    if (isset($bot->users[$id = strval($from->id)])) {
-      return $bot->users[$id];
-    }
-    # create and initialize instance
-    $I = new self();
-    $I->id       = strval($from->id);
-    $I->name     = trim($from->first_name);
-    $I->username = $from->username ?? '';
-    $I->lang     = $from->language_code ?? $bot['lang'];
-    $I->fullname = $I->username
-      ? '@'.$I->username
-      : $I->name.'#'.$id;
-    # complete
-    return $bot->users[$id] = $I;
+    $this->name     = $user->name;
+    $this->username = $user->username;
+    $this->fullname = $a = $this->username
+      ? '@'.$this->username
+      : $this->name.'#'.$id;
+    $this->log = $bot->log->new('user')->new($a);
+    $this->dir = $bot->cfg->dirUsr.$id.DIRECTORY_SEPARATOR;
   }
   # }}}
-  function getChat(): ?object # {{{
+}
+# }}}
+class BotGroupChat extends BotChat # {{{
+{
+  public $isGroup = true;
+  function __construct(# {{{
+    public object $bot,
+    public string $id,
+    object $chat
+  )
   {
-    return null;
+    $this->name     = $chat->title ?? '';
+    $this->username = $chat->username ?? '';
+    $this->fullname = $a = $this->username
+      ? '@'.$this->username
+      : $this->name.'#'.$id;
+    $this->log = $bot->log->new('group')->new($a);
+    $this->dir = $bot->cfg->dirGrp.$id.DIRECTORY_SEPARATOR;
+  }
+  # }}}
+}
+# }}}
+class BotChanChat extends BotChat # {{{
+{
+  public $isChannel = true;
+  function __construct(# {{{
+    public object $bot,
+    public string $id,
+    object $chat
+  )
+  {
+    $this->name     = $chat->title ?? '';
+    $this->username = $chat->username ?? '';
+    $this->fullname = $a = $this->username
+      ? '@'.$this->username
+      : $this->name.'#'.$id;
+    $this->log = $bot->log->new('channel')->new($a);
+    $this->dir = $bot->cfg->dirChan.$id.DIRECTORY_SEPARATOR;
+  }
+  # }}}
+}
+# }}}
+class BotNoChat extends BotChat # {{{
+{
+  function __construct(public object $bot) # {{{
+  {
+    $this->name     = '';
+    $this->username = '';
+    $this->fullname = '';
+    $this->log = $bot->log->new('inline');
+    $this->dir = '';
   }
   # }}}
 }
 # }}}
 # }}}
-# UI components
+# service (components)
 # base {{{
 abstract class BotItem implements ArrayAccess, JsonSerializable # {{{
 {
@@ -4874,7 +4985,7 @@ class BotItemData implements ArrayAccess # {{{
       $file = $bot->chat->dir.$file;
       break;
     case 3:# user
-      $file = $bot->chat->isUser()
+      $file = $bot->chat->isUser
         ? $bot->chat->dir.$file
         : $bot->chat->dir.$file.'-'.$bot->user->id;
       break;
@@ -4995,6 +5106,126 @@ abstract class BotMessage extends BotConfigAccess implements JsonSerializable # 
   abstract function send(): bool;
   abstract function edit(object $msg): bool;
   abstract function zap(): bool;
+}
+# }}}
+class BotItemMessages implements JsonSerializable # {{{
+{
+  function __construct(# {{{
+    public object  $item,
+    public array   $msgs,
+    public string  $owner = '',
+    public int     $time  = 0
+  )
+  {
+    # construct messages
+    foreach ($msgs as &$m) {
+      $m = new $m[0]($item->bot, $m[1], $m[2]);
+    }
+  }
+  # }}}
+  function jsonSerialize(): array # {{{
+  {
+    return [
+      $this->item->id, $this->msgs,
+      $this->owner, $this->time
+    ];
+  }
+  # }}}
+  ###
+  function compatible(object $item): bool # {{{
+  {
+    # check current messages are fresh enough
+    if ((time() - $this->time) > 0.8 * Bot::MESSAGE_LIFETIME) {
+      return false;
+    }
+    # get message counts
+    $a = count($this->list);
+    $b = count($item->msgs);
+    # new message block must be smaller or
+    # equal to the current, check otherwise
+    if ($a < $b) {
+      return false;
+    }
+    # check message types
+    for ($i = 0; $i < $b; ++$i)
+    {
+      if ($this->list[$i]::class !== $item->msgs[$i]::class) {
+        return false;
+      }
+    }
+    return true;
+  }
+  # }}}
+  function edit(object $item): int # {{{
+  {
+    # prepare
+    $a = count($this->list);
+    $b = count($item->msgs);
+    $c = 0;
+    # delete first messages which type doesnt match
+    if ($a > $b)
+    {
+      for ($i = 0; $i < $a; ++$i)
+      {
+        if ($this->list[$i]::class === $item->msgs[$i]::class) {
+          break;
+        }
+        $this->list[$i]->delete() && $c++;
+      }
+      if ($i)
+      {
+        $a = $a - $i;
+        array_splice($this->list, 0, $i);
+      }
+    }
+    # edit messages which hashes differ
+    for ($i = 0; $i < $b; ++$i)
+    {
+      if ($this->list[$i]->hash === $item->msgs[$i]->hash) {
+        continue;
+      }
+      $this->list[$i]->edit($item->msgs[$i]) && $c++;
+    }
+    # delete any extra messages left
+    if ($a > $b)
+    {
+      for ($i = $b; $i < $a; ++$i) {
+        $this->list[$i]->delete() && $c++;
+      }
+      array_splice($this->list, $b);
+    }
+    # replace item
+    $this->item = $item;
+    # complete
+    return $c;
+  }
+  # }}}
+  function delete(): bool # {{{
+  {
+    # telegram allows to delete only "fresh" messages, so,
+    # check item's creation timestamp
+    if (($a = time() - $this->time) >= 0 &&
+        ($a < Bot::MESSAGE_LIFETIME))
+    {
+      # iterate and delete messages
+      foreach ($this->list as $a => $msg)
+      {
+        if (!$msg->delete() && $a === 0) {
+          return false;# interrupt at first failed attempt
+        }
+      }
+    }
+    else
+    {
+      # iterate and zap messages
+      foreach ($this->list as $msg) {
+        $msg->zap();
+      }
+    }
+    # done
+    return true;
+  }
+  # }}}
 }
 # }}}
 # }}}
@@ -6968,7 +7199,7 @@ class BotFormItem extends BotImgItem
 * ║╬║ ⎜  *  ⎟ ✱✱✱ ✶✶✶ ⨳⨳⨳
 * ╚═╝ ⎝     ⎠ ⟶ ➤ →
 *
-* split chat data: separate queue/config/lang from info
+* abstract api: Polling/Hook reciever
 * filedata access time and sync/cleanup
 * test: handlers source errors
 * test: file_id usage
