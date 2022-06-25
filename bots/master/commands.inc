@@ -14,7 +14,7 @@
         'bots' => 'список ботов',
       ],
     ],
-    'items' => [
+    'children' => [
       'bots' => # {{{
       [
         'type' => 'list',
@@ -41,8 +41,7 @@
           'en' => ['@' => 'bots'],
           'ru' => ['@' => 'боты'],
         ],
-        'items' =>
-        [
+        'children' => [
           'create' => [# {{{
             'type'     => 'form',
             'datafile' => 1,

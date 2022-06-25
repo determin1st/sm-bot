@@ -27,6 +27,10 @@ $o = new class {
       if (!defined('PHP_VERSION_ID') || PHP_VERSION_ID < 80000) {
         throw ErrorEx::stop($a, "fail\n$b");
       }
+      $b = 'required function: ';
+      if (time() <= 0 || ($t = hrtime(true)) === false || $t <= 0) {
+        throw ErrorEx::stop($a, "fail\n$b hrtime()");
+      }
       $b = 'required extension:';
       if (!function_exists('\\curl_version') ||
           !($c = curl_version()) ||

@@ -1,146 +1,7 @@
 <?php declare(strict_types=1);
-namespace SM\BotItem;
-# {{{
-use SM\{
-  ErrorEx,BotConfig,BotText,BotFile,BotCommands
-};
-function getBotInfo(# {{{
-  object  $bot,
-  string  $id,
-  bool    $extra = false
-):?array
-{
-  # determine config file path
-  $dirData = $bot->cfg->dirDataRoot.$id.DIRECTORY_SEPARATOR;
-  $fileCfg = $dirData.BotConfig::FILE_JSON;
-  # read bot configuration
-  if (!($cfg = $bot->file->getJSON($fileCfg))) {
-    return null;
-  }
-  # determine if bot runs from the webhook
-  if ($webhook = $cfg['BotApi']['url'] ?? '') {
-    $isWebhook = $cfg['BotApi']['webhook'] ?? false;
-  }
-  else {
-    $isWebhook = false;
-  }
-  # determine identifier
-  if ($isMaster = ($id === 'master'))
-  {
-    $botId = $cfg['token'];
-    $botId = substr($botId, 0, strpos($botId, ':'));
-  }
-  else {
-    $botId = $id;
-  }
-  # to detect running bot,
-  # check configuration is locked
-  if ($isRunning = file_exists($a = $fileCfg.'.lock'))
-  {
-    # determine startup time
-    $isRunning = ($b = file_time($a, true))
-      ? date('Y-m-d H:i:s', $b) : '⨳';
-    # make sure the slavebot process is running
-    if (!$isMaster && !$isWebhook && !$bot->proc->get($botId))
-    {
-      $bot->log->warn($cfg['name'], "is not running: removing lockfile ($isRunning)");
-      $isRunning = false;
-      unlink($a);
-    }
-  }
-  # determine ascending order index:
-  # master => running => type => name
-  $order  = $isMaster  ? '0' : '1';
-  $order .= $isRunning ? '0' : '1';
-  $order .= $cfg['source'].$cfg['name'];
-  # create base
-  $info = [
-    'id'        => $id,
-    'botId'     => $botId,
-    'name'      => $cfg['name'],
-    'order'     => $order,
-    'type'      => $cfg['source'],
-    'webhook'   => $webhook,
-    'isWebhook' => $isWebhook,
-    'isMaster'  => $isMaster,
-    'isRunning' => $isRunning,
-  ];
-  if (!$extra) {
-    return $info;
-  }
-  # set extra information
-  $info['isError'] = false;
-  $info['message'] = '';
-  # complete
-  return $info;
-}
-# }}}
-function dropCache(object $item, array &$data): bool # {{{
-{
-  # prepare
-  $bot = $item->bot;
-  $dir = $bot->cfg->dirDataRoot.$data['id'].DIRECTORY_SEPARATOR;
-  $cnt = 0;
-  # operate
-  try
-  {
-    # remove texts cache
-    foreach (BotText::FILE_JSON as $a) {
-      file_exists($a = $dir.$a) && unlink($a) && ++$cnt;
-    }
-    # remove files cache
-    foreach (BotFile::FILE_JSON as $a) {
-      file_exists($a = $dir.$a) && unlink($a) && ++$cnt;
-    }
-    # remove command tree cache
-    file_exists($a = $dir.BotCommands::FILE_JSON) &&
-    unlink($a) && ++$cnt;
-    # success
-    $data['message'] = sprintf(
-      $item->text['cacheDropped'], $cnt
-    );
-  }
-  catch (\Throwable $e)
-  {
-    # failure
-    $item->log->exception($e);
-    $data['message'] = $bot->text['op-fail'];
-    $data['isError'] = true;
-    return false;
-  }
-  return true;
-}
-# }}}
-function getBotClassMap(object $item): ?array # {{{
-{
-  # prepare
-  $bot = $item->bot;
-  $dir = $bot->cfg->dirSrcRoot;
-  $map = [];
-  # operate
-  try
-  {
-    if (!($a = scandir($dir))) {
-      throw ErrorEx::fail("scandir($dir) failed");
-    }
-    foreach ($a as $b)
-    {
-      if ($b[0] !== '.' && $b !== 'master') {
-        $map[$b] = $b;
-      }
-    }
-  }
-  catch (\Throwable $e)
-  {
-    # failure
-    $item->log->exception($e);
-    return null;
-  }
-  return $map;
-}
-# }}}
-# }}}
-function startbots(object $item): ?array # {{{
+namespace SM;
+return [
+'startbots' => function (object $item): ?array # {{{
 {
   # prepare
   $bot  = $item->bot;
@@ -162,9 +23,9 @@ function startbots(object $item): ?array # {{{
   }
   # done
   return $data;
-}
+},
 # }}}
-function startbotsbot(object $item, string $func, string $args): ?array # {{{
+'startbotsbot' => function (object $item, string $func, string $args): ?array # {{{
 {
   # prepare
   # determine bot identifier
@@ -224,9 +85,9 @@ function startbotsbot(object $item, string $func, string $args): ?array # {{{
     'text'   => $item->bot->tp->render($item->text['#'], $data),
     'markup' => $mkup,
   ];
-}
+},
 # }}}
-function startbotscreate(# {{{
+'startbotscreate' => function (# {{{
   object  $item,
   string  $func,
   mixed   &$args = null
@@ -343,6 +204,6 @@ function startbotscreate(# {{{
   # }}}
   }
   return null;
-}
+},
 # }}}
-###
+];

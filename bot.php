@@ -1,6 +1,6 @@
 <?php declare(strict_types=1);
 namespace SM;
-# used globals {{{
+# globals {{{
 use
   JsonSerializable, ArrayAccess, Iterator,
   SyncEvent, SyncReaderWriter, SyncSharedMemory,
@@ -22,7 +22,7 @@ use function
   curl_multi_remove_handle,curl_multi_close,
   proc_open,is_resource,proc_get_status,proc_terminate,getmypid,
   ob_start,ob_get_length,ob_flush,ob_end_clean,
-  pack,unpack,time,sleep,usleep;
+  pack,unpack,time,hrtime,sleep,usleep;
 # }}}
 # helpers
 # functions {{{
@@ -286,7 +286,7 @@ class ErrorEx extends Error # {{{
 # }}}
 class ArrayNode implements ArrayAccess, Iterator, JsonSerializable # {{{
 {
-  public $i = 0,$count = 0;
+  public $i = 0,$count = 0,$jsonFilter;
   function __construct(# {{{
     public array    $node,
     public ?object  $root   = null,
@@ -305,9 +305,12 @@ class ArrayNode implements ArrayAccess, Iterator, JsonSerializable # {{{
   # }}}
   function restruct(int $limit): self # {{{
   {
-    if ($this->limit != $limit) {
-      $this->limit = $limit;
+    # check potential
+    if ($limit > $this->limit) {
+      return $this;
     }
+    # update
+    $this->limit = $limit;
     if (($this->count = count($this->node)) &&
         ($limit = $limit - 1) >= 0)
     {
@@ -319,6 +322,17 @@ class ArrayNode implements ArrayAccess, Iterator, JsonSerializable # {{{
         }
       }
     }
+    return $this;
+  }
+  # }}}
+  function refresh(): self # {{{
+  {
+    return $this->restruct($this->limit);
+  }
+  # }}}
+  function change(): self # {{{
+  {
+    $this->root && $this->root->change($this);
     return $this;
   }
   # }}}
@@ -336,12 +350,12 @@ class ArrayNode implements ArrayAccess, Iterator, JsonSerializable # {{{
     {
       if ($set)
       {
-        if ($this->i && $this->i >= $this->indexOf($k)) {
+        if ($this->i && $this->i >= $this->indexOfKey($k)) {
           $this->i--;# fix iteration index
         }
         $this->count--;
         unset($this->node[$k]);
-        $this->root?->change($this, $k);
+        $this->change();
       }
     }
     elseif (!$set || $v !== $this->node[$k])
@@ -350,7 +364,7 @@ class ArrayNode implements ArrayAccess, Iterator, JsonSerializable # {{{
       $this->node[$k] = (is_array($v) && ($i = $this->limit))
         ? new self($v, $this->root, $i - 1, $this, $this->depth + 1)
         : $v;
-      $this->root?->change($this, $k);
+      $this->change();
     }
   }
   function offsetUnset(mixed $k): void {
@@ -380,10 +394,12 @@ class ArrayNode implements ArrayAccess, Iterator, JsonSerializable # {{{
   # }}}
   function jsonSerialize(): array # {{{
   {
-    return $this->node;
+    return ($f = $this->jsonFilter)
+      ? $f($this->node)
+      : $this->node;
   }
   # }}}
-  function indexOf(string $k): int # {{{
+  function indexOfKey(string|int $k): int # {{{
   {
     # prepare
     if (($c = $this->count) === 0) {
@@ -403,6 +419,38 @@ class ArrayNode implements ArrayAccess, Iterator, JsonSerializable # {{{
     }
     # complete
     return $i;
+  }
+  # }}}
+  function indexOfValue(mixed $value): int # {{{
+  {
+    $i = $j = -1;
+    foreach ($this->node as &$v)
+    {
+      $j++;
+      if ($v === $value)
+      {
+        $i = $j;
+        break;
+      }
+    }
+    return $i;
+  }
+  # }}}
+  function deleteValue(mixed $value): bool # {{{
+  {
+    if (($i = $this->indexOfValue($value)) < 0) {
+      return false;
+    }
+    $this->count--;
+    array_splice($this->node, $i, 1);
+    $this->change();
+    return true;
+  }
+  # }}}
+  function deleteValues(mixed $value): int # {{{
+  {
+    for ($count = 0; $this->deleteValue($value); ++$count) {}
+    return $count;
   }
   # }}}
   function obtain(string $k): ?object # {{{
@@ -435,11 +483,39 @@ class ArrayNode implements ArrayAccess, Iterator, JsonSerializable # {{{
     }
   }
   # }}}
-  function set(array &$node): void # {{{
+  function filter(callable $f): bool # {{{
   {
-    $this->node = $node;
-    $this->restruct($this->limit);
-    $this->root?->change($this, $k);
+    $i = 0;
+    $j = $this->count;
+    foreach ($this->node as $k => &$v)
+    {
+      if ($f($k, $v)) {
+        $i++;
+      }
+      else
+      {
+        array_splice($this->node, $i, 1);
+        $j--;
+      }
+    }
+    if ($j < $this->count)
+    {
+      $this->count = $j;
+      $this->change();
+      return true;
+    }
+    return false;
+  }
+  # }}}
+  function set(array $node): void # {{{
+  {
+    $this->setRef($node);
+  }
+  # }}}
+  function setRef(array &$node): void # {{{
+  {
+    $this->node = &$node;
+    $this->refresh()->change();
   }
   # }}}
   function keys(): array # {{{
@@ -667,84 +743,183 @@ class Syncbuf # {{{
   # }}}
 }
 # }}}
-class PromiseOne # {{{
+# promise {{{
+class Promise
 {
-  public $queue = [],$index = 0,$status = 0,$result;
-  static function construct(?object ...$queue): ?object # {{{
+  public $action,$status = 1,$next;
+  function __construct(object $action) # {{{
   {
-    $I = new static();
-    foreach ($queue as $a) {
-      $a && ($I->queue[] = $a);
-    }
-    return count($I->queue) ? $I : null;
+    $this->action = $action;
   }
   # }}}
-  function add(?object $a): bool # {{{
+  static function All(?object ...$a): self # {{{
   {
-    if (!$a || $this->status) {
+    return new self(new PromiseAll($a));
+  }
+  # }}}
+  static function Queue(?object ...$a): self # {{{
+  {
+    return new self(new PromiseQueue($a));
+  }
+  # }}}
+  function complete(): bool # {{{
+  {
+    # check
+    if ($this->status < 1) {
+      return true;
+    }
+    # initialize
+    if ($this->status < 2)
+    {
+      if (!$this->action->init())
+      {
+        $this->status = -1;
+        return true;
+      }
+      $this->status++;
+    }
+    # operate
+    if ($this->action->spin() ||
+        $this->action = $this->action->finit())
+    {
       return false;
     }
-    $this->queue[] = $a;
+    # continue
+    if ($p = $this->next)
+    {
+      $this->action = $p->action;
+      $this->next   = $p->next;
+      $this->status = 1;
+      return false;
+    }
+    # complete
+    $this->status = 0;
     return true;
   }
   # }}}
-  function complete(): int # {{{
+  function join(object $o): self # {{{
   {
-    if ($this->status) {
-      return $this->status;
-    }
-    $a = $this->queue[$this->index];
-    if ($i = $a($this->result))
+    return ($o instanceof self)
+      ? $this->nextPromise($o)
+      : $this->nextPromise(new self($o));
+  }
+  # }}}
+  function nextPromise(object $promise): self # {{{
+  {
+    if ($this->status > 0)
     {
-      $this->result = $a->result;
-      if ($i < 0) {
-        return $this->status = -1;
-      }
-      if (++$this->index === count($this->queue)) {
-        return $this->status = 1;
-      }
+      for ($p = $this; $p->next; $p = $p->next) {}
+      $p->next = $promise;
     }
-    return 0;
+    elseif ($this->status > -1)
+    {
+      $this->action = $promise->action;
+      $this->next   = $promise->next;
+      $this->status = 1;
+    }
+    return $this;
+  }
+  # }}}
+  function isFailed(): bool # {{{
+  {
+    return $this->status < 0;
   }
   # }}}
 }
-# }}}
-class PromiseAll extends PromiseOne # {{{
+abstract class PromiseAction # {{{
 {
-  function complete(): int # {{{
+  function init(): bool {
+    return true;
+  }
+  function spin(): bool {
+    return false;
+  }
+  function finit(): ?object {
+    return null;
+  }
+}
+# }}}
+class PromiseAll extends PromiseAction # {{{
+{
+  public $pending = 0;
+  function __construct(public array &$queue)
   {
-    # check already complete
-    if ($this->status) {
-      return $this->status;
+    while (($i = array_search(null, $queue, true)) !== false) {
+      array_splice($queue, $i, 1);
     }
-    # prepare
-    $q = &$this->queue;
+    $this->pending = count($queue);
+  }
+  function spin(): bool
+  {
+    if (!($j = $this->pending)) {
+      return false;
+    }
     $i = 0;
-    # invoke actions
-    foreach ($q as $a)
+    foreach ($this->queue as &$a)
     {
-      if ($a->status || $a()) {
+      if ($a === null) {
+        $i++;
+      }
+      elseif ($a->complete())
+      {
+        $a = null;
         $i++;
       }
     }
-    # check complete
-    if (count($q) === $i)
+    if ($i < $j)
     {
-      foreach ($q as $a)
+      # cleanup when reasonable
+      if ($i > 100)
       {
-        if ($a->status < 0) {
-          return $this->status = -1;
+        foreach ($this->queue as $a)
+        {
+          if ($a) {
+            $q[] = $a;
+          }
         }
+        $this->queue = $q;
+        $this->pending = count($q);
       }
-      return $this->status = 1;
+      return true;
     }
-    return 0;
+    $this->queue = [];
+    $this->pending = 0;
+    return false;
   }
-  # }}}
+}
+# }}}
+class PromiseQueue extends PromiseAll # {{{
+{
+  public $index = 0;
+  function spin(): bool
+  {
+    if (!($j = &$this->pending)) {
+      return false;
+    }
+    $i = &$this->index;
+    $q = &$this->queue;
+    if (!$q[$i]->complete()) {
+      return true;
+    }
+    if (++$i < $j)
+    {
+      if ($i > 100)
+      {
+        $q = array_slice($q, $i);
+        $j = $j - $i;
+        $i = 0;
+      }
+      return true;
+    }
+    $q = [];
+    $i = $j = 0;
+    return false;
+  }
 }
 # }}}
 # }}}
-# core
+# }}}
+## boundary
 # console {{{
 class BotConsole # {{{
 {
@@ -958,22 +1133,24 @@ class BotLog
     $i = 0;
     $j = count($tree);
     # iterate
-    foreach ($tree as &$a)
+    foreach ($tree as $node)
     {
       # compose indent
       $pad && ($x .= str_repeat(' ', $pad));
-      foreach ($indent as $b) {
-        $x .= $b ? self::fgColor('│ ', $color, 1) : '  ';
+      foreach ($indent as $a) {
+        $x .= $a ? self::fgColor('│ ', $color, 1) : '  ';
       }
       # compose item line
-      $b  = (++$i === $j);
-      $c  = self::fgColor(($b ? '└─' : '├─'), $color, 1);
-      $x .= $c.$a->skel['name']."\n";
+      $a = (++$i === $j);
+      $b = self::fgColor(($a ? '└─' : '├─'), $color, 1);
+      $x = $x.$b.$node->name."\n";
       # recurse
-      if ($a->items)
+      if ($node->children)
       {
-        $indent[] = !$b;
-        $x .= self::parseCommands($a->items, $pad, $color, $indent, $level + 1);
+        $indent[] = !$a;
+        $x .= self::parseCommands(
+          $node->children, $pad, $color, $indent, $level + 1
+        );
         array_pop($indent);
       }
     }
@@ -1111,10 +1288,9 @@ class BotLog
   # }}}
   function __construct(# {{{
     public object   $bot,
-    public string   $name   = '',
+    public string   $name = '',
     public ?object  $parent = null
-  )
-  {
+  ) {
     if (!$name)
     {
       $this->name = $bot->id
@@ -1129,6 +1305,11 @@ class BotLog
       $this->name = $this->bot['name'];
     }
     return true;
+  }
+  # }}}
+  function setName(string $name): void # {{{
+  {
+    $this->name = $name;
   }
   # }}}
   function new(string $name): self # {{{
@@ -1208,8 +1389,11 @@ EOD;
   # }}}
   function bannerCommands(): void # {{{
   {
-    $this->info($this->bot['source'],
-      "\n".self::parseCommands($this->bot->cmd->tree, 0, self::PROMPT[2])
+    $this->info(
+      $this->bot['source'],
+      "\n".self::parseCommands(
+        $this->bot->cmd->tree, 0, self::PROMPT[2]
+      )
     );
   }
   # }}}
@@ -1327,12 +1511,12 @@ class BotConfig # {{{
     DIR_INC       = 'inc',
     DIR_SRC       = 'bots',
     DIR_DATA      = 'data',
-    DIR_USER      = 'user',
-    DIR_GROUP     = 'group',
-    DIR_CHAN      = 'channel',
+    DIR_USER      = 'usr',
+    DIR_GROUP     = 'grp',
+    DIR_CHAN      = 'chan',
     FILE_MASTER   = 'config.inc',
     FILE_BOT      = 'config.json',
-    FILE_HANDLERS = 'handlers.php',
+    FILE_SERVICE  = 'service.php',
     EXP_TOKEN     = '/^\d{8,10}:[a-z0-9_-]{35}$/i';
   public
     $dirInc,$dirSrcRoot,$dirDataRoot,
@@ -1379,11 +1563,11 @@ class BotConfig # {{{
       # {{{
       'Bot'             => [
         'source'        => $o['source'] ?? 'master',
-        'lang'          => $o['lang'] ?? 'en',
         'token'         => $o['token'],
         'id'            => $id ?: self::getId($o['token']),
-        'apiUrl'        => $o['url'] ?? 'https://api.telegram.org/bot',
+        'apiUrl'        => $o['api'] ?? 'https://api.telegram.org/bot',
         'apiPull'       => true,# hook otherwise
+        'lang'          => 'en',
         'admins'        => [],
         'name'          => '',
         'canJoinGroups' => false,
@@ -1395,6 +1579,9 @@ class BotConfig # {{{
         'limit'    => 100,# polling results limit (100=max)
         'maxFails' => 0,# max repeated fails until termination (0=unlimited)
         'pause'    => 10,# pause after repeated fails (seconds)
+      ],
+      'BotFile'   => [
+        'timeout' => 5*60,# sec, unload
       ],
       'BotLog'      => [
         'debug'     => true,# display debug output?
@@ -1458,7 +1645,7 @@ class BotConfig # {{{
     # set source directory and load handlers
     $this->dirSrc = $this->dirSrcRoot.$bot['source'].DIRECTORY_SEPARATOR;
     try {
-      require $this->dirSrc.self::FILE_HANDLERS;
+      require $this->dirSrc.self::FILE_SERVICE;
     }
     catch (Throwable $e)
     {
@@ -1478,7 +1665,7 @@ class BotConfig # {{{
     $src = $o['source'];
     # check source
     $a = $this->dirSrcRoot.$src.DIRECTORY_SEPARATOR;
-    $a = [$a.BotCommands::FILE, $a.self::FILE_HANDLERS];
+    $a = [$a.BotCommands::FILE, $a.self::FILE_SERVICE];
     foreach ($a as $b)
     {
       if (!file_exists($b))
@@ -1578,6 +1765,229 @@ abstract class BotConfigAccess implements ArrayAccess # {{{
   {}
 }
 # }}}
+# }}}
+# file {{{
+class BotFile extends BotConfigAccess
+{
+  # {{{
+  const
+    DIR_FONT = 'font',
+    DIR_IMG  = 'img',
+    EXP_FONT = '{ttf,otf}',
+    EXP_IMG  = '{jpg,jpeg,png}',
+    FILE_ID  = 'file_id.json';
+  public
+    $log,$fids,$img = [],$font = [],$map = [];
+  # }}}
+  function __construct(public object $bot) # {{{
+  {
+    $this->log = $bot->log->new('file');
+  }
+  # }}}
+  function init(): bool # {{{
+  {
+    # load file/id data
+    $this->fids = new BotFileData(
+      $this->log, $this->bot->cfg->dirData.self::FILE_ID
+    );
+    if (!$this->fids->load()) {
+      return false;
+    }
+    # load file maps
+    return $this->loadMaps();
+  }
+  # }}}
+  function loadMaps(): bool # {{{
+  {
+    try
+    {
+      # prepare
+      $this->font = [];
+      $this->img  = [];
+      $cfg = $this->bot->cfg;
+      $flg = GLOB_BRACE|GLOB_NOSORT|GLOB_NOESCAPE;
+      # scan images
+      $a = self::DIR_IMG.DIRECTORY_SEPARATOR;
+      $b = [$cfg->dirInc.$a];
+      file_exists($c = $cfg->dirSrc.$a)  && ($b[] = $c);
+      file_exists($c = $cfg->dirData.$a) && ($b[] = $c);
+      foreach ($b as $a)
+      {
+        $i = strlen($a);
+        $a = $a.'*.'.self::EXP_IMG;
+        foreach (glob($a, $flg) as $c)
+        {
+          $j = strrpos($c, '.') - $i;
+          $this->img[substr($c, $i, $j)] = $c;
+        }
+      }
+      # scan fonts
+      $a = self::DIR_FONT.DIRECTORY_SEPARATOR;
+      $b = [$cfg->dirInc.$a];
+      file_exists($c = $cfg->dirSrc.$a)  && ($b[] = $c);
+      file_exists($c = $cfg->dirData.$a) && ($b[] = $c);
+      foreach ($b as $a)
+      {
+        $i = strlen($a);
+        $a = $a.'*.'.self::EXP_FONT;
+        foreach (glob($a, $flg) as $c)
+        {
+          $j = strrpos($c, '.') - $i;
+          $this->font[substr($c, $i, $j)] = $c;
+        }
+      }
+    }
+    catch (Throwable $e)
+    {
+      $this->log->exception($e);
+      return false;
+    }
+    return true;
+  }
+  # }}}
+  function getFileId(string $k): string # {{{
+  {
+    return $this->fids[$k] ?? '';
+  }
+  # }}}
+  function getImage(string $name): string # {{{
+  {
+    if (!isset($this->img[$name]))
+    {
+      $this->log->error($name, 'image not found');
+      return '';
+    }
+    return $this->img[$name];
+  }
+  # }}}
+  function get(string $k, int $depth = 0): ?object # {{{
+  {
+    # check already exists
+    if (isset($this->map[$k])) {
+      return $this->map[$k];
+    }
+    # construct and store new instance
+    $o = new BotFileData($this->log, $k, $depth);
+    return $o->load()
+      ? ($this->map[$k] = $o)
+      : null;
+  }
+  # }}}
+  function getNode(string $k, int $depth = 0): object # {{{
+  {
+    return ($o = $this->get($k, $depth))
+      ? $o->node : new ArrayNode([], null, $depth);
+  }
+  # }}}
+  function sync(): void # {{{
+  {
+    # synchronize file identifiers
+    $this->fids->sync();
+    # synchronize data objects
+    $t = time();
+    $x = $this['timeout'];
+    foreach ($this->map as $o)
+    {
+      # save (always) and unload (if not changed and timed out)
+      if (!$o->sync($t) && $t - $o->time > $x) {
+        unset($this->map[$o->key]);
+      }
+    }
+  }
+  # }}}
+  function finit(): void # {{{
+  {
+    $this->sync();
+  }
+  # }}}
+}
+class BotFileData implements ArrayAccess, Iterator
+{
+  public $time,$node,$changed = 0;
+  function __construct(# {{{
+    public object $log,
+    public string $key,# file path
+    public int    $limit = 0,
+  )
+  {
+    $this->time = time();
+  }
+  # }}}
+  function load(): bool # {{{
+  {
+    if (($a = file_get_json($this->key)) === null)
+    {
+      $this->log->error('get', $this->key);
+      return false;
+    }
+    $this->time = time();
+    $this->node = new ArrayNode($a, $this, $this->limit);
+    $this->changed = 0;
+    return true;
+  }
+  # }}}
+  # [node] access {{{
+  function offsetExists(mixed $k): bool {
+    return isset($this->node[$k]);
+  }
+  function offsetGet(mixed $k): mixed {
+    return $this->node[$k];
+  }
+  function offsetSet(mixed $k, mixed $v): void {
+    $this->node[$k] = $v;
+  }
+  function offsetUnset(mixed $k): void {
+    $this->node[$k] = null;
+  }
+  # }}}
+  # [node] iterator {{{
+  function rewind(): void {
+    $this->node->rewind();
+  }
+  function valid(): bool {
+    return $this->node->valid();
+  }
+  function current(): mixed {
+    return $this->node->current();
+  }
+  function key(): mixed {
+    return $this->node->key();
+  }
+  function next(): void {
+    $this->node->next();
+  }
+  # }}}
+  function isEmpty(): bool # {{{
+  {
+    return $this->node->count === 0;
+  }
+  # }}}
+  function set(array $node): void # {{{
+  {
+    $this->node->setRef($node);
+  }
+  # }}}
+  function change(): void # {{{
+  {
+    $this->changed++;
+  }
+  # }}}
+  function sync(int $time = 0): bool # {{{
+  {
+    if (!$this->changed) {
+      return false;
+    }
+    if (!($a = file_set_json($this->key, $this->node)))
+    {
+      $this->log->error('set', $this->key);
+      return false;
+    }
+    $this->time = $time ?: time();
+    $this->changed = 0;
+    return true;
+  }
+  # }}}
+}
 # }}}
 # api {{{
 class BotApi # {{{
@@ -1741,7 +2151,7 @@ class BotApi # {{{
     return $res;
   }
   # }}}
-  function action(# {{{
+  function promise(# {{{
     string  $method,
     array   $req,
     ?object $file  = null,
@@ -1749,7 +2159,9 @@ class BotApi # {{{
   ):?object
   {
     $this->setup($method, $req, $file, $token);
-    return $this->actions->get($req, $file);
+    return new Promise(
+      new BotApiAction($this->actions, $req, $file)
+    );
   }
   # }}}
   function deleteMessage(object $msg): bool # {{{
@@ -2046,16 +2458,6 @@ class BotApiActions extends BotApiExt # {{{
     return true;
   }
   # }}}
-  function get(array &$req, ?object $file = null): ?object # {{{
-  {
-    $a = new BotApiAction($this, $req, $file);
-    if ($a->init()) {
-      return $this->acts[] = $a;
-    }
-    $file && $file->destruct();
-    return null;
-  }
-  # }}}
   function spin(): bool # {{{
   {
     # check generator
@@ -2106,7 +2508,8 @@ class BotApiActions extends BotApiExt # {{{
             throw ErrorEx::skip();
           }
         }
-        # update as the new handles may be added
+        # new handles may be added, so,
+        # update counter
         $count = count($this->acts);
       }
       # check transfers
@@ -2116,7 +2519,7 @@ class BotApiActions extends BotApiExt # {{{
         foreach ($this->acts as $a => $action)
         {
           if ($action->curl === $c['handle'] &&
-              $action->complete($c['result']))
+              $action->set($c['result']))
           {
             $running++;# rise back
             array_splice($this->acts, $a, 1);
@@ -2148,7 +2551,7 @@ class BotApiActions extends BotApiExt # {{{
       $this->gen->send(0);# stop
     }
     foreach ($this->acts as $a) {
-      $a->destruct();
+      $a->finit();
     }
     $this->gen = null;
     $this->acts = [];
@@ -2162,16 +2565,27 @@ class BotApiActions extends BotApiExt # {{{
   # }}}
 }
 # }}}
-class BotApiAction # {{{
+class BotApiAction extends PromiseAction # {{{
 {
   public $curl,$result,$status = 0;
   function __construct(# {{{
-    public object   $act,
+    public object   $base,
     public array    &$req,
     public ?object  $file
   ) {}
   # }}}
   function init(): bool # {{{
+  {
+    if ($this->attach())
+    {
+      $this->base->acts[] = $this;
+      return true;
+    }
+    $this->file?->destruct();
+    return false;
+  }
+  # }}}
+  function attach(): bool # {{{
   {
     try
     {
@@ -2185,29 +2599,20 @@ class BotApiAction # {{{
       {
         throw ErrorEx::fail("curl_setopt_array\n".BotApi::cError($curl));
       }
-      if ($a = curl_multi_add_handle($this->act->murl, $curl)) {
+      if ($a = curl_multi_add_handle($this->base->murl, $curl)) {
         throw ErrorEx::fail("curl_multi_add_handle\n".curl_multi_strerror($a));
       }
     }
     catch (Throwable $e)
     {
-      $this->act->log->exception($e);
+      $this->base->log->exception($e);
       $curl && curl_close($curl);
       return false;
     }
     return true;
   }
   # }}}
-  function __invoke(): int # {{{
-  {
-    # spin if not complete
-    if (!$this->status && !$this->act->spin()) {
-      return $this->status = -1;
-    }
-    return $this->status;
-  }
-  # }}}
-  function complete(int $x): bool # {{{
+  function set(int $x): bool # {{{
   {
     try
     {
@@ -2237,32 +2642,38 @@ class BotApiAction # {{{
     {
       # failure
       $this->result = null;
-      if ($this->act->log->exception($e)) {
+      if ($this->base->log->exception($e)) {
         $this->status = -1;# critical
       }
     }
     # complete
-    $this->finit();
+    $this->detach();
     if ($this->status) {
       return true;
     }
     # retry (recoverable failure)
-    $this->init();
-    return false;
+    return !$this->attach();
   }
   # }}}
-  function finit(): void # {{{
+  function spin(): bool # {{{
   {
-    if ($a = curl_multi_remove_handle($this->act->murl, $this->curl)) {
-      $this->act->log->error("curl_multi_remove_handle\n".curl_multi_strerror($a));
+    return ($this->status === 0 &&
+            $this->base->spin());
+  }
+  # }}}
+  function detach(): void # {{{
+  {
+    $base = $this->base;
+    if ($e = curl_multi_remove_handle($base->murl, $this->curl)) {
+      $base->log->error("curl_multi_remove_handle\n".curl_multi_strerror($e));
     }
     curl_close($this->curl);
     $this->curl = null;
   }
   # }}}
-  function destruct(): void # {{{
+  function finit(): ?object # {{{
   {
-    $this->curl && $this->finit();
+    $this->curl && $this->detach();
     if ($this->file)
     {
       $this->file->destruct();
@@ -2271,6 +2682,7 @@ class BotApiAction # {{{
     if (!$this->status) {
       $this->status = -1;
     }
+    return null;
   }
   # }}}
 }
@@ -2300,11 +2712,14 @@ class BotApiFile extends CURLFile # {{{
 }
 # }}}
 # }}}
-# update {{{
-class BotUpdate
+# updates {{{
+class BotUpdates
 {
-  # TODO: async queue
-  public $log,$loadable = true,$queue = [];
+  # {{{
+  public
+    $log,$queue = [],$count = 0,
+    $loadable = true;
+  # }}}
   function __construct(public object $bot) # {{{
   {
     $this->log = $bot->log->new('update');
@@ -2312,54 +2727,53 @@ class BotUpdate
   # }}}
   function load(object $upd): bool # {{{
   {
+    # construct the request
     if (!($q = BotRequest::fromUpdate($this->bot, $upd))) {
       return false;
     }
+    # check
     if ($q instanceof ErrorEx)
     {
       if ($q->level) {
         $this->log->errorObject($upd, $q->getMsg('incorrect'));
       }
       else {
-        $this->bot->log->warnObject($upd, 'unknown');
+        $this->log->warnObject($upd, 'unknown');
       }
       return false;
     }
-    if (isset($this->queue[$id = $q->chat->id])) {
-      $this->queue[$id][] = $q;
+    # construct and stash the response
+    if (isset($this->queue[$id = $q->id()])) {
+      $this->queue[$id]->join($q->response());
     }
-    else {
-      $this->queue[$id] = [$q];
+    else
+    {
+      $this->queue[$id] = $q->response();
+      $this->count++;
     }
     return true;
   }
   # }}}
-  function complete(): int # {{{
+  function apply(): int # {{{
   {
-    if (!$this->queue) {
-      return 0;
-    }
-    $done = 0;
-    foreach ($this->queue as $id => &$q)
+    if ($cnt = $this->count)
     {
-      if ($q[0]->complete())
+      foreach ($this->queue as $id => $q)
       {
-        if (count($q) === 1) {
+        if ($q->complete())
+        {
           unset($this->queue[$id]);
+          $this->count--;
         }
-        else {
-          array_shift($q);
-        }
-        $done++;
       }
     }
-    return $done;
+    return $cnt;
   }
   # }}}
 }
 # }}}
 # text {{{
-class BotText implements ArrayAccess
+class BotText
 {
   # {{{
   const
@@ -2369,7 +2783,7 @@ class BotText implements ArrayAccess
     FILE_CAPS   = 'captions.inc',
     FILE_EMOJIS = 'emojis.inc';
   public
-    $log,$hlp,$tp,$lang,$texts,$caps;
+    $log,$hlp,$tp,$texts,$caps;
   # }}}
   function __construct(public object $bot) # {{{
   {
@@ -2411,14 +2825,34 @@ class BotText implements ArrayAccess
     if ($a = file_get_array($src.self::FILE_CAPS)) {
       array_import_all($this->caps, $b);
     }
-    $this->refine($this->texts);
+    $this->restruct($this->texts);
     $this->refine($this->caps);
     return true;
   }
   # }}}
-  function error(string $msg, int $level): void # {{{
+  function restruct(array &$texts): void # {{{
   {
-    $level && $this->log->error($msg);
+    # set primary language
+    if (!$texts) {
+      $texts = ['en'=>[]];
+    }
+    elseif (!isset($texts['en'])) {
+      $texts = ['en'=>$texts];
+    }
+    $this->refine($texts);
+    # set secondary languages
+    foreach (array_keys($this->texts) as $lang)
+    {
+      if ($lang !== 'en')
+      {
+        if (!isset($texts[$lang])) {# copy primary
+          $texts[$lang] = $texts['en'];
+        }
+        else {# fill gaps
+          array_import_new($texts[$lang], $texts['en']);
+        }
+      }
+    }
   }
   # }}}
   function refine(array &$a): void # {{{
@@ -2438,17 +2872,10 @@ class BotText implements ArrayAccess
     }
   }
   # }}}
-  # [texts] access {{{
-  function offsetExists(mixed $k): bool {
-    return isset($this->texts[$this->lang][$k]);
+  function error(string $msg, int $level): void # {{{
+  {
+    $level && $this->log->error($msg);
   }
-  function offsetGet(mixed $k): mixed {
-    return $this->texts[$this->lang][$k] ?? '';
-  }
-  function offsetSet(mixed $k, mixed $v): void
-  {}
-  function offsetUnset(mixed $k): void
-  {}
   # }}}
   function finit(): void # {{{
   {}
@@ -2460,9 +2887,11 @@ class BotCommands implements ArrayAccess
 {
   # {{{
   const
-    FILE     = 'commands.inc',
-    ITEM_DEF = 'BotImgItem',
-    NS_PATH  = '\\'.__NAMESPACE__.'\\';
+    FILE           = 'commands.inc',
+    DEFAULT_TYPE   = 'Img',
+    NS_PATH        = '\\'.__NAMESPACE__.'\\',
+    ID_SEPARATOR   = '',
+    PATH_SEPARATOR = '/';
   public
     $log,$tree,$map = [];
   # }}}
@@ -2490,74 +2919,37 @@ class BotCommands implements ArrayAccess
   # }}}
   function build(array &$tree, ?object &$parent = null): bool # {{{
   {
-    foreach ($tree as $name => &$node)
+    # prepare
+    if ($parent)
     {
-      # determine base
-      $node['name'] = $name;
-      if ($parent)
-      {
-        $node['id']   = $id   = $parent->id.$name;
-        $node['path'] = $path = $parent->skel['path'].'/'.$name;
-      }
-      else
-      {
-        $node['id']   = $id   = $name;
-        $node['path'] = $path = '/'.$name;
-      }
-      # determine item type (class)
-      $node[$a = 'type'] = $type = isset($node[$a])
-        ? 'Bot'.ucfirst($node[$a]).'Item'
-        : self::ITEM_DEF;
-      if (!class_exists($type = self::NS_PATH.$type, false))
+      $basePath = $parent->path.self::PATH_SEPARATOR;
+      $baseId   = $parent->id.self::ID_SEPARATOR;
+    }
+    else
+    {
+      $basePath = self::PATH_SEPARATOR;
+      $baseId   = '';
+    }
+    # iterate
+    foreach ($tree as $name => &$item)
+    {
+      # determine specific properties of the item
+      $path = $basePath.$name;
+      $id   = $baseId.$name;
+      $type = ucfirst($item['type'] ?? self::DEFAULT_TYPE);
+      # check class
+      $class = self::NS_PATH.'Bot'.$type.'Item';
+      if (!class_exists($class, false))
       {
         $this->log->error($path, "unknown type: $type");
         return false;
       }
-      # determine input flag
-      if (!isset($node[$a = 'input'])) {
-        $node[$a] = method_exists($type, 'inputAccept');
-      }
-      # invoke type refiner
-      if (method_exists($type, 'refine') && !$type::refine($node))
-      {
-        $this->log->error($path, "$type::refine", 'failed');
-        return false;
-      }
-      # refine captions
-      if (!isset($node[$a = 'caps'])) {
-        $node[$a] = [];
-      }
-      else {
-        $this->bot->text->refine($node[$a]);
-      }
-      # refine texts
-      # set primary language
-      if (!isset($node[$a = 'text'])) {
-        $node[$a] = ['en'=>[]];
-      }
-      elseif (!isset($node[$a]['en'])) {
-        $node[$a] = ['en'=>$node[$a]];
-      }
-      $this->bot->text->refine($node[$a]);
-      # set secondary languages
-      $a = &$node[$a];
-      foreach ($this->bot->text->texts as $b => &$c)
-      {
-        if ($b === 'en') {
-          continue;
-        }
-        if (!isset($a[$b])) {
-          $a[$b] = $a['en'];# copy primary
-        }
-        elseif (count($a[$b]) < count($a['en'])) {
-          array_import_new($a[$b], $a['en']);# fill gaps
-        }
-      }
-      unset($a,$b,$c);
-      # construct command item
-      $node = $this->map[$id] = new $type($this->bot, $node, $parent);
-      # construct children (recurse)
-      if ($node->items && $this->build($node->items, $node)) {
+      # construct
+      $item = $this->map[$id] = new $class(
+        $this->bot, $parent, $name, $path, $id, $type, $item
+      );
+      # build children recursively
+      if ($item->children && $this->build($item->children, $item)) {
         return false;
       }
     }
@@ -2581,211 +2973,17 @@ class BotCommands implements ArrayAccess
   # }}}
 }
 # }}}
-# file {{{
-class BotFile
-{
-  # {{{
-  const
-    DIR_FONT = 'font',
-    DIR_IMG  = 'img',
-    EXP_FONT = '{ttf,otf}',
-    EXP_IMG  = '{jpg,jpeg,png}',
-    FILE_ID  = 'file_id.json';
-  public
-    $log,$fids,$img = [],$font = [],$data = [];
-  # }}}
-  function __construct(public object $bot) # {{{
-  {
-    $this->log = $bot->log->new('file');
-  }
-  # }}}
-  function init(): bool # {{{
-  {
-    # load file/id data
-    $this->fids = new BotFileData(
-      $this->log, $this->bot->cfg->dirData.self::FILE_ID
-    );
-    if (!$this->fids->load()) {
-      return false;
-    }
-    # load name/file maps
-    return $this->loadMaps();
-  }
-  # }}}
-  function loadMaps(): bool # {{{
-  {
-    try
-    {
-      # prepare
-      $this->font = [];
-      $this->img  = [];
-      $cfg = $this->bot->cfg;
-      $flg = GLOB_BRACE|GLOB_NOSORT|GLOB_NOESCAPE;
-      # scan images
-      $a = self::DIR_IMG.DIRECTORY_SEPARATOR;
-      $b = [$cfg->dirInc.$a];
-      file_exists($c = $cfg->dirSrc.$a)  && ($b[] = $c);
-      file_exists($c = $cfg->dirData.$a) && ($b[] = $c);
-      foreach ($b as $a)
-      {
-        $i = strlen($a);
-        $a = $a.'*.'.self::EXP_IMG;
-        foreach (glob($a, $flg) as $c)
-        {
-          $j = strrpos($c, '.') - $i;
-          $this->img[substr($c, $i, $j)] = $c;
-        }
-      }
-      # scan fonts
-      $a = self::DIR_FONT.DIRECTORY_SEPARATOR;
-      $b = [$cfg->dirInc.$a];
-      file_exists($c = $cfg->dirSrc.$a)  && ($b[] = $c);
-      file_exists($c = $cfg->dirData.$a) && ($b[] = $c);
-      foreach ($b as $a)
-      {
-        $i = strlen($a);
-        $a = $a.'*.'.self::EXP_FONT;
-        foreach (glob($a, $flg) as $c)
-        {
-          $j = strrpos($c, '.') - $i;
-          $this->font[substr($c, $i, $j)] = $c;
-        }
-      }
-    }
-    catch (Throwable $e)
-    {
-      $this->log->exception($e);
-      return false;
-    }
-    return true;
-  }
-  # }}}
-  function getId(string $k): string # {{{
-  {
-    return $this->fids[$k] ?? '';
-  }
-  # }}}
-  function getImage(string $name): string # {{{
-  {
-    if (!isset($this->img[$name]))
-    {
-      $this->log->error($name, 'image not found');
-      return '';
-    }
-    return $this->img[$name];
-  }
-  # }}}
-  function getData(string $file, int $maxDepth = 0): ?object # {{{
-  {
-    # check already exists
-    if (isset($this->data[$file])) {
-      return $this->data[$file];
-    }
-    # construct and store new instance
-    $o = new BotFileData($this->log, $file, $maxDepth);
-    return $o->load()
-      ? ($this->data[$file] = $o)
-      : null;
-  }
-  # }}}
-  function sync(): void # {{{
-  {
-    $this->fids->sync();
-    foreach ($this->data as $o) {
-      $o->sync();
-    }
-  }
-  # }}}
-  function finit(): void # {{{
-  {
-    $this->sync();
-  }
-  # }}}
-}
-class BotFileData implements ArrayAccess, Iterator
-{
-  public $node,$time = 0,$changed = 0;
-  function __construct(# {{{
-    public object $log,
-    public string $file,
-    public int    $limit = 0,
-  ) {}
-  # }}}
-  function load(): bool # {{{
-  {
-    if (($a = file_get_json($this->file)) === null)
-    {
-      $this->log->error('get', $this->file);
-      return false;
-    }
-    $this->node = new ArrayNode($a, $this, $this->limit);
-    $this->time = time();
-    $this->changed = 0;
-    return true;
-  }
-  # }}}
-  # [node] access {{{
-  function offsetExists(mixed $k): bool {
-    return isset($this->node[$k]);
-  }
-  function offsetGet(mixed $k): mixed {
-    return $this->node[$k];
-  }
-  function offsetSet(mixed $k, mixed $v): void {
-    $this->node[$k] = $v;
-  }
-  function offsetUnset(mixed $k): void {
-    $this->node[$k] = null;
-  }
-  # }}}
-  # [node] iterator {{{
-  function rewind(): void {
-    $this->node->rewind();
-  }
-  function valid(): bool {
-    return $this->node->valid();
-  }
-  function current(): mixed {
-    return $this->node->current();
-  }
-  function key(): mixed {
-    return $this->node->key();
-  }
-  function next(): void {
-    $this->node->next();
-  }
-  # }}}
-  function change(): void # {{{
-  {
-    $this->changed++;
-  }
-  # }}}
-  function sync(): bool # {{{
-  {
-    if ($this->changed)
-    {
-      if (!($a = file_set_json($this->file, $this->node)))
-      {
-        $this->log->error('set', $this->file);
-        return false;
-      }
-      $this->time = time();
-      $this->changed = 0;
-    }
-    return true;
-  }
-  # }}}
-}
-# }}}
 # process {{{
 class BotProcess extends BotConfigAccess # {{{
 {
   # {{{
   const
     PROC_UUID       = '22c4408d490143b5b29f0640755327db',
+    PROC_TIMEOUT    = 4000,# ms, response timeout
+    PROC_WAIT       = 500,# ms, intervals
+    TIMEOUT         = 15000,# ms
     BUF_UUID        = 'c25de777e80d49f69b6b7b57091d70d5',
     BUF_SIZE        = 200,
-    TIMEOUT         = 15000,# ms, response timeout
     EXP_PIDFILE     = '/^bot([-0-9]+)\\.pid$/',
     EXIT_CLEAN      = 0,
     EXIT_DIRTY      = 1,
@@ -2794,29 +2992,29 @@ class BotProcess extends BotConfigAccess # {{{
     EXIT_SIGINT     = 101,
     EXIT_SIGTERM    = 102;
   public
-    $id,$log,$active,$file,$syncbuf,
-    $started = false,$map = [],
-    $exitcode = self::EXIT_DIRTY;
+    $id,$log,$pidfile,$active,$syncbuf,
+    $map = [],$idle = 0,$exitcode = self::EXIT_DIRTY;
   # }}}
   static function construct(object $bot): object # {{{
   {
     # create specific instance
-    return $bot->id
+    $I = $bot->id
       ? ($bot->task
         ? new BotTaskProcess($bot)
         : new self($bot))
       : new BotConsoleProcess($bot);
+    # set common props
+    $I->id  = strval(getmypid());
+    $I->log = $bot->log->new('proc');
+    return $I;
   }
   # }}}
   function __construct(public object $bot) # {{{
   {
-    $k = $bot->id.$bot->task;
-    $this->id      = strval(getmypid());
-    $this->log     = $bot->log->new('proc');
-    $this->active  = new SyncEvent($k.self::PROC_UUID, 1);
-    $this->file    = $bot->cfg->dirDataRoot.'bot'.$bot->id.'.pid';
+    $this->pidfile = $bot->cfg->dirDataRoot.'bot'.$bot->id.'.pid';
+    $this->active  = new SyncEvent($bot->id.self::PROC_UUID, 1);
     $this->syncbuf = new Syncbuf(
-      $k.self::BUF_UUID, self::BUF_SIZE, self::TIMEOUT
+      $bot->id.self::BUF_UUID, self::BUF_SIZE, self::PROC_TIMEOUT
     );
   }
   # }}}
@@ -2843,15 +3041,12 @@ class BotProcess extends BotConfigAccess # {{{
         # NixOS
         # ...
       }
-      # start self
-      if (!($this->started = $this->active->fire())) {
-        throw ErrorEx::fail('failed to fire');
+      # activate
+      if (!$this->active->fire()) {
+        throw ErrorEx::fail('SyncEvent::fire');
       }
-      # create pidfile
-      if (!$this->bot->task &&
-          file_put_contents($this->file, $this->id) === false)
-      {
-        throw ErrorEx::fail($this->file);
+      if (file_put_contents($this->pidfile, $this->id) === false) {
+        throw ErrorEx::fail($this->pidfile);
       }
       # start children
       $this->startChildren();
@@ -2860,7 +3055,6 @@ class BotProcess extends BotConfigAccess # {{{
     catch (Throwable $e)
     {
       $this->log->exception($e);
-      $this->started && $this->stopChildren();
       return false;
     }
     return true;
@@ -2881,10 +3075,10 @@ class BotProcess extends BotConfigAccess # {{{
       }
     }
     # check self
-    if (!$this->active->wait(0) || !file_exists($this->file)) {
+    if (!$this->active->wait(0) || !file_exists($this->pidfile)) {
       throw ErrorEx::stop('forced deactivation');
     }
-    # flush console
+    # flush the console
     $this->bot->console->flush();
     # handle commands
     return $this->command();
@@ -2902,14 +3096,10 @@ class BotProcess extends BotConfigAccess # {{{
     case 'stop':
       return false;
     case 'info':
-      # compose bot <pid:name> string
-      $bot = $this->bot;
-      $a = $bot->task
-        ? 'task:'.$bot->task
-        : $bot['name'];
-      $a = $this->id.':'.$a;
-      # send answer
-      $this->syncbuf->write($a);
+      # send bot details <name:pid>
+      $this->syncbuf->write(
+        $this->bot['name'].':'.$this->id
+      );
       break;
     }
     return true;
@@ -2917,14 +3107,19 @@ class BotProcess extends BotConfigAccess # {{{
   # }}}
   function busy(): void # {{{
   {
-    # reset delay
-    # ...
+    $this->idle = 0;
   }
   # }}}
   function wait(): void # {{{
   {
-    # TODO: speedup / slowdown
-    usleep(200000);
+    if (++$this->idle > 100)
+    {
+      $this->bot->file->sync();
+      $this->idle = 0;
+    }
+    else {
+      usleep(200000);
+    }
   }
   # }}}
   function loop(): void # {{{
@@ -2957,12 +3152,12 @@ class BotProcess extends BotConfigAccess # {{{
   function startChildren(): void # {{{
   {}
   # }}}
-  function start(string $id): bool # {{{
+  function startChild(string $id): bool # {{{
   {
     if (isset($this->map[$id])) {
       return true;
     }
-    if (!($a = BotProcessFork::construct($this, $id))) {
+    if (!($a = BotProcessChild::construct($this, $id))) {
       return false;
     }
     $this->map[$id] = $a;
@@ -2971,18 +3166,6 @@ class BotProcess extends BotConfigAccess # {{{
   # }}}
   function get(string $id): ?object # {{{
   {
-    /***
-    if (!($slave = $this->map[$id] ?? null)) {
-      return null;
-    }
-    if (!$slave->isRunning())
-    {
-      $slave->stop();
-      unset($this->map[$id]);
-      return null;
-    }
-    return $slave;
-    /***/
     return null;
   }
   # }}}
@@ -3003,18 +3186,9 @@ class BotProcess extends BotConfigAccess # {{{
     return $lst;
   }
   # }}}
-  function stop(string $id): bool # {{{
+  function stopChild(string $id): bool # {{{
   {
-    /***
-    if (!($slave = $this->map[$id] ?? null))
-    {
-      $this->log->warn(__FUNCTION__."($id): was not started");
-      return false;
-    }
-    $slave->stop();
-    unset($this->map[$id]);
-    /***/
-    return true;
+    return false;
   }
   # }}}
   function stopChildren(): void # {{{
@@ -3033,29 +3207,24 @@ class BotProcess extends BotConfigAccess # {{{
   # }}}
   function destruct(): void # {{{
   {
-    if ($this->started)
-    {
-      # report exit state
-      switch ($this->exitcode) {
-      case self::EXIT_CLEAN:
-      case self::EXIT_SIGINT:
-      case self::EXIT_SIGTERM:
-        $this->log->info('exit', 'clean');
-        break;
-      case self::EXIT_DIRTY:
-        $this->log->error('exit', 'dirty');
-        break;
-      case self::EXIT_UNEXPECTED:
-        $this->log->error('exit', 'unexpected');
-        break;
-      }
-      # terminate
-      $this->started = false;
-      $this->active->reset();
-      if (!$this->bot->task) {
-        file_unlink($this->file);
-      }
+    # report exit state
+    switch ($this->exitcode) {
+    case self::EXIT_CLEAN:
+    case self::EXIT_SIGINT:
+    case self::EXIT_SIGTERM:
+      $this->log->info('exit', 'clean');
+      break;
+    case self::EXIT_DIRTY:
+      $this->log->error('exit', 'dirty');
+      break;
+    case self::EXIT_UNEXPECTED:
+      $this->log->error('exit', 'unexpected');
+      break;
     }
+    # cleanup
+    $this->bot->console->flush();
+    $this->active->reset();
+    file_unlink($this->pidfile);
   }
   # }}}
 }
@@ -3064,9 +3233,8 @@ class BotConsoleProcess extends BotProcess # {{{
 {
   function __construct(public object $bot) # {{{
   {
-    $this->log    = $bot->log->new('proc');
-    $this->active = $bot->console->active;
-    $this->file   = $bot->cfg->dirDataRoot.'console.pid';
+    $this->pidfile = $bot->cfg->dirDataRoot.'console.pid';
+    $this->active  = $bot->console->active;
   }
   # }}}
   function signal(bool $interrupt): void # {{{
@@ -3098,7 +3266,7 @@ class BotConsoleProcess extends BotProcess # {{{
         return false;
       }
     }
-    return ($this->exitcode === self::EXIT_UNEXPECTED);
+    return $this->exitcode === self::EXIT_UNEXPECTED;
   }
   # }}}
   function loop(): void # {{{
@@ -3136,8 +3304,8 @@ class BotConsoleProcess extends BotProcess # {{{
     # start
     foreach ($a as $c)
     {
-      if (!$this->start($c)) {
-        throw ErrorEx::skip();
+      if (!$this->startChild($c)) {
+        throw ErrorEx::stop($c, 'failed to attach');
       }
     }
   }
@@ -3170,12 +3338,11 @@ class BotTaskProcess extends BotProcess # {{{
   # }}}
 }
 # }}}
-class BotProcessFork # {{{
+class BotProcessChild # {{{
 {
   # {{{
   const
     FILE_START = 'start.php',
-    PROC_WAIT_STOP  = [200,10],
     PROC_DESC  = [
       #0 => ['pipe','r'],# stdin
       1 => ['pipe','w'],# stdout
@@ -3189,7 +3356,7 @@ class BotProcessFork # {{{
       'create_new_console'   => false,
     ];
   public
-    $proc,$pid,$log,$active,$syncbuf;
+    $parent,$log,$id,$pidfile,$active,$syncbuf;
   # }}}
   static function closePipes(?array $list, bool $read = false): string # {{{
   {
@@ -3208,42 +3375,31 @@ class BotProcessFork # {{{
           fclose($a);
         }
       }
-      unset($a, $b);
+      unset($a,$b);
     }
     return $text;
   }
   # }}}
-  static function construct(object $proc, string $key): ?self # {{{
+  static function construct(object $parent, string $args): ?self # {{{
   {
     try
     {
-      # create instance
+      # create new instance
       $I = new self();
-      $I->proc    = $proc;
-      $I->log     = $proc->log->new($key);
-      $I->active  = new SyncEvent($key.$proc::PROC_UUID, 1);
+      $I->parent  = $parent;
+      $I->log     = $parent->log->new($args);
+      $I->active  = new SyncEvent($args.$parent::PROC_UUID, 1);
       $I->syncbuf = new Syncbuf(
-        $key.$proc::BUF_UUID, $proc::BUF_SIZE, $proc::TIMEOUT
+        $args.$parent::BUF_UUID,
+        $parent::BUF_SIZE,
+        $parent::PROC_TIMEOUT
       );
       # reset command interface
       $I->syncbuf->reset();
-      # check process is already running or try to start
-      if ($I->active->wait(0)) {
-        $I->log->info('connected');
-      }
-      else {
-        $I->start($key);
-      }
-      # set bot process information (pid:name)
-      if (!($a = $I->syncbuf->writeRead('info')))
-      {
-        $I->log->error('no response (timed out)');
-        $I->stop();
+      # startup
+      if (!$I->start($args)) {
         throw ErrorEx::skip();
       }
-      $a = explode(':', $a, 2);
-      $I->id = $a[0];
-      $I->log->name = $a[1];
     }
     catch (Throwable $e)
     {
@@ -3253,55 +3409,97 @@ class BotProcessFork # {{{
     return $I;
   }
   # }}}
-  function start(string $key): void # {{{
+  function start(string $args): bool # {{{
   {
-    # create process
-    $dir  = __DIR__.DIRECTORY_SEPARATOR;
-    $cmd  = '"'.PHP_BINARY.'" -f "'.$dir.self::FILE_START.'" '.$key;
-    $pipe = null;
-    $proc = proc_open(
-      $cmd, self::PROC_DESC, $pipe, $dir, null, self::PROC_OPTS
-    );
-    # check successful
-    if (!is_resource($proc)) {
-      throw ErrorEx::fail("failed\nproc_open($cmd)");
-    }
-    # wait started
-    $c = 8;
-    while (!$this->active->wait(500) && --$c)
+    # check already running
+    if ($this->active->wait(0))
     {
-      if (!($a = proc_get_status($proc))) {
-        throw ErrorEx::fail("failed\nproc_get_status()");
-      }
-      if (!$a['running'])
-      {
-        $a = 'exitcode: '.$a['exitcode'];
-        if ($b = self::closePipes($pipe, true)) {
-          $a .= "\noutput:\n".str_replace("\n", "\n ", $b);
-        }
-        throw ErrorEx::fail("failed\n$a");
-      }
+      $this->log->info('attached');
+      return $this->init();
     }
-    # check successful
-    if (!$c)
+    # create process
+    $time = hrtime(true);
+    $dir  = __DIR__.DIRECTORY_SEPARATOR;
+    $file = $dir.self::FILE_START;
+    $pipe = null;
+    $cmd  = '"'.PHP_BINARY.'" -f "'.$file.'" '.$args;
+    $proc = proc_open(
+      $cmd, self::PROC_DESC, $pipe,
+      $dir, null, self::PROC_OPTS
+    );
+    # check
+    if (!is_resource($proc))
+    {
+      $this->log->error("proc_open($cmd)\n");
+      return false;
+    }
+    # wait activated
+    $t0 = $this->parent::PROC_TIMEOUT;
+    $t1 = $this->parent::PROC_WAIT;
+    while (!$this->active->wait($t1) && $t0 > 0)
+    {
+      if (!($status = proc_get_status($proc)))
+      {
+        $this->log->error('proc_get_status()');
+        return false;
+      }
+      if (!$status['running'])
+      {
+        $a = ($a = 'exitcode').': '.$status[$a];
+        if ($b = self::closePipes($pipe, true)) {
+          $a = $a."\noutput:\n".str_replace("\n", "\n ", $b);
+        }
+        $this->log->error("unexpected termination\n$a");
+        return false;
+      }
+      $t0 -= $t1;
+    }
+    # check
+    if ($t0 <= 0)
     {
       proc_terminate($proc);
-      throw ErrorEx::fail('activation timed out');
+      $this->log->error('activation timed out');
+      return false;
     }
-    # complete
+    # cleanup
     self::closePipes($pipe);
     unset($proc, $pipe);
     # from now on, process must not output anything to STDOUT/ERR,
     # otherwise it may broke (because of writing to closed resource)
-    $this->log->info('started');
+    $time = intval((hrtime(true) - $time)/1e+6);# nano to milli
+    $this->log->info('started ('.$time.'ms)');
+    return $this->init();
+  }
+  # }}}
+  function init(): bool # {{{
+  {
+    try
+    {
+      # request process details
+      if (!($a = $this->syncbuf->writeRead('info'))) {
+        throw ErrorEx::fail('info', 'empty response');
+      }
+      # parse and store
+      $b = explode(':', $a, 2);
+      $this->log->name = $b[0];
+      $this->id = $b[1];
+    }
+    catch (Throwable $e)
+    {
+      $this->log->exception($e);
+      $this->parent->bot->console->flush();
+      $this->stop();
+      return false;
+    }
+    return true;
   }
   # }}}
   function command(string $cmd): bool # {{{
   {
     try
     {
-      $this->syncbuf->write($cmd);
       $this->log->info($cmd);
+      $this->syncbuf->write($cmd);
     }
     catch (Throwable $e)
     {
@@ -3314,41 +3512,47 @@ class BotProcessFork # {{{
   # }}}
   function stop(): bool # {{{
   {
+    if (!$this->active->wait(0)) {
+      return true;
+    }
     if (!$this->command('stop'))
     {
       $this->active->reset();
       return false;
     }
-    $a = 20;
-    while ($this->active->wait(0) && $a--) {
-      usleep(100000);
+    $a = $this->parent::PROC_TIMEOUT;
+    $b = $this->parent::PROC_WAIT;
+    $c = $b * 1000;
+    while ($this->active->wait(0) && $a > 0) {
+      usleep($c); $a -= $b;
     }
-    if ($a) {
-      return true;
+    if ($a <= 0)
+    {
+      $this->log->warn('timed out');
+      $this->active->reset();
+      return false;
     }
-    $this->log->error(__FUNCTION__, 'timed out');
-    $this->active->reset();
-    return false;
+    return true;
   }
   # }}}
 }
 # }}}
 # }}}
+## mediators
 # bot {{{
 class Bot extends BotConfigAccess
 {
   # {{{
   const
-    MESSAGE_LIFETIME = 48*60*60,
     EXP_USERNAME = '/^[a-z]\w{4,32}$/i',
     EXP_BOTNAME  = '/^[a-z]\w{1,29}bot$/i',
     INIT = [
-      'console','cfg','log','api','text','cmd','file','proc'
+      'console','cfg','log','file','api','text','cmd','proc'
     ];
   public
     $bot,$id,$task,
     $console,$log,$cfg,$api,$update,$text,$cmd,$file,$proc,$inited = [],
-    $users = [],$chats = [],$chat;
+    $users = [],$chats = [];
   # }}}
   static function start(string $args = ''): never # {{{
   {
@@ -3383,11 +3587,11 @@ class Bot extends BotConfigAccess
     $this->console = BotConsole::construct($this);
     $this->log     = new BotLog($this);
     $this->cfg     = new BotConfig($this, $id);
+    $this->file    = new BotFile($this);
     $this->api     = new BotApi($this);
-    $this->update  = new BotUpdate($this);
+    $this->updates = new BotUpdates($this);
     $this->text    = new BotText($this);
     $this->cmd     = new BotCommands($this);
-    $this->file    = new BotFile($this);
     $this->proc    = BotProcess::construct($this);
   }
   # }}}
@@ -3440,13 +3644,13 @@ class Bot extends BotConfigAccess
   # }}}
   function operate(): int # {{{
   {
-    if ($this->update->loadable)
+    if ($this->updates->loadable)
     {
-      foreach ($this->api->recieve() as $upd) {
-        $this->update->load($upd);
+      foreach ($this->api->recieve() as $update) {
+        $this->updates->load($update);
       }
     }
-    return $this->update->complete();
+    return $this->updates->apply();
   }
   # }}}
   function finit(): void # {{{
@@ -3463,11 +3667,9 @@ class Bot extends BotConfigAccess
   # }}}
 }
 # }}}
-# mediator
 # request {{{
 abstract class BotRequest extends BotConfigAccess # {{{
 {
-  public $resp,$log,$item,$func = '',$args = '';
   final static function fromUpdate(object $bot, object $upd): ?object # {{{
   {
     if ($o = $upd->callback_query ?? null)
@@ -3532,41 +3734,29 @@ abstract class BotRequest extends BotConfigAccess # {{{
     {
       return null;
     }
+    # get logger
+    $log = $chat->isGroup
+      ? $chat->log->new($user->fullname)
+      : $chat->log;
     # create new instance
-    $I = new static($bot, $data, $user, $chat);
-    return $I->parse() ? $I : null;
+    $I = new static($data, $user, $chat, $log);
+    return $I->init() ? $I : null;
   }
   # }}}
   final function __construct(# {{{
-    public object $bot,
     public object $data,
     public object $user,
-    public object $chat
-  )
+    public object $chat,
+    public object $log
+  ) {}
+  # }}}
+  function id(): string # {{{
   {
-    $this->resp = $this;
-    $this->log  = $chat->isGroup
-      ? $chat->log->new($user->fullname)
-      : $chat->log;
+    return 'c'.$this->chat->id;
   }
   # }}}
-  final function complete(): bool # {{{
-  {
-    # intertwine
-    $bot = $this->bot;
-    $bot->chat = $chat = $this->chat;
-    $bot->text->lang = $chat->info->lang ?: $this->user->lang;
-    $chat->user = $this->user;
-    # respond
-    if ($this->resp) {
-      return $this->resp->complete() !== 0;
-    }
-    # render response
-    return !($this->resp = $this->render());
-  }
-  # }}}
-  abstract function parse(): bool;
-  #abstract function render(): ?object;
+  #abstract function init(): bool;
+  #abstract function response(): object;
 }
 # }}}
 class BotRequestCallback extends BotRequest # {{{
@@ -3748,8 +3938,10 @@ class BotRequestCommand extends BotRequest # {{{
     # /<ITEM>[!<FUNC>][ <ARGS>][@<BOTNAME>]
     SYNTAX_EXP = '|^\/([a-z][a-z0-9:/-]+){1}(!([a-z]+)){0,1}( ([^@]+)){0,1}(@([a-z_]+bot)){0,1}$|i',
     MAX_LENGTH = 200;
+  public
+    $item,$query;
   # }}}
-  function parse(): bool # {{{
+  function init(): bool # {{{
   {
     # prepare
     $msg  = $this->data;
@@ -3761,7 +3953,7 @@ class BotRequestCommand extends BotRequest # {{{
     {
       if ($chat->isUser)
       {
-        $this->log->warnInput("incorrect", $msg->text);
+        $this->log->warnInput('incorrect', $msg->text);
         return true;
       }
       return false;
@@ -3803,20 +3995,20 @@ class BotRequestCommand extends BotRequest # {{{
     }
     # complete
     $this->log->infoInput('command', $msg->text);
-    $this->item = $bot->cmd[$item];
-    $this->func = $func;
-    $this->args = $args;
+    $this->item  = $bot->cmd[$item];
+    $this->query = new BotItemQuery($func, $args);
     return true;
   }
   # }}}
-  function render(): ?object # {{{
+  function response(): object # {{{
   {
-    $a = $this->data;
-    return PromiseAll::construct(
-      $this->chat->action($this),
-      $this->bot->api->action('deleteMessage', [
-        'chat_id'    => $a->chat->id,
-        'message_id' => $a->message_id,
+    $chat = $this->chat;
+    $data = $this->data;
+    return Promise::Queue(
+      new Promise(new BotItemAction($this)),
+      $chat->bot->api->promise('deleteMessage', [
+        'chat_id'    => $chat->id,
+        'message_id' => $data->message_id,
       ])
     );
   }
@@ -3867,14 +4059,68 @@ class BotRequestMember extends BotRequest # {{{
 }
 # }}}
 # }}}
+# user {{{
+class BotUser
+{
+  public $name,$username,$fullname,$lang;
+  static function construct(object $bot, object $user): ?object # {{{
+  {
+    try
+    {
+      if (isset($bot->users[$id = strval($user->id)])) {
+        $user = $bot->users[$id];
+      }
+      else
+      {
+        $user = new self($bot, $id, $user);
+        $bot->users[$id] = $user;
+      }
+    }
+    catch (Throwable $e)
+    {
+      $bot->log->exception($e);
+      return null;
+    }
+    return $user;
+  }
+  # }}}
+  function __construct(# {{{
+    public object $bot,
+    public string $id,
+    public object $info
+  )
+  {
+    # set names
+    $this->name     = trim($info->first_name);
+    $this->username = $uname = $info->username ?? '';
+    $this->fullname = $uname
+      ? '@'.$uname
+      : $this->name.'#'.$id;
+    # set language
+    if (isset($info->language_code) &&
+        isset($bot->text->texts[$lang = $info->language_code]))
+    {
+      $this->lang = $lang;
+    }
+    else {
+      $this->lang = $bot['lang'];
+    }
+  }
+  # }}}
+}
+# }}}
 # chat {{{
 abstract class BotChat # {{{
 {
   # {{{
+  const
+    FILE_CHAT = 'chat.json',
+    FILE_VIEW = 'view.json';
   public
     $isUser = false,$isGroup = false,$isChannel = false,
     $name,$username,$fullname,$log,$dir,
-    $time,$info,$view,$user;
+    $info,$lang,$view,$conf,$opts,
+    $time;
   # }}}
   static function construct(# {{{
     object  $bot,
@@ -3897,7 +4143,7 @@ abstract class BotChat # {{{
         'private' => new BotUserChat($bot, $id, $user),
         'group','supergroup' => new BotGroupChat($bot, $id, $chat),
         'channel' => new BotChanChat($bot, $id, $chat),
-        'none' => new BotNoChat($bot),
+        'none' => new BotEmptyChat($bot),
       };
       # initialize
       if (!$chat->init()) {
@@ -3922,16 +4168,59 @@ abstract class BotChat # {{{
   function init(): bool # {{{
   {
     # check working directory
-    if (!dir_check_make($a = $this->dir))
+    if (!dir_check_make($dir = $this->dir))
     {
-      $this->log->error($a);
+      $this->log->error($dir);
       return false;
     }
-    if (!($this->info = BotChatInfo::construct($this)) ||
-        !($this->view = BotChatView::construct($this)))
-    {
+    # prepare
+    $bot = $this->bot;
+    # load chat details
+    if (!($data = $bot->file->get($dir.self::FILE_CHAT))) {
       return false;
     }
+    if ($data->isEmpty())
+    {
+      # initialize
+      if (!($a = $bot->api->getChat($this->id)))
+      {
+        $this->log->error('failed to get details');
+        return false;
+      }
+      $this->log->infoObject($a, 'new');
+      $this->info = $data[0] = (array)$a;
+      $this->lang = $data[1] = '';
+      $data->sync();
+    }
+    else
+    {
+      # restore
+      $this->info = $data[0];
+      $this->lang = $data[1];
+    }
+    # load view and configurations
+    if (!($data = $bot->file->get($dir.self::FILE_VIEW, 1))) {
+      return false;
+    }
+    if ($data->isEmpty()) {
+      $data->set([[], [], []]);
+    }
+    $this->view = new BotChatView($this, $data[0]);
+    $this->conf = $a = $data[1]->restruct(1);
+    $this->opts = $b = $data[2]->restruct(1);
+    # add filter
+    $a->jsonFilter = $b->jsonFilter = (function(array &$inp) use ($bot) {
+      # skip empty containers and unknown items upon saving
+      $out = [];
+      foreach ($inp as $id => $cfg)
+      {
+        if ($cfg->count && $bot->cmd[$id]) {
+          $out[$id] = $cfg;
+        }
+      }
+      return $out;
+    });
+    # complete
     return true;
   }
   # }}}
@@ -3951,7 +4240,7 @@ abstract class BotChat # {{{
     /***/
   }
   # }}}
-  function action(object $req): ?object # {{{
+  function promise(object $req): ?object # {{{
   {
     # get target item
     if (!($item1 = $req->item)) {
@@ -3959,22 +4248,33 @@ abstract class BotChat # {{{
     }
     try
     {
+      # prepare
+      $log = $req->log;
+      $qry = $req->query;
       # get current item
-      $item0 = ($node0 = $this->view->getNodeOfItem($item1))
+      $item0 = ($node0 = $this->getNodeOfItem($item1))
         ? $node0->item : null;
       # handle common navigation
-      switch ($req->func) {
+      switch ($qry->func) {
       case 'up':
         # climbing up the tree, select parent
-        if ($item0 !== $item1) {
-          throw ErrorEx::skip();
+        if ($item0 !== $item1)
+        {
+          throw ErrorEx::stop(
+            "unable to navigate\n".
+            "command must belong to the same, existing item"
+          );
         }
         $item1 = $item1->parent;
         break;
       case 'close':
         # item should be deleted from the view
-        if ($item0 !== $item1) {
-          throw ErrorEx::skip();
+        if ($item0 !== $item1)
+        {
+          throw ErrorEx::stop(
+            "unable to close\n".
+            "command must belong to the same, existing item"
+          );
         }
         $item1 = null;
         break;
@@ -3987,6 +4287,13 @@ abstract class BotChat # {{{
             : 1)
           : 2)
         : 3;
+      var_dump($a);
+      throw ErrorEx::stop('view promise test');
+      ###
+      ###
+      ### TODO
+      ###
+      ###
       # trigger item events
       switch ($a) {
       case 0:# update
@@ -4008,7 +4315,7 @@ abstract class BotChat # {{{
           throw ErrorEx::skip();
         }
         break;
-      case 3:# delete
+      case 3:# close
         if (!$item0->event(2, $req)) {
           throw ErrorEx::skip();
         }
@@ -4031,8 +4338,7 @@ abstract class BotChat # {{{
     }
     catch (Throwable $e)
     {
-      $req->log->exception($e);
-      $this->reset();
+      $log->exception($e);
       return null;
     }
     return new BotChatAction($this, $node0, $node1);
@@ -4044,142 +4350,31 @@ abstract class BotChat # {{{
   # }}}
 }
 # }}}
-abstract class BotChatFile implements JsonSerializable # {{{
+###
+###
+class BotChatView # {{{
 {
-  public $changed = 0;
-  static function construct(object $chat): ?object # {{{
-  {
-    $I = new static($chat, $chat->dir.static::FILE);
-    return $I->load() ? $I : null;
-  }
-  # }}}
   function __construct(# {{{
     public object $chat,
-    public string $file
-  ) {}
-  # }}}
-  function change(): void # {{{
+    public object $queue
+  )
   {
-    $this->changed++;
-  }
-  # }}}
-  function sync(): bool # {{{
-  {
-    if ($this->changed)
+    # filter unknown items
+    $items = $chat->bot->cmd;
+    $queue->filter(function ($k, &$v) use ($items)
     {
-      if (!file_set_json($this->file, $this)) {
-        return false;
-      }
-      $this->changed = 0;
-    }
-    return true;
-  }
-  # }}}
-  abstract function load(): bool;
-  abstract function jsonSerialize(): array;
-}
-# }}}
-class BotChatInfo extends BotChatFile # {{{
-{
-  const FILE = 'chat.json';
-  public $info,$lang;
-  function load(): bool # {{{
-  {
-    try
-    {
-      # prepare
-      $chat = $this->chat;
-      # load data
-      if (($data = file_get_json($this->file)) === null) {
-        throw ErrorEx::stop($this->file);
-      }
-      # check empty
-      if ($data)
+      if ($item = $items[$v[0]])
       {
-        # restore
-        $this->info = $data[0];
-        $this->lang = $data[1];
+        $v = new BotChatViewNode($item, $v[1], $v[2], $v[3]);
+        return true;
       }
-      else
-      {
-        # request details
-        if (!($a = $chat->bot->api->getChat($chat->id))) {
-          throw ErrorEx::stop('failed to get chat details');
-        }
-        # initialize
-        $chat->log->infoObject($a, 'new');
-        $this->info = (array)$a;
-        $this->lang = '';
-        $this->changed++;
-        $this->sync();
-      }
-    }
-    catch (Throwable $e)
-    {
-      $chat->log->exception($e);
       return false;
-    }
-    return true;
-  }
-  # }}}
-  function jsonSerialize(): array # {{{
-  {
-    return [$this->info, $this->lang];
-  }
-  # }}}
-}
-# }}}
-class BotChatView extends BotChatFile # {{{
-{
-  const FILE = 'view.json';
-  public $view,$conf,$opts;
-  function load(): bool # {{{
-  {
-    try
-    {
-      # prepare
-      $chat = $this->chat;
-      # load data
-      if (($data = file_get_json($this->file)) === null) {
-        throw ErrorEx::stop($this->file);
-      }
-      if (!$data) {
-        $data = [[],[],[]];
-      }
-      # construct nodes
-      $this->changed = 0;
-      foreach ($data[0] as $i => &$a)
-      {
-        if ($item = $chat->bot->cmd[$a[0]]) {
-          $a = new BotItemMessages($item, $a[1], $a[2], $a[3]);
-        }
-        else
-        {
-          unset($data[0][$i]);
-          $this->changed++;
-        }
-      }
-      # complete
-      $this->view = $data[0];
-      $this->conf = new BotChatViewItems($this, $data[1]);
-      $this->opts = new BotChatViewItems($this, $data[2]);
-    }
-    catch (Throwable $e)
-    {
-      $chat->log->exception($e);
-      return false;
-    }
-    return true;
-  }
-  # }}}
-  function jsonSerialize(): array # {{{
-  {
-    return [$this->view, $this->conf, $this->opts];
+    });
   }
   # }}}
   function getNodeOfItem(object $item): ?object # {{{
   {
-    foreach ($this->view as $i => $node)
+    foreach ($this->queue as $node)
     {
       if ($node->item === $item ||
           $node->item->root === $item->root)
@@ -4192,7 +4387,7 @@ class BotChatView extends BotChatFile # {{{
   # }}}
   function getNodeOfMessage(int $id): ?object # {{{
   {
-    foreach ($this->view as $node)
+    foreach ($this->queue as $node)
     {
       foreach ($node->msgs as $msg)
       {
@@ -4204,7 +4399,12 @@ class BotChatView extends BotChatFile # {{{
     return null;
   }
   # }}}
-  # TODO
+  function delete(object $node): bool # {{{
+  {
+    return $this->queue->deleteValue($node);
+  }
+  # }}}
+  # TODO {{{
   function queueMessageItem(int $messageId): ?object # {{{
   {
     foreach ($this->queue as $m)
@@ -4250,16 +4450,6 @@ class BotChatView extends BotChatFile # {{{
       : null;
   }
   # }}}
-  function queueRemove(object $item): bool # {{{
-  {
-    if (~($i = $this->queueItemRoot($item)))
-    {
-      array_splice($this->queue, $i, 1);
-      return $this->changed = true;
-    }
-    return false;
-  }
-  # }}}
   function queuePop(object $item): ?object # {{{
   {
     if (~($i = $this->queueItemRoot($item)))
@@ -4289,52 +4479,301 @@ class BotChatView extends BotChatFile # {{{
     return null;
   }
   # }}}
+  # }}}
 }
 # }}}
-class BotChatViewItems extends ArrayNode # {{{
+class BotChatViewNode implements JsonSerializable # {{{
 {
-  function __construct(object $view, array &$list)
-  {
-    # filter unknown items
-    foreach ($list as $id => &$cfg)
-    {
-      if (!isset($view->bot->cmd[$id]))
-      {
-        unset($list[$id]);
-        $view->changed++;
-      }
-    }
-    parent::__construct($list, $view, 1);
-  }
-  function jsonSerialize(): array
-  {
-    # filter empty containers
-    $a = $this->node;
-    foreach ($a as $id => $cfg)
-    {
-      if ($cfg->count === 0) {
-        unset($a[$id]);
-      }
-    }
-    return $a;
-  }
-}
-# }}}
-###
-class BotChatAction # {{{
-{
+  const MESSAGE_LIFETIME = 48*60*60;
   function __construct(# {{{
-    public object   $chat,
-    public ?object  $node0,
-    public ?object  $node1
-  ) {}
-  # }}}
-  function __invoke(): int # {{{
+    public object  $view,
+    public object  $item,
+    public array   $msgs,
+    public string  $owner = '',
+    public int     $time  = 0
+  )
   {
-    ###
-    return 1;
+    # construct messages
+    foreach ($msgs as &$m) {
+      $m = new $m[0]($item->bot, $m[1], $m[2]);
+    }
   }
   # }}}
+  function jsonSerialize(): array # {{{
+  {
+    return [
+      $this->item->id, $this->msgs,
+      $this->owner, $this->time
+    ];
+  }
+  # }}}
+  ###
+  function delete(): object # {{{
+  {
+    # prepare
+    $a = [];
+    # telegram allows to delete only "fresh" messages, so,
+    # check item's creation timestamp
+    if (($i = time() - $this->time) >= 0 &&
+        ($i < self::MESSAGE_LIFETIME))
+    {
+      # construct delete actions
+      foreach ($this->msgs as $msg) {
+        $a[] = $msg->delete();
+      }
+    }
+    else
+    {
+      # construct zap actions,
+      # zapping is a special procedure,
+      # which removes message content (makes it neutral)
+      foreach ($this->msgs as $msg) {
+        $a[] = $msg->zap();
+      }
+    }
+    # complete
+    return Promise::All($a)->join(
+      new BotChatViewNode_Delete($this)
+    );
+  }
+  # }}}
+  function compatible(object $item): bool # {{{
+  {
+    # check current messages are fresh enough
+    if ((time() - $this->time) > 0.8 * Bot::MESSAGE_LIFETIME) {
+      return false;
+    }
+    # get message counts
+    $a = count($this->list);
+    $b = count($item->msgs);
+    # new message block must be smaller or
+    # equal to the current, check otherwise
+    if ($a < $b) {
+      return false;
+    }
+    # check message types
+    for ($i = 0; $i < $b; ++$i)
+    {
+      if ($this->list[$i]::class !== $item->msgs[$i]::class) {
+        return false;
+      }
+    }
+    return true;
+  }
+  # }}}
+  function edit(object $item): int # {{{
+  {
+    # prepare
+    $a = count($this->list);
+    $b = count($item->msgs);
+    $c = 0;
+    # delete first messages which type doesnt match
+    if ($a > $b)
+    {
+      for ($i = 0; $i < $a; ++$i)
+      {
+        if ($this->list[$i]::class === $item->msgs[$i]::class) {
+          break;
+        }
+        $this->list[$i]->delete() && $c++;
+      }
+      if ($i)
+      {
+        $a = $a - $i;
+        array_splice($this->list, 0, $i);
+      }
+    }
+    # edit messages which hashes differ
+    for ($i = 0; $i < $b; ++$i)
+    {
+      if ($this->list[$i]->hash === $item->msgs[$i]->hash) {
+        continue;
+      }
+      $this->list[$i]->edit($item->msgs[$i]) && $c++;
+    }
+    # delete any extra messages left
+    if ($a > $b)
+    {
+      for ($i = $b; $i < $a; ++$i) {
+        $this->list[$i]->delete() && $c++;
+      }
+      array_splice($this->list, $b);
+    }
+    # replace item
+    $this->item = $item;
+    # complete
+    return $c;
+  }
+  # }}}
+}
+# }}}
+class BotChatViewNode_Delete extends PromiseAction # {{{
+{
+  function __construct(public object $node)
+  {}
+  function init(): bool
+  {
+    $this->node->view->delete($this->node);
+    return true;
+  }
+}
+# }}}
+
+class BotItemAction extends PromiseAction # {{{
+{
+  const COMMON_FUNC = ['up'=>1,'close'=>1];
+  public $res;
+  function __construct(public object $req)
+  {}
+  function init(): bool # {{{
+  {
+    # prepare
+    $req  = $this->req;
+    $chat = $req->chat;
+    # get target item
+    if (!($item1 = $req->item)) {
+      return false;
+    }
+    # get current item
+    $item0 = ($node = $this->getNodeOfItem($item1))
+      ? $node->item : null;
+    # handle common navigation
+    if (isset(self::COMMON_FUNC[$a = $req->query->func]))
+    {
+      if ($item1 !== $item0)
+      {
+        $req->log->warn($item1->path,
+          "\nunable to $a: ".
+          "command must belong to the same, existing item"
+        );
+        return false;
+      }
+      switch ($a) {
+      case 'up':
+        # climbing up the tree, select parent
+        $item1 = $item1->parent;
+        break;
+      case 'close':
+        # item should be deleted from the view
+        $item1 = null;
+        break;
+      }
+    }
+    # construct specific action
+    $this->res = $item1
+      ? ($item0
+        ? new BotItemUpdateAction($req, $node, $item1)
+        : new BotItemCreateAction($req, $item1))
+      : new BotItemAction_Delete($req, $node);
+    # complete
+    return true;
+  }
+  # }}}
+  function finit(): ?object # {{{
+  {
+    return $this->res;
+  }
+  # }}}
+}
+# }}}
+class BotItemAction_Delete extends PromiseAction # {{{
+{
+  function __construct(
+    public object $req,
+    public object $node
+  ) {}
+  function init(): bool # {{{
+  {
+    # construct context
+    if (!($ctx = $this->node->item->event('close', $this->req))) {
+      return false;
+    }
+    try
+    {
+      # trigger item events
+      switch ($a) {
+      case 0:# update
+        if (!$item1->event(3, $req)) {
+          throw ErrorEx::skip();
+        }
+        break;
+      case 1:# replace
+        if (!$item0->event(2, $req)) {
+          throw ErrorEx::skip();
+        }
+      case 2:# create
+        # to determine event type,
+        # check configuration exists
+        $b = $this->conf[$item1->id]?->node
+          ? 1 # open
+          : 0;# init
+        if (!$item1->event($b, $req)) {
+          throw ErrorEx::skip();
+        }
+        break;
+      case 3:# close
+        if (!$item0->event(2, $req)) {
+          throw ErrorEx::skip();
+        }
+        break;
+      }
+      # create node
+      if ($item1)
+      {
+        if (($msg = $item1->render($req)) === null) {
+          throw ErrorEx::skip();
+        }
+        $node1 = $msg
+          ? new BotChatNode($this, $item1, $msg)
+          : null;
+      }
+      else {
+        $node1 = null;
+      }
+      throw ErrorEx::fail('test stop');
+    }
+    catch (Throwable $e)
+    {
+      $log->exception($e);
+      return null;
+    }
+    return true;
+  }
+  # }}}
+  function delete(object $item): bool # {{{
+  {
+    try
+    {
+      # eject and delete messages of the same root
+      if (!($msgs = $this->cfg->queuePop($item)))
+      {
+        $item->log->warn(__FUNCTION__.": no messages found");
+        throw ErrorEx::skip();
+      }
+      if (!$msgs->delete())
+      {
+        $item->log->warn(__FUNCTION__.": failed to delete");
+        throw ErrorEx::skip();
+      }
+    }
+    catch (Throwable $e)
+    {
+      $item->log->exception($e);
+      return false;
+    }
+    # complete
+    $item->log->info('deleted');
+    return true;
+  }
+  # }}}
+}
+# }}}
+class BotChat_TODO extends PromiseAction # {{{
+{
+  function __construct(
+    public object $context,
+    public object $query
+  ) {}
   ###
   function deleteTT(): bool # {{{
   {
@@ -4366,6 +4805,11 @@ class BotChatAction # {{{
     }
     $log->info($path, 'deleted');
     return true;
+  }
+  # }}}
+  function spin(): bool # {{{
+  {
+    return false;
   }
   # }}}
   ###
@@ -4484,6 +4928,7 @@ class BotChatAction # {{{
 }
 # }}}
 ###
+###
 class BotUserChat extends BotChat # {{{
 {
   public $isUser = true;
@@ -4544,7 +4989,7 @@ class BotChanChat extends BotChat # {{{
   # }}}
 }
 # }}}
-class BotNoChat extends BotChat # {{{
+class BotEmptyChat extends BotChat # {{{
 {
   function __construct(public object $bot) # {{{
   {
@@ -4557,85 +5002,71 @@ class BotNoChat extends BotChat # {{{
   # }}}
 }
 # }}}
+###
+###
 # }}}
-# user {{{
-class BotUser
-{
-  public $name,$username,$fullname,$lang;
-  static function construct(object $bot, object $user): ?object # {{{
-  {
-    try
-    {
-      if (isset($bot->users[$id = strval($user->id)])) {
-        $user = $bot->users[$id];
-      }
-      else
-      {
-        $user = new self($bot, $id, $user);
-        $bot->users[$id] = $user;
-      }
-    }
-    catch (Throwable $e)
-    {
-      $bot->log->exception($e);
-      return null;
-    }
-    return $user;
-  }
-  # }}}
-  function __construct(# {{{
-    public object $bot,
-    public string $id,
-    object $user
-  )
-  {
-    # set names
-    $this->name     = trim($user->first_name);
-    $this->username = $uname = $user->username ?? '';
-    $this->fullname = $uname
-      ? '@'.$uname
-      : $this->name.'#'.$id;
-    # set language
-    if (isset($user->language_code) &&
-        isset($bot->text->texts[$lang = $user->language_code]))
-    {
-      $this->lang = $lang;
-    }
-    else {
-      $this->lang = $bot['lang'];
-    }
-  }
-  # }}}
-}
-# }}}
-# service (core)
+## interactors
 # item {{{
-abstract class BotItem implements ArrayAccess, JsonSerializable # {{{
+abstract class BotItem # {{{
 {
   # {{{
+  const OPTION = [
+    'data'        => false,
+    'data.scope'  => 'chat',
+    'data.name'   => '',
+    'data.depth'  => 0,
+  ];
   public
-    $root,$id,$text,$caps,$opts,$items,
-    $xEvent,$xRender,
-    $log,$chat,$conf,$data;
+    $root,$base,$caps,$texts,$children;
   # }}}
   function __construct(# {{{
     public object   $bot,
-    public array    $skel,
-    public ?object  $parent
-  )
-  {
-    $this->root = $parent ? $parent->root : $this;
-    $this->id   = $id = $skel['id'];
-    $this->text = new BotItemText($this);
-    $this->caps = new BotItemCaptions($this);
-    $this->opts = new BotItemOptions($this);
-    if ($a = $this->opts['data.scope']) {
-      $this->data = new BotItemData($this, $a);
+    public ?object  $parent,
+    public string   $name,
+    public string   $path,
+    public string   $id,
+    public string   $type,
+    public array    $skel
+  ) {
+    # set root (first item/command)
+    $this->root = $parent
+      ? $parent->root
+      : $this;
+    # set class inheritance chain
+    $this->base = [$a = $this::class];
+    while ($a = get_parent_class($a)) {
+      $this->base[] = $a;
     }
-    if (isset($skel[$a = 'items'])) {
-      $this->items = &$skel[$a];
+    # set captions
+    $text = $bot->text;
+    if (isset($skel[$a = 'caps'])) {
+      $text->refine($skel[$a]);
     }
-    # set extra handlers
+    else {
+      $skel[$a] = [];
+    }
+    $this->caps = new BotItemCaptions($text->caps, $skel[$a]);
+    # set texts
+    if (!isset($skel[$a = 'text'])) {
+      $skel[$a] = [];
+    }
+    $text->restruct($skel[$a]);
+    foreach ($skel[$a] as $lang => &$node)
+    {
+      # construct language specific node
+      $node = new BotItemText(
+        $text->tp, $text->texts[$lang], $node, $type
+      );
+    }
+    $this->texts = &$skel[$a];
+    # set children
+    if (isset($skel[$a = 'children'])) {
+      $this->children = &$skel[$a];
+    }
+    # complete
+    $this->refine();
+    /***
+    # set service handlers
     $b = '\\'.__CLASS__;
     if (function_exists($a = $b.'on_'.$id)) {
       $this->xEvent = Closure::bind(Closure::fromCallable($a), $this);
@@ -4643,43 +5074,40 @@ abstract class BotItem implements ArrayAccess, JsonSerializable # {{{
     if (function_exists($a = $b.$id)) {
       $this->xRender = Closure::bind(Closure::fromCallable($a), $this);
     }
+    /***/
   }
   # }}}
   function __debugInfo(): array # {{{
   {
-    return [
-      $this->skel['path'] => $this::class
-    ];
+    return [$this->path, $this::class];
   }
   # }}}
-  function jsonSerialize(): array # {{{
-  {
-    return $this->skel;
-  }
+  function refine(): void # {{{
+  {}
   # }}}
-  function event(int $evt, object $req): bool # {{{
+  function getPath(): array # {{{
   {
-    static $EVENT = ['init','open','close','change'];
-    # attach
-    $this->log  = $req->log;
-    $this->chat = $req->chat;
-    $view = $req->chat->view;
-    $this->opts->node = $view->opts->obtain($this->id);
-    $this->conf = $view->conf->obtain($this->id);
-    if ($this->data && !$this->data->init()) {
-      return false;
+    for ($a = [$this->name], $b = $this; $b->parent; $b = $b->parent) {
+      $a[] = $b->name;
     }
-    # invoke default handler
+    return $a;
+  }
+  # }}}
+  function event(string $evt, object $req): bool # {{{
+  {
+    # create context
+    $ctx = 0;
+    # invoke component handler
     $x = match ($evt) {
-      0 => $this->eventOpen($req, true),
-      1 => $this->eventOpen($req, false),
-      2 => $this->eventClose($req),
-      3 => $this->eventChange($req),
+      'init'   => $this->eventOpen($req, true),
+      'open'   => $this->eventOpen($req, false),
+      'change' => $this->eventChange($req),
+      'close'  => $this->eventClose($req),
     };
     if (!$x) {
       return false;
     }
-    # invoke custom handler and complete
+    # invoke service handler
     return ($f = $this->xEvent)
       ? $f($req, $EVENT[$evt])
       : true;
@@ -4690,28 +5118,14 @@ abstract class BotItem implements ArrayAccess, JsonSerializable # {{{
     return true;
   }
   # }}}
-  function eventClose(object $req): bool # {{{
-  {
-    return true;
-  }
-  # }}}
   function eventChange(object $req): bool # {{{
   {
     return true;
   }
   # }}}
-  # [cfg] access {{{
-  function offsetExists(mixed $k): bool {
-    return isset($this->conf[$k]);
-  }
-  function offsetGet(mixed $k): mixed {
-    return $this->conf[$k];
-  }
-  function offsetSet(mixed $k, mixed $v): void {
-    $this->conf[$k] = $v;
-  }
-  function offsetUnset(mixed $k): void {
-    $this->conf[$k] = null;
+  function eventClose(object $req): bool # {{{
+  {
+    return true;
   }
   # }}}
   function renderMarkup(array &$mkup, ?array $flags = null): string # {{{
@@ -4848,56 +5262,20 @@ abstract class BotItem implements ArrayAccess, JsonSerializable # {{{
       : '';
   }
   # }}}
-  abstract function render(object $req): ?array;
-}
-# }}}
-class BotItemText implements ArrayAccess # {{{
-{
-  public $text,$lang = 'en';
-  function __construct(public object $item) {
-    $this->text = &$item->skel['text'];
-  }
-  function offsetExists(mixed $k): bool {
-    return isset($this->text[$this->lang][$k]);
-  }
-  function offsetGet(mixed $k): mixed {
-    return $this->text[$this->lang][$k] ?? '';
-  }
-  function offsetSet(mixed $k, mixed $v): void
-  {}
-  function offsetUnset(mixed $k): void
-  {}
-  function render(array $o): string
-  {
-    # prepare
-    $item = $this->item;
-    $bot  = $item->bot;
-    # check local
-    if ($t = $this->text[$this->lang]['#'] ?? '') {
-      return $bot->tp->render($t, $o);
-    }
-    # check global
-    if ($t = $bot->text[$item->skel['type']]) {
-      return $bot->tp->render($t, $o);
-    }
-    # nothing
-    return '';
-  }
+  abstract function render(object $ctx): ?array;
 }
 # }}}
 class BotItemCaptions implements ArrayAccess # {{{
 {
-  public $caps,$botCaps;
-  function __construct(public object $item)
-  {
-    $this->caps = &$item->skel['caps'];
-    $this->botCaps = &$item->bot->text->caps;
-  }
+  function __construct(
+    private array &$base,
+    private array &$spec
+  ) {}
   function offsetExists(mixed $k): bool {
-    return true;
+    return isset($this->spec[$k]) || isset($this->base[$k]);
   }
   function offsetGet(mixed $k): mixed {
-    return $this->caps[$k] ?? $this->botCaps[$k] ?? '';
+    return $this->spec[$k] ?? $this->base[$k] ?? '';
   }
   function offsetSet(mixed $k, mixed $v): void
   {}
@@ -4905,75 +5283,156 @@ class BotItemCaptions implements ArrayAccess # {{{
   {}
 }
 # }}}
-class BotItemOptions implements ArrayAccess # {{{
+class BotItemText implements ArrayAccess # {{{
 {
-  public $base,$node;
-  function __construct(public object $item) # {{{
-  {
-    $clas = $item::class;
-    $base = [$clas];
-    while ($clas = get_parent_class($clas)) {
-      $base[] = $clas;
+  const TEMPLATE_PREFIX = '#';
+  private $template;
+  function __construct(
+    private object  $tp,
+    private array   &$base,
+    private array   $spec,
+    string  $type
+  ) {
+    if (isset($spec[$k = self::TEMPLATE_PREFIX])) {
+      $this->template = &$spec[$k];
     }
-    $this->base = array_slice($base, 0, -1);
+    elseif (isset($base[$k = $k.$type])) {
+      $this->template = &$base[$k];
+    }
+    else {
+      $this->template = '';
+    }
+  }
+  function offsetExists(mixed $k): bool {
+    return isset($this->spec[$k]) || isset($this->base[$k]);
+  }
+  function offsetGet(mixed $k): mixed {
+    return $this->spec[$k] ?? $this->base[$k] ?? '';
+  }
+  function offsetSet(mixed $k, mixed $v): void
+  {}
+  function offsetUnset(mixed $k): void
+  {}
+  function render(array $data, string $template = ''): string
+  {
+    return ($template || ($template = &$this->template))
+      ? $this->tp->render($template, $data)
+      : '';
+  }
+}
+# }}}
+class BotItemQuery # {{{
+{
+  public $res;
+  function __construct(
+    public string &$func,
+    public string &$args
+  ) {}
+}
+# }}}
+class BotItemCtx implements ArrayAccess # {{{
+{
+  public
+    $query,$log,$chat,$user,
+    $caps,$lang,$text,$conf,$opts,$data;
+  ###
+  function __construct(private object $item, object $req) # {{{
+  {
+    # prepare
+    $user = $req->user;
+    $chat = $req->chat;
+    # initialize
+    $this->query = $req->query;
+    $this->log   = $req->log->new($item->path);
+    $this->chat  = $chat->info;
+    $this->user  = $user->info;
+    $this->caps  = $item->caps;
+    $this->lang  = $lang = $chat->lang ?: $user->lang;
+    $this->text  = $item->texts[$lang];
+    $this->conf  = $chat->conf->obtain($item->id);
+    $this->opts  = $opts = new BotItemCtxOptions(
+      $item, $chat->opts->obtain($item->id)
+    );
+    if ($opts['data'])
+    {
+      $a = $opts['data.name'] ?? '@'.$item->id;
+      $a = match ($opts['data.scope']) {
+        'global' => $chat->bot->cfg->dirDataRoot.$a,
+        'bot'    => $chat->bot->cfg->dirData.$a,
+        default  => $chat->dir.$a,
+      };
+      $this->data = $chat->bot->file->getNode(
+        $a.'.json', $opts['data.depth']
+      );
+    }
   }
   # }}}
-  function baseOf(string $k): string # {{{
+  # [conf] access {{{
+  function offsetExists(mixed $k): bool {
+    return isset($this->conf[$k]);
+  }
+  function offsetGet(mixed $k): mixed {
+    return $this->conf[$k];
+  }
+  function offsetSet(mixed $k, mixed $v): void {
+    $this->conf[$k] = $v;
+  }
+  function offsetUnset(mixed $k): void {
+    $this->conf[$k] = null;
+  }
+  # }}}
+}
+# }}}
+class BotItemCtxOptions implements ArrayAccess # {{{
+{
+  function __construct(
+    private object $item,
+    private object $node
+  ) {}
+  function grab(string $k): object {
+    return new BotItemCtxOption($this, $k.'.');
+  }
+  function baseOf(string $k): string
   {
-    foreach ($this->base as $type)
+    foreach ($this->item->base as $class)
     {
-      if (isset($type::OPTION[$k])) {
-        return $type;
+      if (isset($class::OPTION[$k])) {
+        return $class;
       }
     }
     return '';
   }
-  # }}}
-  function grab(string $k): object # {{{
-  {
-    return new BotItemOptionsGrab($this, $k.'.');
-  }
-  # }}}
-  # access {{{
   function offsetExists(mixed $k): bool {
     return $this->baseOf($k) !== '';
   }
   function offsetGet(mixed $k): mixed
   {
-    # get from chat/user
     if (isset($this->node[$k])) {
       return $this->node[$k];
     }
-    # get from command config
     if (isset($this->item->skel[$k])) {
       return $this->item->skel[$k];
     }
-    # get default
     return ($base = $this->baseOf($k))
       ? $base::OPTION[$k]
       : null;
   }
   function offsetSet(mixed $k, mixed $v): void
   {
-    # option must have base
-    if ($this->baseOf($k)) {
+    if ($this->baseOf($k)) {# must have base
       $this->node[$k] = $v;
     }
   }
-  function offsetUnset(mixed $k): void
-  {
-    if (isset($this->node[$k])) {
-      $this->node[$k] = null;
-    }
+  function offsetUnset(mixed $k): void {
+    $this->node[$k] = null;
   }
-  # }}}
 }
 # }}}
-class BotItemOptionsGrab implements ArrayAccess # {{{
+class BotItemCtxOption implements ArrayAccess # {{{
 {
   function __construct(
-    public object $opts,
-    public string $from
+    private object $opts,
+    private string $from
   ) {}
   function offsetExists(mixed $k): bool {
     return isset($this->opts[$this->from.$k]);
@@ -4987,244 +5446,6 @@ class BotItemOptionsGrab implements ArrayAccess # {{{
   function offsetUnset(mixed $k): void {
     $this->opts[$this->from.$k] = null;
   }
-}
-# }}}
-class BotItemData implements ArrayAccess # {{{
-{
-  const PREFIX = '@';
-  public $scope,$node;
-  function __construct(public object $item, string $scope) # {{{
-  {
-    $this->scope = match ($scope) {
-      'global' => 0,
-      'bot'    => 1,
-      'chat'   => 2,
-    };
-  }
-  # }}}
-  function init(): bool # {{{
-  {
-    # prepare
-    $item = $this->item;
-    $bot  = $item->bot;
-    $file = $item->opts['data.name'] ?? self::PREFIX.$this->item->id;
-    # determine file path
-    switch ($this->scope) {
-    case 0:
-      $file = $bot->cfg->dirDataRoot.$file;
-      break;
-    case 1:
-      $file = $bot->cfg->dirData.$file;
-      break;
-    case 2:
-      $file = $bot->chat->dir.$file;
-      break;
-    case 3:# user
-      $file = $bot->chat->isUser
-        ? $bot->chat->dir.$file
-        : $bot->chat->dir.$file.'-'.$bot->user->id;
-      break;
-    }
-    # load and complete
-    return ($this->data = $bot->file->getData($file.'.json'))
-      ? true : false;
-  }
-  # }}}
-  # [data] access {{{
-  function offsetExists(mixed $k): bool {
-    return isset($this->data->node[$k]);
-  }
-  function offsetGet(mixed $k): mixed {
-    return $this->data->node[$k];
-  }
-  function offsetSet(mixed $k, mixed $v): void {
-    $this->data->node[$k] = $v;
-  }
-  function offsetUnset(mixed $k): void {
-    unset($this->data->node[$k]);
-  }
-  # }}}
-  ###
-  function set(array &$data): bool # {{{
-  {
-    if ($this->data === $data) {
-      return false;
-    }
-    $this->count = count($this->data = $data);
-    return $this->changed = true;
-  }
-  # }}}
-  function merge(array &$data): bool # {{{
-  {
-    reset($data);
-    for ($i = 0, $j = count($data); $i < $j; ++$i)
-    {
-      $k = key($data);
-      if ($data[$k] === null)
-      {
-        if (isset($this->data[$k]))
-        {
-          unset($this->data[$k]);
-          $this->changed = true;
-        }
-      }
-      elseif (!isset($this->data[$k]) ||
-              $this->data[$k] !== $data[$k])
-      {
-        $this->data[$k] = $data[$k];
-        $this->changed  = true;
-      }
-    }
-    return $this->changed;
-  }
-  # }}}
-  function indexOf(string $k, string|int $v): int # {{{
-  {
-    # search index
-    for ($i = 0, $j = $this->count; $i < $j; ++$i)
-    {
-      if ($this->data[$i][$k] === $v) {
-        return $i;
-      }
-    }
-    # not found
-    return -1;
-  }
-  # }}}
-  function slice(int $from, int $to): ?array # {{{
-  {
-    return array_slice($this->data, $from, $to);
-  }
-  # }}}
-  function arrayPush(string $k, ...$v): void # {{{
-  {
-    if (isset($this->data[$k]))
-    {
-      array_push($this->data[$k], ...$v);
-      $this->changed = true;
-    }
-  }
-  # }}}
-}
-# }}}
-class BotItemMessages implements JsonSerializable # {{{
-{
-  function __construct(# {{{
-    public object  $item,
-    public array   $msgs,
-    public string  $owner = '',
-    public int     $time  = 0
-  )
-  {
-    # construct messages
-    foreach ($msgs as &$m) {
-      $m = new $m[0]($item->bot, $m[1], $m[2]);
-    }
-  }
-  # }}}
-  function jsonSerialize(): array # {{{
-  {
-    return [
-      $this->item->id, $this->msgs,
-      $this->owner, $this->time
-    ];
-  }
-  # }}}
-  ###
-  function compatible(object $item): bool # {{{
-  {
-    # check current messages are fresh enough
-    if ((time() - $this->time) > 0.8 * Bot::MESSAGE_LIFETIME) {
-      return false;
-    }
-    # get message counts
-    $a = count($this->list);
-    $b = count($item->msgs);
-    # new message block must be smaller or
-    # equal to the current, check otherwise
-    if ($a < $b) {
-      return false;
-    }
-    # check message types
-    for ($i = 0; $i < $b; ++$i)
-    {
-      if ($this->list[$i]::class !== $item->msgs[$i]::class) {
-        return false;
-      }
-    }
-    return true;
-  }
-  # }}}
-  function edit(object $item): int # {{{
-  {
-    # prepare
-    $a = count($this->list);
-    $b = count($item->msgs);
-    $c = 0;
-    # delete first messages which type doesnt match
-    if ($a > $b)
-    {
-      for ($i = 0; $i < $a; ++$i)
-      {
-        if ($this->list[$i]::class === $item->msgs[$i]::class) {
-          break;
-        }
-        $this->list[$i]->delete() && $c++;
-      }
-      if ($i)
-      {
-        $a = $a - $i;
-        array_splice($this->list, 0, $i);
-      }
-    }
-    # edit messages which hashes differ
-    for ($i = 0; $i < $b; ++$i)
-    {
-      if ($this->list[$i]->hash === $item->msgs[$i]->hash) {
-        continue;
-      }
-      $this->list[$i]->edit($item->msgs[$i]) && $c++;
-    }
-    # delete any extra messages left
-    if ($a > $b)
-    {
-      for ($i = $b; $i < $a; ++$i) {
-        $this->list[$i]->delete() && $c++;
-      }
-      array_splice($this->list, $b);
-    }
-    # replace item
-    $this->item = $item;
-    # complete
-    return $c;
-  }
-  # }}}
-  function delete(): bool # {{{
-  {
-    # telegram allows to delete only "fresh" messages, so,
-    # check item's creation timestamp
-    if (($a = time() - $this->time) >= 0 &&
-        ($a < Bot::MESSAGE_LIFETIME))
-    {
-      # iterate and delete messages
-      foreach ($this->list as $a => $msg)
-      {
-        if (!$msg->delete() && $a === 0) {
-          return false;# interrupt at first failed attempt
-        }
-      }
-    }
-    else
-    {
-      # iterate and zap messages
-      foreach ($this->list as $msg) {
-        $msg->zap();
-      }
-    }
-    # done
-    return true;
-  }
-  # }}}
 }
 # }}}
 # }}}
@@ -5265,8 +5486,8 @@ abstract class BotMessage extends BotConfigAccess implements JsonSerializable
   abstract function zap(): bool;
 }
 # }}}
-# service (components)
-# img {{{
+# components
+# Img {{{
 class BotImgItem extends BotItem # {{{
 {
   const OPTION = [# {{{
@@ -5343,7 +5564,7 @@ class BotImgItem extends BotItem # {{{
       }
       # get file identifier from cache or
       # create file object for transmission
-      if (!($b = $bot->file->getId[$a])) {
+      if (!($b = $bot->file->getFileId[$a])) {
         $b = BotApiFile::construct($a, false);
       }
       # complete
@@ -5467,7 +5688,7 @@ class BotImgMessage extends BotMessage # {{{
     $bot  = $this->bot;
     $file = '';
     # get placeholder image
-    if (!($img = $bot->file->getId(__METHOD__)))
+    if (!($img = $bot->file->getFileId(__METHOD__)))
     {
       $cfg = $this['placeholder'];
       $img = self::getPlaceholderFile($cfg['size'], $cfg['color']);
@@ -5673,7 +5894,7 @@ class BotImgMessage extends BotMessage # {{{
 }
 # }}}
 # }}}
-# txt {{{
+# Txt {{{
 class BotTxtItem extends BotItem # {{{
 {
   const OPTION = [# {{{
@@ -5758,7 +5979,7 @@ class BotTxtMessage extends BotMessage # {{{
 }
 # }}}
 # }}}
- # list {{{
+ # List {{{
 class BotListItem extends BotImgItem
 {
   const OPTION = [# {{{
@@ -6024,7 +6245,7 @@ class BotListItem extends BotImgItem
   # }}}
 }
 # }}}
- # form {{{
+ # Form {{{
 class BotFormItem extends BotImgItem
 {
   const OPTION = [# {{{
@@ -6325,7 +6546,7 @@ class BotFormItem extends BotImgItem
     return BotTxtMessage::construct($bot, $mkup);
   }
   # }}}
-  function init(array &$cfg): bool # {{{
+  function init_TODO(array &$cfg): bool # {{{
   {
     # prepare
     $step   = $this['step']   ?? 0;
@@ -7236,15 +7457,136 @@ class BotFormItem extends BotImgItem
 * ║╬║ ⎜  *  ⎟ ✱✱✱ ✶✶✶ ⨳⨳⨳
 * ╚═╝ ⎝     ⎠ ⟶ ➤ →
 *
-* abstract api: Polling/Hook reciever
-* filedata access time and sync/cleanup
+* fix: slow api action generator
+* feature: file access time, lazy sync/cleanup
+* solve: request/response/context
 * test: handlers source errors
 * test: file_id usage
-* request filters
-* WebHook: operate through fast-cgi (nginx)
-* stability: masterbot should erase outdated locks of bots that failed for some reason
-* form data separation: user changes its own data until completion
-* compatible msg updates: remove unnecessary refresh in private chat
+* perf: mustache parser text reference and prepare()
+* feature: request filters
+* feature: WebHook, operate through fast-cgi (nginx)
+* stability: masterbot should erase outdated locks of bots that failed for unknown reason
+* solve: form data separation, user changes its own data until completion
+* fix: compatible msg updates, unnecessary refresh in private chat
 * solve: old message callback action does ZAP? or.. REFRESH?!
+* architect: bot.file -> bot.data
 */
+class BotItemData_DELETE implements ArrayAccess # {{{
+{
+  const PREFIX = '@';
+  public $scope,$node;
+  function __construct(public object $item, string $scope) # {{{
+  {
+    $this->scope = match ($scope) {
+      'global' => 0,
+      'bot'    => 1,
+      'chat'   => 2,
+    };
+  }
+  # }}}
+  function init(): bool # {{{
+  {
+    # prepare
+    $item = $this->item;
+    $bot  = $item->bot;
+    $file = $item->opts['data.name'] ?? self::PREFIX.$this->item->id;
+    # determine file path
+    switch ($this->scope) {
+    case 0:
+      $file = $bot->cfg->dirDataRoot.$file;
+      break;
+    case 1:
+      $file = $bot->cfg->dirData.$file;
+      break;
+    case 2:
+      $file = $bot->chat->dir.$file;
+      break;
+    case 3:# user
+      $file = $bot->chat->isUser
+        ? $bot->chat->dir.$file
+        : $bot->chat->dir.$file.'-'.$bot->user->id;
+      break;
+    }
+    # load and complete
+    return ($this->data = $bot->file->get($file.'.json'))
+      ? true : false;
+  }
+  # }}}
+  # [data] access {{{
+  function offsetExists(mixed $k): bool {
+    return isset($this->data->node[$k]);
+  }
+  function offsetGet(mixed $k): mixed {
+    return $this->data->node[$k];
+  }
+  function offsetSet(mixed $k, mixed $v): void {
+    $this->data->node[$k] = $v;
+  }
+  function offsetUnset(mixed $k): void {
+    unset($this->data->node[$k]);
+  }
+  # }}}
+  ###
+  function set(array &$data): bool # {{{
+  {
+    if ($this->data === $data) {
+      return false;
+    }
+    $this->count = count($this->data = $data);
+    return $this->changed = true;
+  }
+  # }}}
+  function merge(array &$data): bool # {{{
+  {
+    reset($data);
+    for ($i = 0, $j = count($data); $i < $j; ++$i)
+    {
+      $k = key($data);
+      if ($data[$k] === null)
+      {
+        if (isset($this->data[$k]))
+        {
+          unset($this->data[$k]);
+          $this->changed = true;
+        }
+      }
+      elseif (!isset($this->data[$k]) ||
+              $this->data[$k] !== $data[$k])
+      {
+        $this->data[$k] = $data[$k];
+        $this->changed  = true;
+      }
+    }
+    return $this->changed;
+  }
+  # }}}
+  function indexOf(string $k, string|int $v): int # {{{
+  {
+    # search index
+    for ($i = 0, $j = $this->count; $i < $j; ++$i)
+    {
+      if ($this->data[$i][$k] === $v) {
+        return $i;
+      }
+    }
+    # not found
+    return -1;
+  }
+  # }}}
+  function slice(int $from, int $to): ?array # {{{
+  {
+    return array_slice($this->data, $from, $to);
+  }
+  # }}}
+  function arrayPush(string $k, ...$v): void # {{{
+  {
+    if (isset($this->data[$k]))
+    {
+      array_push($this->data[$k], ...$v);
+      $this->changed = true;
+    }
+  }
+  # }}}
+}
+# }}}
 # }}}

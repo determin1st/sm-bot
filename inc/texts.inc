@@ -1,6 +1,6 @@
 <?php return [
   'en' => [# {{{
-    'BotListItem' => # {{{
+    '#List' => # {{{
     '
     {{#cnt}}
       Page <b>{{page}}</b> of {{total}} (total items: {{cnt}})
@@ -8,7 +8,7 @@
       List is empty
     {{/cnt}}
     ',# }}}
-    'BotFormItem' => # {{{
+    '#Form' => # {{{
     '
     {:BEG:}
     {{?description}}
@@ -103,7 +103,7 @@
   ],
   # }}}
   'ru' => [# {{{
-    'BotListItem' => # {{{
+    '#List' => # {{{
     '
     {{#cnt}}
       Страница <b>{{page}}</b> из {{total}} (всего элементов: {{cnt}})
