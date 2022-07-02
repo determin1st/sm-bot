@@ -5,9 +5,7 @@ shift
 goto LOOP
 
 :SETUP
-:: select runtime variant (production ~ NTS, opcache+JIT)
-::set PHP="E:\lab\www\php-nts\php.exe"
-set PHP="E:\lab\www\php\php.exe"
+set PHP="E:\lab\www\php-nts\php.exe"
 goto CHECK
 
 :CHECK

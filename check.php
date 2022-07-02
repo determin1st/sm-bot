@@ -28,8 +28,13 @@ $o = new class {
         throw ErrorEx::stop($a, "fail\n$b");
       }
       $b = 'required function: ';
-      if (time() <= 0 || ($t = hrtime(true)) === false || $t <= 0) {
+      if (time() <= 0 || ($c = hrtime(true)) === false || $c <= 0) {
         throw ErrorEx::stop($a, "fail\n$b hrtime()");
+      }
+      if (!function_exists('hash_algos') || !function_exists('hash') ||
+          !($c = hash_algos()) || !in_array('xxh3', $c))
+      {
+        throw ErrorEx::stop($a, "fail\n$b hash(xxh3)");
       }
       $b = 'required extension:';
       if (!function_exists('\\curl_version') ||
