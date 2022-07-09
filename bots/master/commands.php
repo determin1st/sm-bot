@@ -1,7 +1,7 @@
 <?php declare(strict_types=1);
 namespace SM;
 return [
-'/start/bots' => function (object $item): ?array # {{{
+'/start/bots' => function (object $q): bool # {{{
 {
   # prepare
   $bot  = $item->bot;
@@ -25,7 +25,7 @@ return [
   return $data;
 },
 # }}}
-'/start/bots/bot' => function (object $item, string $func, string $args): ?array # {{{
+'/start/bots/bot' => function (object $q): bool # {{{
 {
   # prepare
   # determine bot identifier
@@ -87,11 +87,7 @@ return [
   ];
 },
 # }}}
-'/start/bots/create' => function (# {{{
-  object  $item,
-  string  $func,
-  mixed   &$args = null
-):?array
+'/start/bots/create' => function (object $q): bool # {{{
 {
   static $NEWBOT_EXP = '/^.+ t\.me\/([^.]{5,32})\..+ HTTP API:\n([^\n]{44,46})\n.+$/s';
   switch ($func) {
