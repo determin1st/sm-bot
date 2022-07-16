@@ -253,7 +253,7 @@ class ErrorEx extends Error # {{{
       return $b ? $e : null;
     }
     # wrap
-    return new self(1, null, $e);
+    return new self(1, [], $e);
   }
   # }}}
   function __construct(# {{{
@@ -385,17 +385,23 @@ class ArrayNode implements ArrayAccess, JsonSerializable # {{{
     {
       if ($set)
       {
-        $this->count--;
         unset($this->arr[$k]);
+        $this->count--;
         $this->change();
       }
     }
     elseif (!$set || $v !== $this->arr[$k])
     {
+      if (is_array($v) && ($limit = $this->limit))
+      {
+        $this->arr[$k] = new self(
+          $v, $limit - 1, $this, $this->depth + 1
+        );
+      }
+      else {
+        $this->arr[$k] = $v;
+      }
       $set || $this->count++;
-      $this->arr[$k] = (is_array($v) && ($i = $this->limit))
-        ? new self($v, $this, $i - 1, $this->depth + 1)
-        : $v;
       $this->change();
     }
   }
@@ -484,7 +490,7 @@ class ArrayNode implements ArrayAccess, JsonSerializable # {{{
     }
     $this->count++;
     return $this->arr[$k] = new self(
-      [], $this, $limit, $this->depth + 1
+      [], $limit, $this, $this->depth + 1
     );
   }
   # }}}
@@ -560,11 +566,17 @@ class ArrayNode implements ArrayAccess, JsonSerializable # {{{
 # }}}
 class ArrayUnion implements ArrayAccess # {{{
 {
-  public $stack = [];
-  function __construct(?array $first = null) # {{{
+  static function construct(# {{{
+    mixed $defaultValue = null
+  ):self
   {
-    $first && $this->pushRef($first);
+    return new self($defaultValue);
   }
+  # }}}
+  function __construct(# {{{
+    public mixed $defaultValue,
+    public array $stack = []
+  ) {}
   # }}}
   function __isset(string $k): bool # {{{
   {
@@ -578,21 +590,6 @@ class ArrayUnion implements ArrayAccess # {{{
       : null;
   }
   # }}}
-  # access {{{
-  function offsetExists(mixed $k): bool {
-    return $this->search($k) >= 0;
-  }
-  function offsetGet(mixed $k): mixed
-  {
-    return ~($i = $this->search($k))
-      ? $this->stack[$i][$k]
-      : null;
-  }
-  function offsetSet(mixed $k, mixed $v): void
-  {}
-  function offsetUnset(mixed $k): void
-  {}
-  # }}}
   function search(string $k): int # {{{
   {
     for ($i = 0, $j = count($this->stack); $i < $j; ++$i)
@@ -604,15 +601,31 @@ class ArrayUnion implements ArrayAccess # {{{
     return -1;
   }
   # }}}
-  function push(array $a): void # {{{
+  # [access] {{{
+  function offsetExists(mixed $k): bool {
+    return $this->search($k) >= 0;
+  }
+  function offsetGet(mixed $k): mixed
   {
-    $this->pushRef($a);
+    return ~($i = $this->search($k))
+      ? $this->stack[$i][$k]
+      : $this->defaultValue;
+  }
+  function offsetSet(mixed $k, mixed $v): void
+  {}
+  function offsetUnset(mixed $k): void
+  {}
+  # }}}
+  function push(array $a): self # {{{
+  {
+    return $this->pushRef($a);
   }
   # }}}
-  function pushRef(array &$a): void # {{{
+  function pushRef(array &$a): self # {{{
   {
     array_unshift($this->stack, null);
     $this->stack[0] = &$a;
+    return $this;
   }
   # }}}
   function pop(): void # {{{
@@ -776,24 +789,23 @@ class Syncbuf # {{{
   # }}}
 }
 # }}}
-# promises {{{
-class Promise
+class Promise # {{{
 {
   public $action,$status = 1,$result,$next;
   # static {{{
   static function Func(object $f): self {
     return new self(new PromiseActionFunc($f));
   }
-  static function One(?object ...$a): self {
+  static function One(array $a): self {
     return new self(new PromiseActionOne($a, false));
   }
-  static function OneBreak(?object ...$a): self {
+  static function OneBreak(array $a): self {
     return new self(new PromiseActionOne($a, true));
   }
-  static function All(?object ...$a): self {
+  static function All(array $a): self {
     return new self(new PromiseActionAll($a, false));
   }
-  static function AllBreak(?object ...$a): self {
+  static function AllBreak(array $a): self {
     return new self(new PromiseActionAll($a, true));
   }
   static function from(object $x): self
@@ -978,7 +990,11 @@ class PromiseActionOne extends PromiseAction # {{{
       }
     }
     $this->pending = $j;
-    $this->result  = true;
+  }
+  function init(): bool
+  {
+    $this->result = true;
+    return true;
   }
   function spin(): bool
   {
@@ -1060,9 +1076,9 @@ class BotConsole # {{{
 {
   # {{{
   const
-    UUID     = 'b0778b0492bb482dad6cde6ef72308f1',
-    TIMEOUT  = 1000,
-    BUF_SIZE = 32000; # lines=80*400
+    UUID    = 'b0778b0492bb482dad6cde6ef72308f1',
+    TIMEOUT = 1000,
+    SIZE    = 32000; # lines=80*400
   public
     $active,$membuf,$lock,$locked = false;
   # }}}
@@ -1076,7 +1092,7 @@ class BotConsole # {{{
   function __construct(public object $bot) # {{{
   {
     $this->active = new SyncEvent(self::UUID, 1);
-    $this->membuf = new Membuf(self::UUID, self::BUF_SIZE);
+    $this->membuf = new Membuf(self::UUID, self::SIZE);
     $this->lock   = new SyncReaderWriter(self::UUID);
   }
   # }}}
@@ -1492,8 +1508,18 @@ class BotLog
   # }}}
   function print(int $level, int $sep, string ...$msg): void # {{{
   {
+    # filter empty messages
+    for ($i = 0, $j = count($msg); $i < $j; ++$i)
+    {
+      if ($msg[$i] === '') {
+        array_splice($msg, $i--, 1); $j--;
+      }
+    }
+    # output
     $s = self::separator($level, $sep);
-    $this->bot->console->write($this->message($level, $s, $msg)."\n");
+    $this->bot->console->write(
+      $this->message($level, $s, $msg)."\n"
+    );
   }
   # }}}
   function printObject(object $o, int $level, array &$msg): void # {{{
@@ -1563,6 +1589,17 @@ EOD;
   function errorObject(object $o, string ...$msg): void # {{{
   {
     $this->printObject($o, 1, $msg);
+  }
+  # }}}
+  function ok(bool $result, string $msg = ''): bool # {{{
+  {
+    if ($result) {
+      $this->info($msg, 'ok');
+    }
+    else {
+      $this->error($msg, 'fail');
+    }
+    return $result;
   }
   # }}}
   function warn(string ...$msg): void # {{{
@@ -1743,9 +1780,9 @@ class BotConfig # {{{
         'replyFast'        => true,# reply before rendered
       ],
       'BotImgMessage' => [
-        'placeholder' => [
-          'size'      => [640,160],
-          'color'     => [0,0,0],# black
+        'blank' => [# placeholder background
+          [640,160],# size: width,height
+          [0,0,48],# color: R,G,B
         ],
       ],
       # }}}
@@ -1895,7 +1932,7 @@ class BotFile extends BotConfigAccess
     EXP_IMG  = '{jpg,jpeg,png}',
     FILE_ID  = 'file_id.json';
   public
-    $log,$id,$img = [],$font = [],$map = [];
+    $log,$fid,$img = [],$fnt = [],$map = [];
   # }}}
   function __construct(public object $bot) # {{{
   {
@@ -1905,10 +1942,10 @@ class BotFile extends BotConfigAccess
   function init(): bool # {{{
   {
     # load file identifiers
-    $this->id = new BotFileData(
+    $this->fid = new BotFileData(
       $this->log, $this->bot->cfg->dirData.self::FILE_ID
     );
-    if (!$this->id->load()) {
+    if (!$this->fid->load()) {
       return false;
     }
     # load file maps
@@ -1920,8 +1957,6 @@ class BotFile extends BotConfigAccess
     try
     {
       # prepare
-      $this->font = [];
-      $this->img  = [];
       $cfg = $this->bot->cfg;
       $flg = GLOB_BRACE|GLOB_NOSORT|GLOB_NOESCAPE;
       # scan images
@@ -1951,7 +1986,7 @@ class BotFile extends BotConfigAccess
         foreach (glob($a, $flg) as $c)
         {
           $j = strrpos($c, '.') - $i;
-          $this->font[substr($c, $i, $j)] = $c;
+          $this->fnt[substr($c, $i, $j)] = $c;
         }
       }
     }
@@ -1963,32 +1998,50 @@ class BotFile extends BotConfigAccess
     return true;
   }
   # }}}
+  function id(string $path, string $id = ''): string # {{{
+  {
+    if ($id === '') {
+      return $this->fid[$path] ?? '';
+    }
+    $this->fid[$path] = $id;
+    return '';
+  }
+  # }}}
   function image(string $name): string # {{{
   {
     if (isset($this->img[$name])) {
       return $this->img[$name];
     }
-    $this->log->error($name, 'image not found');
+    $this->log->error(__FUNCTION__.':'.$name, 'not found');
     return '';
   }
   # }}}
-  function data(string $k, int $depth = 0): ?object # {{{
+  function font(string $name): string # {{{
+  {
+    if (isset($this->fnt[$name])) {
+      return $this->fnt[$name];
+    }
+    $this->log->error(__FUNCTION__.':'.$name, 'not found');
+    return '';
+  }
+  # }}}
+  function data(string $path, int $depth = 0): ?object # {{{
   {
     # check already exists
-    if (isset($this->map[$k])) {
-      return $this->map[$k];
+    if (isset($this->map[$path])) {
+      return $this->map[$path];
     }
     # construct and store new instance
-    $o = new BotFileData($this->log, $k, $depth);
+    $o = new BotFileData($this->log, $path, $depth);
     return $o->load()
-      ? ($this->map[$k] = $o)
+      ? ($this->map[$path] = $o)
       : null;
   }
   # }}}
-  function node(string $k, int $depth = 0): object # {{{
+  function node(string $path, int $depth = 0): object # {{{
   {
-    return ($o = $this->data($k, $depth))
-      ? $o->node : new ArrayNode([], $depth);
+    return ($o = $this->data($path, $depth))
+      ? $o->node: new ArrayNode([], $depth);
   }
   # }}}
   function dirCheckMake(string $path, int $perms = 0750): bool # {{{
@@ -2014,7 +2067,7 @@ class BotFile extends BotConfigAccess
   function sync(): void # {{{
   {
     # synchronize file identifiers
-    $this->id->sync();
+    $this->fid->sync();
     # synchronize data objects
     $t = time();
     $x = $this['timeout'];
@@ -2782,7 +2835,9 @@ class BotApiAction extends PromiseAction # {{{
 class BotApiFile extends CURLFile # {{{
 {
   public $isTemp;
-  static function construct(string $file, bool $isTemp): self
+  static function construct(
+    string $file, bool $isTemp = false
+  ):self
   {
     $o = new static($file);
     $o->postname = basename($file);
@@ -2869,6 +2924,7 @@ class BotText
 {
   # {{{
   const
+    DEF_LANG    = 'en',
     DIR_PARSER  = 'sm-mustache',
     FILE_PARSER = 'mustache.php',
     FILE_TEXTS  = 'texts.inc',
@@ -2880,7 +2936,7 @@ class BotText
   function __construct(public object $bot) # {{{
   {
     $this->log = $bot->log->new('text');
-    $this->hlp = new ArrayUnion([
+    $this->hlp = ArrayUnion::construct('')->push([
       'NBSP'    => "\xC2\xA0",# non-breakable space
       'ZWSP'    => "\xE2\x80\x8B",# zero-width space
       'ZS'      => "\xE3\x80\x80",# Ideographic Space
@@ -2922,32 +2978,34 @@ class BotText
     return true;
   }
   # }}}
-  function restruct(array &$texts): void # {{{
+  function restruct(array &$a): self # {{{
   {
+    # prepare
+    $this->refine($a);
     # set primary language
-    if (!$texts) {
-      $texts = ['en'=>[]];
+    if (!isset($a[$b = self::DEF_LANG]))
+    {
+      # store the whole set as primary,
+      # assuming other languages not specified
+      $a = [$b => $a];
     }
-    elseif (!isset($texts['en'])) {
-      $texts = ['en'=>$texts];
-    }
-    $this->refine($texts);
     # set secondary languages
     foreach (array_keys($this->texts) as $lang)
     {
-      if ($lang !== 'en')
+      if ($lang !== $b)
       {
-        if (!isset($texts[$lang])) {# copy primary
-          $texts[$lang] = $texts['en'];
+        if (!isset($a[$lang])) {# copy primary
+          $a[$lang] = $a[$b];
         }
         else {# fill gaps
-          array_import_new($texts[$lang], $texts['en']);
+          array_import_new($a[$lang], $a[$b]);
         }
       }
     }
+    return $this;
   }
   # }}}
-  function refine(array &$a): void # {{{
+  function refine(array &$a): self # {{{
   {
     foreach ($a as &$b)
     {
@@ -2962,6 +3020,19 @@ class BotText
         $b = $this->tp->render($b, '{: :}', []);
       }
     }
+    return $this;
+  }
+  # }}}
+  function restructKey(array &$a, string $k): self # {{{
+  {
+    isset($a[$k]) || ($a[$k] = []);
+    return $this->restruct($a[$k]);
+  }
+  # }}}
+  function refineKey(array &$a, string $k): self # {{{
+  {
+    isset($a[$k]) || ($a[$k] = []);
+    return $this->refine($a[$k]);
   }
   # }}}
   function error(string $msg, int $level): void # {{{
@@ -2991,7 +3062,9 @@ class BotCommands implements ArrayAccess
     TYPE_NAMESPACE = '\\'.__NAMESPACE__.'\\',
     EXP_PATH       = '|^(\/[a-z0-9_]+){1,8}$|i',
     EXP_COMMAND    = '|^((\/[a-z0-9_]+){1,8})(@([a-z_]+bot)){0,1}$|i',
-    EXP_QUERY      = '|^((\/[a-z0-9_]+){1,8})(!([a-z]+)){0,1}([ \n](.*)){0,1}$|is',
+    EXP_Q_COMMAND  = '|^((\/[a-z0-9_]+){1,8})(!([a-z]+)){0,1}([ \n](.*)){0,1}$|is',
+    EXP_Q_SELF     = '|^((\/[a-z0-9_]+){0,8})(!([a-z]+)){1}([ \n](.*)){0,1}$|is',
+    EXP_Q_CHILD    = '|^([a-z0-9_]+(\/[a-z0-9_]+){0,7})(!([a-z]+)){0,1}([ \n](.*)){0,1}$|is',
     SEPARATOR_NAME = '-',
     SEPARATOR_PATH = '/';
   public
@@ -3006,8 +3079,10 @@ class BotCommands implements ArrayAccess
   {
     try
     {
-      # get service scheme and handlers
-      $dir    = $this->bot->cfg->dirSrc;
+      # prepare
+      $bot = $this->bot;
+      $dir = $bot->cfg->dirSrc;
+      # load service scheme and handlers
       $schema = require $dir.self::FILE_SCHEMA;
       $hands  = require $dir.self::FILE_HANDLERS;
       # create items
@@ -3027,10 +3102,18 @@ class BotCommands implements ArrayAccess
         if (!class_exists($class, false)) {
           throw ErrorEx::stop($path, 'unknown type: '.$type);
         }
+        # initialize common fields
+        $bot
+          ->text
+          ->restructKey($item, 'text')
+          ->refineKey($item, 'caps');
+        if (!isset($item[$a = 'markup'])) {
+          $item[$a] = [];
+        }
         # construct
         $item = new $class(
-          $this->bot, $path, $depth, $name, $id, $type, $item,
-          ($hands[$path] ?? null)
+          $bot, $path, $depth, $name, $id, $type, $item,
+          $hands[$path] ?? null
         );
       }
       # build trees and map
@@ -3067,7 +3150,7 @@ class BotCommands implements ArrayAccess
   function offsetUnset(mixed $k): void
   {}
   # }}}
-  function name(object $item): string # {{{
+  function filename(object $item): string # {{{
   {
     return str_replace(
       self::SEPARATOR_PATH,
@@ -3076,14 +3159,25 @@ class BotCommands implements ArrayAccess
     );
   }
   # }}}
-  function path(object $item, string &$text): string # {{{
+  function pathHash(object $item, string &$text): string # {{{
   {
     return
       $item->path.self::SEPARATOR_NAME.
       hash('xxh3', $text);
   }
   # }}}
-  function parse(string &$text): ?array # {{{
+  function query(# {{{
+    string  &$func,
+    string  &$args = '',
+    ?object $item  = null
+  ):string
+  {
+    return
+      ($item ? '/'.$item->id : '').'!'.$func.
+      ($args === '' ? ' '.$args : '');
+  }
+  # }}}
+  function parseCommand(string &$text): ?array # {{{
   {
     $a = [];
     if (preg_match(self::EXP_COMMAND, $text, $a))
@@ -3091,12 +3185,34 @@ class BotCommands implements ArrayAccess
       # simple command
       return [$a[1],'','',($a[4] ?? '')];
     }
-    if (preg_match(self::EXP_QUERY, $text, $a))
+    if (preg_match(self::EXP_Q_COMMAND, $text, $a))
     {
       # command query
       return [$a[1],($a[4] ?? ''),($a[6] ?? ''),''];
     }
     # TODO: deep linking (tg://<BOTNAME>?start=<PATH>)
+    return null;
+  }
+  # }}}
+  function parseCallback(# {{{
+    string &$text, ?object $item = null
+  ):?array
+  {
+    $a = [];
+    if ($item && preg_match(self::EXP_Q_CHILD, $text, $a))
+    {
+      # relative/child query
+      return [
+        ($item->path.self::SEPARATOR_PATH.$a[1]),
+        ($a[4] ?? ''),($a[6] ?? ''),''
+      ];
+    }
+    if (preg_match(self::EXP_Q_SELF, $text, $a) ||
+        preg_match(self::EXP_Q_COMMAND, $text, $a))
+    {
+      # command query
+      return [$a[1],($a[4] ?? ''),($a[6] ?? ''),''];
+    }
     return null;
   }
   # }}}
@@ -4118,13 +4234,12 @@ class BotRequestCommand extends BotRequest # {{{
   function response(): ?object # {{{
   {
     # prepare
-    $data = $this->data;
+    $msg  = $this->data;
     $chat = $this->chat;
     $bot  = $chat->bot;
-    $cmds = $bot->cmd;
     # parse
-    if (!($a = $cmds->parse($data->text))) {
-      return $this->warning('incorrect syntax');
+    if (!($a = $bot->cmd->parseCommand($msg->text))) {
+      return $this->warning('incorrect');
     }
     # check bot name
     # name addressing is skipped for private chat,
@@ -4133,24 +4248,22 @@ class BotRequestCommand extends BotRequest # {{{
       return null;
     }
     # get item
-    if (!($item = $cmds[$a[0]])) {
-      return $this->warning('unknown item');
+    if (!($item = $bot->cmd[$a[0]])) {
+      return $this->warning('unknown');
     }
     # complete
-    $this->log->infoInput('command', $data->text);
-    return Promise::One(
+    $this->log->infoInput('command', $msg->text);
+    return Promise::One([
       $chat->command($this, $item, $a[1], $a[2]),
-      $chat->deleteMessage($data->message_id)
-    );
+      $chat->deleteMessage($msg->message_id)
+    ]);
   }
   # }}}
   function warning(string $msg): ?object # {{{
   {
     if ($this->chat->isUser())
     {
-      $this->log->warnInput(
-        'command', $msg."\n".$this->data->text
-      );
+      $this->log->warnInput('command', $msg);
       return $this->chat->deleteMessage(
         $this->data->message_id
       );
@@ -4366,6 +4479,15 @@ abstract class BotChat # {{{
     return null;
   }
   # }}}
+  function callback(# {{{
+    object $req, object $item, string &$func, string &$args
+  ):object
+  {
+    return new Promise(new BotChatCallback(
+      $req, $item, new BotItemQuery($func, $args)
+    ));
+  }
+  # }}}
   function command(# {{{
     object $req, object $item, string &$func, string &$args
   ):object
@@ -4383,17 +4505,16 @@ abstract class BotChat # {{{
     ]);
   }
   # }}}
-  # isUser/Group/Chan {{{
+  # custom {{{
   function isUser():  bool { return false; }
   function isGroup(): bool { return false; }
   function isChan():  bool { return false; }
-  # }}}
   abstract function dir(): string;
   abstract function set(
     object $user, ?object $chat
   ):object;
+  # }}}
 }
-# }}}
 class BotUserChat extends BotChat # {{{
 {
   const LOGNAME = 'user';
@@ -4458,7 +4579,8 @@ class BotAnonChat extends BotChat # {{{
   }
 }
 # }}}
-class BotChatCommand extends PromiseAction # {{{
+# }}}
+class BotChatCallback extends PromiseAction # {{{
 {
   const COMMON_FUNC = ['up'=>1,'close'=>1];
   function __construct(# {{{
@@ -4498,25 +4620,25 @@ class BotChatCommand extends PromiseAction # {{{
       ? ($node
         ? (($node->item === $item)
           ? $this->change($node)
-          : $this->replace($node, $item))
+          : $this->refresh($node, $item))
         : $this->create($item))
       : $this->delete($node);
   }
   # }}}
-  function delete(object $node): ?object # {{{
+  function delete(object $node, ?object $ctx = null): ?object # {{{
   {
     # prepare
     $req  = $this->req;
     $chat = $req->chat;
     # operate
-    if (!($ctx = $node->item->ctx('close', $req))) {
+    if (!$ctx && !($ctx = $node->item->ctx('close', $req))) {
       return null;# cancel operation
     }
     # complete
     return $node->delete(
       $chat
-    )->then(function() use ($chat,$node) {
-      $this->result &&
+    )->then(function() use ($chat,$node,$ctx) {
+      $ctx->log->ok($this->result, 'delete') &&
       $chat->view->delete($node);
     });
   }
@@ -4537,13 +4659,13 @@ class BotChatCommand extends PromiseAction # {{{
     # complete
     return $node->send(
       $chat, $user
-    )->then(function() use ($chat, $node) {
-      $this->result &&
+    )->then(function() use ($chat,$node,$ctx) {
+      $ctx->log->ok($this->result, 'create') &&
       $chat->view->prepend($node);
     });
   }
   # }}}
-  function replace(object $node0, object $item1): ?object # {{{
+  function refresh(object $node0, object $item1): ?object # {{{
   {
     # prepare
     $req = $this->req;
@@ -4556,7 +4678,9 @@ class BotChatCommand extends PromiseAction # {{{
       return null;
     }
     # complete
-    return $this->update($node0, $node1);
+    return $node1->isEmpty()
+      ? $this->delete($node0, $ctx0)
+      : $this->update($node0, $node1, $ctx0);
   }
   # }}}
   function change(object $node0): ?object # {{{
@@ -4572,38 +4696,51 @@ class BotChatCommand extends PromiseAction # {{{
       return null;
     }
     # complete
-    return $this->update($node0, $node1);
+    return $node1->isEmpty()
+      ? $this->delete($node0, $ctx)
+      : $this->update($node0, $node1, $ctx);
   }
   # }}}
-  function update(object $node0, object $node1): ?object # {{{
+  function update(# {{{
+    object $node0, object $node1, object $ctx
+  ):object
   {
-    # prepare
-    $chat = $this->req->chat;
-    $view = $chat->view;
-    # delete
-    if ($node1->isEmpty())
+    if ($node0->isCompatible($node1))
     {
-      return $node0->delete(
-        $chat
-      )->then(function() use ($view,$node0) {
-        $this->result &&
-        $view->delete($node0);
+      return $node0->edit(
+        $chat, $node1
+      )->then(function() use ($ctx) {
+        $ctx->log->ok($this->result, 'update');
       });
     }
-    # update
-    if ($node0->isCompatible($node1)) {
-      return $node0->edit($chat, $node1);
-    }
-    # refresh
-    return Promise::OneBreak(
+    return $this->replace($node0, $node1, $ctx);
+  }
+  # }}}
+  function replace(# {{{
+    object $node0, object $node1, object $ctx
+  ):object
+  {
+    $chat = $this->req->chat;
+    $view = $chat->view;
+    return Promise::OneBreak([
       $node0->delete($chat),
       $node1->send($chat, $this->req->user)
-    )->then(function() use ($view,$node0,$node1) {
-      $this->result &&
+    ])->then(function() use ($view,$node0,$node1,$ctx) {
+      $ctx->log->ok($this->result, 'replace') &&
       $view->delete($node0)->prepend($node1);
     });
   }
   # }}}
+}
+# }}}
+class BotChatCommand extends BotChatCallback # {{{
+{
+  function update(
+    object $node0, object $node1, object $ctx
+  ):object
+  {
+    return $this->replace($node0, $node1, $ctx);
+  }
 }
 # }}}
 class BotChatNode implements JsonSerializable # {{{
@@ -4676,8 +4813,7 @@ class BotChatNode implements JsonSerializable # {{{
     }
     else
     {
-      # construct zap actions,
-      # zapping is a special procedure,
+      # construct zaps, zap is a special procedure,
       # which removes message content (makes it neutral)
       foreach ($this->msgs as $message) {
         $a[] = $message->zap($chat);
@@ -4695,7 +4831,8 @@ class BotChatNode implements JsonSerializable # {{{
       $a[] = $message->send($chat);
     }
     # compose result
-    return Promise::Func(function() use ($user) {
+    $me = $this;
+    return Promise::Func(function() use ($me,$user) {
       # set node owner and creation timestamp
       $me->owner = $user->id;
       $me->time  = time();
@@ -4763,7 +4900,7 @@ class BotChatNode implements JsonSerializable # {{{
     # compose result
     return Promise::AllBreak(
       $ed
-    )->then(function() use (&$m0, $rm) {
+    )->then(function() use (&$m0,$rm) {
       # remove message entries upon success
       if ($this->result)
       {
@@ -4790,8 +4927,7 @@ abstract class BotItem implements ArrayAccess # {{{
     'data.name'  => '',
     'data.depth' => 0,
   ];
-  public
-    $base,$caps,$texts,$parent,$root,$children;
+  public $base,$caps,$texts,$parent,$root,$children;
   # }}}
   function __construct(# {{{
     public object   $bot,
@@ -4809,28 +4945,14 @@ abstract class BotItem implements ArrayAccess # {{{
       $this->base[] = $a;
     }
     # set captions
-    $text = $bot->text;
-    if (isset($spec[$a = 'caps'])) {
-      $text->refine($spec[$a]);
-    }
-    else {
-      $spec[$a] = [];
-    }
-    $this->caps = new BotItemCaptions(
-      $text->caps, $spec[$a]
-    );
+    $this->caps = ArrayUnion::construct('')
+      ->pushRef($bot->text->caps)
+      ->pushRef($spec['caps']);
     # set texts
-    if (!isset($spec[$a = 'text'])) {
-      $spec[$a] = [];
+    foreach ($spec['text'] as $lang => &$node) {
+      $node = new BotItemText($this, $lang, $node);
     }
-    $text->restruct($spec[$a]);
-    foreach ($spec[$a] as $lang => &$node)
-    {
-      $node = new BotItemText(# language specific node
-        $text->tp, $text->texts[$lang], $node, $type
-      );
-    }
-    $this->texts = &$spec[$a];
+    $this->texts = &$spec['text'];
   }
   # }}}
   function __debugInfo(): array # {{{
@@ -4919,140 +5041,6 @@ abstract class BotItem implements ArrayAccess # {{{
     return $ctx;
   }
   # }}}
-  function renderMarkup(array &$mkup, ?array $flags = null): string # {{{
-  {
-    # prepare
-    static $NOP = ['text'=>' ','callback_data'=>'!'];
-    $id  = $this->id;
-    $bot = $this->bot;
-    $res = [];
-    # iterate
-    foreach ($mkup as &$a)
-    {
-      $row = [];
-      foreach ($a as $b)
-      {
-        # prepare
-        # {{{
-        # check ready
-        if (!is_string($b))
-        {
-          is_array($b) && ($row[] = $b);
-          continue;
-        }
-        # check empty
-        if (!($c = strlen($b))) {
-          continue;
-        }
-        # check nop
-        if ($c === 1)
-        {
-          $row[] = $NOP;
-          continue;
-        }
-        # }}}
-        # parse inner (current item)
-        if ($b[0] === '!') {
-          # {{{
-          # get function name
-          $d = ($d = strpos($b, ' '))
-            ? substr($b, 1, $d)
-            : substr($b, 1);
-          # check control flags
-          if ($flags && isset($flags[$d]))
-          {
-            if (!($c = $flags[$d])) {
-              continue;
-            }
-            if ($c === -1)
-            {
-              $row[] = $NOP;
-              continue;
-            }
-          }
-          # get caption template
-          $c = $this->caps[$d];
-          # check specific
-          if ($d === 'play')
-          {
-            # game button
-            $d = $this->text[$d] ?: $bot->text[$d];
-            $row[] = [
-              'text' => $bot->tp->render($c, $d),
-              'callback_game' => null
-            ];
-            continue;
-          }
-          if ($d === 'up')
-          {
-            # tree navigation
-            if ($e = $this->parent)
-            {
-              # upward
-              $e = $e->text['@'] ?: $e->skel['name'];
-            }
-            else
-            {
-              # close
-              $c = $this->caps[$d = 'close'];
-              $e = $bot->text[$d];
-            }
-            $row[] = [
-              'text' => $bot->tp->render($c, $e),
-              'callback_data' => "/$id!$d"
-            ];
-            continue;
-          }
-          # determine caption
-          $e = $this->text[$d] ?: ($bot->text[$d] ?? '');
-          # compose
-          $row[] = [
-            'text' => $c ? $bot->tp->render($c, $e) : $e,
-            'callback_data' => "/$id$b"
-          ];
-          # }}}
-          continue;
-        }
-        # parse outer (another item)
-        # {{{
-        # extract identifier and function
-        if ($c = strpos($b, '!'))
-        {
-          $d = substr($b, 0, $c);
-          $b = substr($b, $c);
-        }
-        else
-        {
-          $d = $b;
-          $b = '';
-        }
-        # correct
-        $d = ($d[0] === '/')
-          ? substr($d, 1) # exact
-          : "$id$d";      # child
-        # get item
-        if (!($item = $bot->cmd[$d])) {
-          continue;
-        }
-        # determine caption
-        ($c = $item->text['@']) ||
-        ($c = $this->text[$d])  ||
-        ($c = $item->skel['name']);
-        # compose
-        $row[] = [
-          'text' => $bot->tp->render($this->caps['open'], $c),
-          'callback_data' => "/$d$b"
-        ];
-        # }}}
-      }
-      $row && ($res[] = $row);
-    }
-    # complete
-    return $res
-      ? json_encode(['inline_keyboard'=>$res], JSON_UNESCAPED_UNICODE)
-      : '';
-  }
-  # }}}
   function event(
     object $ctx, string $event
   ):bool { return true; }
@@ -5061,60 +5049,51 @@ abstract class BotItem implements ArrayAccess # {{{
   ):array;
 }
 # }}}
-class BotItemCaptions implements ArrayAccess # {{{
-{
-  function __construct(
-    private array &$base,
-    private array &$spec
-  ) {}
-  function offsetExists(mixed $k): bool {
-    return isset($this->spec[$k]) || isset($this->base[$k]);
-  }
-  function offsetGet(mixed $k): mixed {
-    return $this->spec[$k] ?? $this->base[$k] ?? '';
-  }
-  function offsetSet(mixed $k, mixed $v): void
-  {}
-  function offsetUnset(mixed $k): void
-  {}
-}
-# }}}
 class BotItemText implements ArrayAccess # {{{
 {
   const TEMPLATE_PREFIX = '#';
-  private $template;
-  function __construct(
-    private object  $tp,
-    private array   &$base,
-    private array   $spec,
-    string  $type
+  private $template = '',$tp,$texts;
+  function __construct(# {{{
+    object $item, string $lang, array $spec
   ) {
+    # prepare
+    $text = $item->bot->text;
+    $base = &$text->texts[$lang];
+    # set template reference
     if (isset($spec[$k = self::TEMPLATE_PREFIX])) {
       $this->template = &$spec[$k];
     }
-    elseif (isset($base[$k = $k.$type])) {
+    elseif (isset($base[$k = $k.$item->type])) {
       $this->template = &$base[$k];
     }
-    else {
-      $this->template = '';
-    }
+    # set parser and texts
+    $this->tp = $text->tp;
+    $this->texts = ArrayUnion::construct('')
+      ->pushRef($base)
+      ->pushRef($spec);
   }
+  # }}}
+  # [access] {{{
   function offsetExists(mixed $k): bool {
-    return isset($this->spec[$k]) || isset($this->base[$k]);
+    return isset($this->texts[$k]);
   }
   function offsetGet(mixed $k): mixed {
-    return $this->spec[$k] ?? $this->base[$k] ?? '';
+    return $this->texts[$k];
   }
   function offsetSet(mixed $k, mixed $v): void
   {}
   function offsetUnset(mixed $k): void
   {}
-  function render(array $data = [], string $template = ''): string
+  # }}}
+  function render(# {{{
+    array $data = [], string $template = ''
+  ):string
   {
-    return ($template || ($template = &$this->template))
+    return $template
       ? $this->tp->render($template, $data)
-      : '';
+      : $this->tp->render($this->template, $data);
   }
+  # }}}
 }
 # }}}
 class BotItemQuery # {{{
@@ -5128,15 +5107,23 @@ class BotItemQuery # {{{
 # }}}
 class BotItemCtx implements ArrayAccess # {{{
 {
-  public $log,$chat,$user,$req,$caps,$lang,$text,$conf,$opts,$data;
-  function __construct(object $item, object $req)
+  # {{{
+  const
+    CHR_TITLE = '@',
+    NOP = ['text'=>' ','callback_data'=>'!'];
+  public
+    $log,$chat,$user,$req,$lang,
+    $caps,$text,$conf,$opts,$data;
+  # }}}
+  function __construct(private object $item, object $req) # {{{
   {
+    $bot = $item->bot;
     $this->log  = $req->log->new($item->path);
     $this->chat = ($chat = $req->chat)->info;
     $this->user = ($user = $req->user)->info;
     $this->req  = $req->data;
-    $this->caps = $item->caps;
     $this->lang = $lang = $chat->lang ?: $user->lang;
+    $this->caps = $item->caps;
     $this->text = $item->texts[$lang];
     $this->conf = $chat->conf->obtain($item->id);
     $this->opts = $opts = new BotItemCtxOptions(
@@ -5144,18 +5131,20 @@ class BotItemCtx implements ArrayAccess # {{{
     );
     if ($opts['data'])
     {
-      $a = $opts['data.name'] ?? '@'.$item->id;
+      $a = $opts['data.name']
+        ?? self::CHR_TITLE.$bot->cmd->filename($item);
       $a = match ($opts['data.scope']) {
-        'global' => $chat->bot->cfg->dirDataRoot.$a,
-        'bot'    => $chat->bot->cfg->dirData.$a,
+        'global' => $bot->cfg->dirDataRoot.$a,
+        'bot'    => $bot->cfg->dirData.$a,
         default  => $chat->dir.$a,
       };
-      $this->data = $chat->bot->file->node(
+      $this->data = $bot->file->node(
         $a.'.json', $opts['data.depth']
       );
     }
   }
-  # [conf] access
+  # }}}
+  # [conf] access {{{
   function offsetExists(mixed $k): bool {
     return isset($this->conf[$k]);
   }
@@ -5168,6 +5157,147 @@ class BotItemCtx implements ArrayAccess # {{{
   function offsetUnset(mixed $k): void {
     $this->conf[$k] = null;
   }
+  # }}}
+  function markup(# InlineKeyboardMarkup {{{
+    ?array $flag = null,
+    ?array $mkup = null
+  ):string
+  {
+    # prepare
+    if (!$mkup) {
+      $mkup = $this->opts['markup'];
+    }
+    # operate
+    $a = [];
+    foreach ($mkup as &$row)
+    {
+      $b = [];
+      foreach ($row as $btn)
+      {
+        # check rendered
+        if (is_array($btn))
+        {
+          $b[] = $btn;
+          continue;
+        }
+        # skip incorrect type or empty
+        if (!is_string($btn) ||
+            !($c = strlen($btn)))
+        {
+          continue;
+        }
+        # check NOP
+        if ($c === 1)
+        {
+          $b[] = self::NOP;
+          continue;
+        }
+        # render
+        if ($btn = $this->markupButton($btn, $flag)) {
+          $b[] = $btn;
+        }
+      }
+      $b && ($a[] = $b);
+    }
+    # check empty
+    if (!$a) {
+      return '';
+    }
+    # complete
+    return json_encode(
+      ['inline_keyboard' => $a],
+      JSON_UNESCAPED_UNICODE
+    );
+  }
+  # }}}
+  function markupButton(# {{{
+    string $text, ?array &$flag
+  ):?array
+  {
+    # parse
+    $item = $this->item;
+    $bot  = $item->bot;
+    if (!($a = $bot->cmd->parseCallback($text, $item))) {
+      return null;
+    }
+    $func = $a[1];
+    $args = $a[2];
+    # check another item
+    if (($a = $a[0]) !== '' && $a !== $item->path)
+    {
+      # render item navigation
+      return ($a = $bot->cmd[$a])
+        ? $this->markupButtonItem($a, $func, $args)
+        : null;
+    }
+    # apply flag
+    if ($flag && isset($flag[$func]))
+    {
+      # check NONE
+      if (!($a = $flag[$func])) {
+        return null;
+      }
+      # check NOP
+      if ($a < 0) {
+        return self::NOP;
+      }
+      # continue
+    }
+    # check backward navigation
+    if ($func === 'up')
+    {
+      if ($item = $item->parent)
+      {
+        $a = $this->caps[$func];
+        $b = $item->texts[$this->lang][self::CHR_TITLE]
+          ?: $item->name;
+      }
+      else
+      {
+        $a = $this->caps[$b = 'close'];
+        $b = $this->text[$b];
+      }
+      $a = $bot->text->tp->render($a, $b);
+      $b = $bot->cmd->query($func, $args);
+      return [
+        'text'=>$a,'callback_data'=>$b
+      ];
+    }
+    # render caption text
+    $a = $this->texts[$func];
+    if ($b = $this->caps[$func]) {
+      $a = $bot->text->tp->render($a, $b);
+    }
+    # check game
+    if ($func === 'play')
+    {
+      return [
+        'text'=>$a,'callback_game'=>null
+      ];
+    }
+    # render callback button
+    $b = $bot->cmd->query($func, $args);
+    return [
+      'text'=>$a,'callback_data'=>$b
+    ];
+  }
+  # }}}
+  function markupButtonItem(# {{{
+    object $item, string &$func, string &$args
+  ):?array
+  {
+    $a = $this->caps['open'];
+    $b = $this->text[$item->name]
+      ?: $item->texts[$this->lang][self::CHR_TITLE]
+      ?: $item->name;
+    $c = $item->bot;
+    $a = $c->text->tp->render($a, $b);
+    $b = $c->cmd->query($func, $args, $item);
+    return [
+      'text'=>$a,'callback_data'=>$b
+    ];
+  }
+  # }}}
 }
 # }}}
 class BotItemCtxOptions implements ArrayAccess # {{{
@@ -5232,6 +5362,15 @@ abstract class BotMessage extends BotConfigAccess implements JsonSerializable
       : null;
   }
   # }}}
+  static function construct(# {{{
+    object $bot, array &$data
+  ):?self
+  {
+    return new static(
+      $bot, 0, static::stew($data), $data
+    );
+  }
+  # }}}
   function __construct(# {{{
     public object $bot,
     public int    $id,
@@ -5254,13 +5393,12 @@ abstract class BotMessage extends BotConfigAccess implements JsonSerializable
     });
   }
   # }}}
-  abstract function init(): void;
+  abstract static function stew(array &$data): string;
   abstract function zap(object $chat): object;
   abstract function send(object $chat): object;
   abstract function edit(object $chat, object $msg): object;
 }
 # }}}
-# simple
 # Img {{{
 class BotImgItem extends BotItem # {{{
 {
@@ -5278,7 +5416,7 @@ class BotImgItem extends BotItem # {{{
     'img.title.header' => [
       'Days',[6,64],# font name and size range
       [255,255,255],# text color: R,G,B
-      [140,360,0,160],# draw rect x,w,y,h
+      [140,0,360,160],# draw rect x,y,w,h
     ],
     'img.title.breadcrumb' => [
       'Bender-Italic',16,# font name and size
@@ -5306,7 +5444,7 @@ class BotImgItem extends BotItem # {{{
   }
   # }}}
   static function imgBlankTexts(# {{{
-    array &$blank, array &$texts
+    array $blank, array &$texts
   ):object
   {
     try
@@ -5322,7 +5460,7 @@ class BotImgItem extends BotItem # {{{
     return $res;
   }
   # }}}
-  static function imgPlaceholder(array &$blank): object # {{{
+  static function imgPlaceholder(array $blank): object # {{{
   {
     try
     {
@@ -5362,11 +5500,11 @@ class BotImgItem extends BotItem # {{{
     return $x;
   }
   # }}}
-  static function imgNewColor(object $img, array &$RGB): object # {{{
+  static function imgNewColor(# {{{
+    object $img, array &$RGB
+  ):int
   {
-    $x = imagecolorallocate(
-      $img, $RGB[0], $RGB[1], $RGB[2]
-    );
+    $x = imagecolorallocate($img, $RGB[0], $RGB[1], $RGB[2]);
     if ($x === false) {
       throw ErrorEx::fail(implode(':', $RGB));
     }
@@ -5396,6 +5534,50 @@ class BotImgItem extends BotItem # {{{
     }
   }
   # }}}
+  static function imgDrawHeader(# {{{
+    object  $img,
+    string  $font,
+    int     $min,
+    int     $max,
+    float   $angle,
+    array   &$color,
+    array   &$rect,
+    string  $text
+  ):void
+  {
+    # header should fit into given rect, so
+    # determine optimal font size (in points not pixels? -seems not)
+    while ($max > $min)
+    {
+      # determine bounding box
+      if (!($a = imageftbbox($max, $angle, $font, $text)))
+      {
+        throw ErrorEx::fail('imageftbbox',
+          "\ntext: ".$text."\nfont: ".$font.
+          "\nsize: ".$max
+        );
+      }
+      # check it fits width and height
+      if ($a[2] - $a[0] <= $rect[2] &&
+          $a[1] - $a[7] <= $rect[3])
+      {
+        break;
+      }
+      # reduce and retry
+      $max -= 2;
+    }
+    # determine starting coordinates (center align)
+    $x = $a[2] - $a[0];
+    $y = $a[1] - $a[7];
+    $x = $rect[0] + ($rect[2] - $x) / 2;
+    $y = $rect[1] + ($rect[3] - $y) / 2 + $y;
+    # draw
+    self::imgDrawText(
+      $img, $font, $max, $angle, $color,
+      (int)round($x), (int)round($y), $text
+    );
+  }
+  # }}}
   static function imgDrawText(# {{{
     object  $img,
     string  $font,
@@ -5423,50 +5605,6 @@ class BotImgItem extends BotItem # {{{
     }
   }
   # }}}
-  static function imgDrawHeader(# {{{
-    object  $img,
-    string  $font,
-    int     $min,
-    int     $max,
-    float   $angle,
-    array   &$color,
-    array   &$rect,
-    string  $text
-  ):void
-  {
-    # header should fit into given rect, so
-    # determine optimal font size (in points not pixels? -seems not)
-    while ($max > $min)
-    {
-      # determine bounding box
-      if (!($a = imageftbbox($max, $angle, $font, $text)))
-      {
-        throw ErrorEx::fail('imageftbbox',
-          "\ntext: ".$text."\nfont: ".$font.
-          "\nsize: ".$max
-        );
-      }
-      # check it fits width and height
-      if ($a[2] - $a[0] <= $rect[1] &&
-          $a[1] - $a[7] <= $rect[3])
-      {
-        break;
-      }
-      # reduce and retry
-      $max -= 2;
-    }
-    # determine starting coordinates (center align)
-    $x = $a[2] - $a[0];
-    $x = ($rect[0] + ($rect[1] - $x) / 2) | 0;
-    $y = $a[1] - $a[7];
-    $y = ($rect[2] + ($rect[3] - $y) / 2 + $y) | 0;
-    # draw
-    self::imgDrawText(
-      $img, $font, $size, $angle,
-      $color, $x, $y, $text
-    );
-  }
-  # }}}
   static function imgToFile(object $img): object # {{{
   {
     $dir = sys_get_temp_dir();
@@ -5483,24 +5621,25 @@ class BotImgItem extends BotItem # {{{
   function render(object $ctx, object $q): array # {{{
   {
     # invoke custom renderer
-    $a = $this->hand?->call($ctx, $q)
-      ? (is_array($q->res) ? $q->res : [])
-      : [];
+    if (($f = $this->hand) && !$f->call($ctx, $q)) {
+      throw ErrorEx::skip();
+    }
+    $a = is_array($q->res)
+      ? $q->res : [];
     # standard render
-    if (!isset($a['image'])) {
+    if (!isset($a['path']) || !isset($a['image'])) {
       $this->renderImage($ctx, $a);
     }
     if (!isset($a[$b = 'text'])) {
       $a[$b] = $ctx->text->render();
     }
-    if (!isset($a[$b = 'markup']))
-    {
-      $a[$b] = isset($this->skel[$b])
-        ? $this->renderMarkup($this->skel[$b])
-        : '';
+    if (!isset($a[$b = 'markup'])) {
+      $a[$b] = $ctx->markup();
     }
     # complete
-    return BotImgMessage::construct($bot, $a);
+    return [
+      BotImgMessage::construct($this->bot, $a)
+    ];
   }
   # }}}
   function renderImage(# {{{
@@ -5515,7 +5654,7 @@ class BotImgItem extends BotItem # {{{
     case 'file':
       # determine path
       if (!($path = $opt['img.file.name'])) {
-        $path = $bot->cmd->name($this);
+        $path = $bot->cmd->filename($this);
       }
       if ($opt['img.file.vary'] && isset($msg['name'])) {
         $path = $path.$msg['name'];
@@ -5524,24 +5663,24 @@ class BotImgItem extends BotItem # {{{
         throw ErrorEx::skip();
       }
       # get identifier from cache or
-      # create file for transmission
-      if (!($file = $bot->file->id[$path])) {
-        $file = BotApiFile::construct($path, false);
+      # set persistent file for transmission
+      if (!($file = $bot->file->id($path))) {
+        $file = BotApiFile::construct($path);
       }
       break;
     default:
       # determine path
       $text = $msg['title'] ?? $ctx->text['@'] ?: $this->name;
-      $path = $bot->cmd->path($this, $text);
+      $path = $bot->cmd->pathHash($this, $text);
       # get identifier from cache
-      if ($file = $bot->file->id[$path]) {
+      if ($file = $bot->file->id($path)) {
         break;
       }
       # prepare texts
       $a = [];
       if ($b = $opt['img.title.header'])
       {
-        if (!($b[0] = $bot->file->image($b[0]))) {
+        if (!($b[0] = $bot->file->font($b[0]))) {
           throw ErrorEx::stop();
         }
         $b[] = $text;
@@ -5549,7 +5688,7 @@ class BotImgItem extends BotItem # {{{
       }
       if ($b = $opt['img.title.breadcrumb'])
       {
-        if (!($b[0] = $bot->file->image($b[0]))) {
+        if (!($b[0] = $bot->file->font($b[0]))) {
           throw ErrorEx::stop();
         }
         $b[] = $this->path;
@@ -5574,57 +5713,53 @@ class BotImgItem extends BotItem # {{{
 # }}}
 class BotImgMessage extends BotMessage # {{{
 {
-  function init(): void # {{{
-  {
-    $this->hash = hash('md4',
-      ($this->data['file'] ?: $this->data['id']).
-      $this->data['text'].$this->data['markup']
-    );
+  const UUID = '325d301047084c46bba3eeb44051a1c2';
+  static function stew(array &$a): string {
+    return hash('xxh3', $a['path'].$a['text'].$a['markup']);
   }
-  # }}}
   function zap(object $chat): object # {{{
   {
     # prepare
+    $self = $this;
     $bot  = $this->bot;
-    $file = '';
-    # get placeholder image
-    if (!($img = $bot->file->getFileId(__METHOD__)))
+    $path = self::UUID;
+    $file = null;
+    # get placeholder
+    if (!($id = $bot->file->id($path)))
     {
-      $cfg = $this['placeholder'];
-      $img = self::getPlaceholderFile($cfg['size'], $cfg['color']);
-      if ($img instanceof ErrorEx)
+      $file = BotImgItem::imgPlaceholder(
+        $this['blank']
+      );
+      if ($file instanceof ErrorEx)
       {
-        $bot->user->log->exception($img);
+        # ...
+      }
+    }
+    # compose request
+    $res = [
+      'chat_id'    => $chat->id,
+      'message_id' => $this->id,
+      'media'      => json_encode([
+        'type'     => 'photo',
+        'media'    => $id ?: 'attach://'.$file->postname
+      ])
+    ];
+    $res = $file
+      ? $bot->api->promise('editMessageMedia', $res, $file)
+      : $bot->api->promise('editMessageMedia', $res);
+    $res->check(function() use ($bot,$path,$id) {
+      # check unsuccessful
+      if (!($res = $this->result) || $res === true) {
         return false;
       }
-      $file = 'attach://'.$img->postname;
-    }
-    # compose parameters
-    $res = [
-      'type'  => 'photo',
-      'media' => ($file ?: $img),
-    ];
-    $res = [
-      'chat_id'    => $bot->user->chat->id,
-      'message_id' => $this->id,
-      'media'      => json_encode($res),
-    ];
-    # operate
-    $res = $file
-      ? $bot->api->send('editMessageMedia', $res, $img)
-      : $bot->api->send('editMessageMedia', $res);
-    # check result
-    if (!$res || $res === true) {
-      return false;
-    }
-    # store file identifier
-    if ($file)
-    {
-      $a = end($res->photo);# last element is the original
-      $bot->file->setId(__METHOD__, $a->file_id);
-    }
-    # complete
-    return true;
+      # store file identifier
+      if (!$id) {
+        $bot->file->id($path, end($res->photo)->file_id);
+      }
+      # complete
+      return true;
+    });
+    return $res;
   }
   # }}}
   function send(object $chat): object # {{{
@@ -5648,17 +5783,18 @@ class BotImgMessage extends BotMessage # {{{
     # complete
     return $this->bot->api->promise(
       'sendPhoto', $req
-    )->check(function() use ($self) {
+    )->check(function() use ($self,&$data) {
       # get created message
       if (!($res = $this->result)) {
         return false;
       }
       # store file identifier
-      if (is_object($self->data['image']) &&
-          ($path = $self->data['path'] ?? ''))
+      if (is_object($data['image']) &&
+          ($path = $data['path'] ?? ''))
       {
-        $a = end($res->photo);
-        $self->bot->file->id[$path] = $a->file_id;
+        $self->bot->file->id(
+          $path, end($res->photo)->file_id
+        );
       }
       # store message identifier
       $self->id = $res->message_id;
@@ -5699,8 +5835,9 @@ class BotImgMessage extends BotMessage # {{{
       # store file identifier
       if ($path && ($path = $msg->data['path'] ?? ''))
       {
-        $a = end($res->photo);# take the last element
-        $self->bot->file->id[$path] = $a->file_id;
+        $self->bot->file->id(
+          $path, end($res->photo)->file_id
+        );
       }
       # store message hash
       $self->hash = $msg->hash;
@@ -5727,13 +5864,9 @@ class BotTxtItem extends BotItem # {{{
 # }}}
 class BotTxtMessage extends BotMessage # {{{
 {
-  function init(): void # {{{
-  {
-    $this->hash = hash('md4',
-      $this->data['text'].$this->data['markup']
-    );
+  static function stew(array &$a): string {
+    return hash('xxh3', $a['text'].$a['markup']);
   }
-  # }}}
   function send(object $chat): object # {{{
   {
     # prepare

@@ -21,7 +21,33 @@ Masterbot acts as a bot supervisor.
 It creates, deletes, starts, stops and manages other bots.
 
 </details>
+<details>
+<summary>concept specs</summary>
 
+## command
+```
+
+     command = <path><func?><args?> | <func><args?>
+
+        path = /<name><path?>
+        func = !<name>
+        args = <whitespace><string>
+
+        name = string:[a-z0-9_]
+
+```
+## markup
+```
+      markup = [<row>,..] | <stateMarkup>
+         row = [<cell>,..]
+        cell = <command> | <child>
+
+       child = <name> of child item
+
+ stateMarkup = [<state>:<markup>,..]
+       state = <name> of current state of the item
+
+```
 
 [//]: # (fold start{{{)
 
