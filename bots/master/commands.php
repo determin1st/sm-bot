@@ -1,5 +1,4 @@
 <?php declare(strict_types=1);
-namespace SM;
 return [
 '/start/bots' => function (object $q): bool # {{{
 {
