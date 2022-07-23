@@ -4,7 +4,7 @@
   */
   #'dir'    => dirname(__DIR__).DIRECTORY_SEPARATOR.'data',
   #'source' => 'master',
-  #'api'    => 'https://api.telegram.org/bot',
+  #'url'    => 'https://api.telegram.org/bot',
   'token'  => '',
 ];
 ?>

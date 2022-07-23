@@ -7,12 +7,7 @@
     ['!up'],
   ],
   'text' => [
-    'en' => [
-      'bots' => 'bot list',
-    ],
-    'ru' => [
-      'bots' => 'список ботов',
-    ],
+    'bots' => 'bot list',
   ],
 ],
 # }}}
@@ -22,6 +17,10 @@
   'config' => [
     'order' => 'order',
     'item'  => 'bot',
+  ],
+  'text' => [
+    'en' => ['@' => 'bots'],
+    'ru' => ['@' => 'боты'],
   ],
   'markup' => [
     'head' => [['!create','!refresh']],
@@ -37,10 +36,6 @@
       {{name}}
     {{/isMaster}}
     ',
-  ],
-  'text' => [
-    'en' => ['@' => 'bots'],
-    'ru' => ['@' => 'боты'],
   ],
 ],
 # }}}

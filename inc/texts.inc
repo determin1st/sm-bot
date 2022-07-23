@@ -64,6 +64,13 @@
     {{/info}}
     {:END:}
     ',# }}}
+    # ! {{{
+    '!inline-markup' => '
+    {:exclamation:}Incorrect message{:BR:}{:BR:}
+    This message contains invalid inline markup. 
+    Probably, it does not belong to this bot.
+    ',
+    # }}}
     'play'       => 'play',
     'close'      => 'close',
     'op-fail'    => 'operation failed',
@@ -111,6 +118,13 @@
       Список пуст
     {{/cnt}}
     ',# }}}
+    # ! {{{
+    '!inline-markup' => '
+    {:exclamation:}Некорректное сообщение{:BR:}{:BR:}
+    Это сообщение содержит неверную встроенную разметку. 
+    Вероятно, оно не принадлежит данному боту.
+    ',
+    # }}}
     'play'       => 'играть',
     'close'      => 'закрыть',
     'op-fail'    => 'сбой операции',
