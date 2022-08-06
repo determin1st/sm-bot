@@ -2,34 +2,46 @@
 # defs {{{
 namespace SM;
 use
-  JsonSerializable, ArrayAccess, Iterator,
-  SyncEvent, SyncReaderWriter, SyncSharedMemory,
-  Generator, Closure, CURLFile,
-  Throwable, Error, Exception;
+  JsonSerializable,ArrayAccess,Iterator,
+  SyncEvent,SyncReaderWriter,SyncSharedMemory,
+  Generator,Closure,CURLFile,
+  Throwable,Error,Exception;
 use function
-  set_time_limit,ini_set,register_shutdown_function,set_error_handler,
-  class_exists,function_exists,method_exists,func_num_args,
+  set_time_limit,ini_set,register_shutdown_function,
+  set_error_handler,class_exists,function_exists,
+  method_exists,func_num_args,
+  ### variable handling
+  gettype,intval,strval,is_object,is_array,is_bool,is_null,
+  is_string,is_scalar,
+  ### arrays
   explode,implode,count,reset,next,key,array_keys,
-  array_push,array_shift,array_unshift,array_splice,array_slice,
-  in_array,array_search,array_reverse,
-  strpos,strrpos,strlen,trim,rtrim,strval,uniqid,ucfirst,lcfirst,
-  strncmp,substr_count,preg_match,preg_match_all,
+  array_push,array_shift,array_unshift,array_splice,
+  array_slice,in_array,array_search,array_reverse,
+  ### strings
+  strpos,strrpos,strlen,trim,rtrim,uniqid,ucfirst,
+  str_repeat,str_replace,
+  lcfirst,strncmp,substr_count,preg_match,preg_match_all,
   hash,
-  json_encode,json_decode,json_last_error,json_last_error_msg,
-  file_put_contents,file_get_contents,clearstatcache,file_exists,
-  unlink,filesize,filemtime,tempnam,sys_get_temp_dir,
-  mkdir,scandir,fwrite,fread,fclose,glob,
+  json_encode,json_decode,json_last_error,
+  json_last_error_msg,
+  ### filesystem
+  file_put_contents,file_get_contents,clearstatcache,
+  file_exists,unlink,filesize,filemtime,tempnam,
+  sys_get_temp_dir,mkdir,scandir,fwrite,fread,fclose,glob,
+  ### CURL
   curl_init,curl_setopt_array,curl_exec,
   curl_errno,curl_error,curl_strerror,curl_close,
-  curl_multi_init,curl_multi_add_handle,curl_multi_exec,curl_multi_select,
-  curl_multi_strerror,curl_multi_info_read,
-  curl_multi_remove_handle,curl_multi_close,
-  proc_open,is_resource,proc_get_status,proc_terminate,getmypid,
-  ob_start,ob_get_length,ob_flush,ob_end_clean,
+  curl_multi_init,curl_multi_add_handle,curl_multi_exec,
+  curl_multi_select,curl_multi_strerror,
+  curl_multi_info_read,curl_multi_remove_handle,
+  curl_multi_close,
+  ### misc
+  proc_open,is_resource,proc_get_status,proc_terminate,
+  getmypid,ob_start,ob_get_length,ob_flush,ob_end_clean,
   pack,unpack,time,hrtime,sleep,usleep,
-  min,max;
+  min,max,pow;
 # }}}
-# functions {{{
+# func {{{
 function array_key(array &$a, int $index): int|string|null # {{{
 {
   reset($a);
@@ -189,7 +201,7 @@ function json_error(): string # {{{
 }
 # }}}
 # }}}
-# classes {{{
+# cls {{{
 trait TimeTouchable # {{{
 {
   public $time = 0;
@@ -215,6 +227,11 @@ trait HRTimeTouchable # {{{
   {
     $time = ($time ?: hrtime(true)) - $this->time;
     return (int)($time / 1000000);# nano => milli
+  }
+  function timeAdd(int $ms): object
+  {
+    $this->time += $ms * 1000000; # milli => nano
+    return $this;
   }
 }
 # }}}
@@ -289,13 +306,13 @@ class ErrorEx extends Error # {{{
   {
     return [
       'level' => self::E_LEVEL[$this->level],
-      'msg'   => implode('::', $this->msg),
+      'msg'   => $this->msg,
       'value' => $this->value ? '...' : '',
       'next'  => $this->next
     ];
   }
   # }}}
-  function getMaxLevel(): int # {{{
+  function levelMax(): int # {{{
   {
     $a = $this->level;
     $b = $this->next;
@@ -314,14 +331,6 @@ class ErrorEx extends Error # {{{
     return $this->msg
       ? implode(' ', $this->msg)
       : $default;
-  }
-  # }}}
-  function setLevel(int $level): self # {{{
-  {
-    $this->level = ($level > 0)
-      ? (($level >= 2) ? 2 : 1)
-      : 0;
-    return $this;
   }
   # }}}
   # is {{{
@@ -343,10 +352,18 @@ class ErrorEx extends Error # {{{
   # }}}
   # has {{{
   function hasError(): bool {
-    return $this->getMaxLevel() > 1;
+    return $this->levelMax() > 1;
   }
   function hasIssue(): bool {
-    return $this->getMaxLevel() > 0;
+    return $this->levelMax() > 0;
+  }
+  # }}}
+  function count(): int # {{{
+  {
+    for ($x = 1, $e = $this->next; $e; $e = $e->next) {
+      $x++;
+    }
+    return $x;
   }
   # }}}
   function last(): self # {{{
@@ -358,61 +375,31 @@ class ErrorEx extends Error # {{{
     return $a;
   }
   # }}}
-  function setLast(?self $e = null): self # {{{
+  ###
+  function lastSet(?self $e = null): self
   {
-    if ($e) {
-      $this->last()->next = $e;
-    }
+    $e && ($this->last()->next = $e);
     return $this;
   }
-  function lastInfo(string ...$msg): self {
-    return $this->setLast(self::info(...$msg));
-  }
-  function lastWarn(string ...$msg): self {
-    return $this->setLast(self::warn(...$msg));
-  }
-  function lastFail(string ...$msg): self {
-    return $this->setLast(self::fail(...$msg));
-  }
-  # }}}
-  function setNext(self $e): self # {{{
+  function nextSet(self $e): self
   {
-    $this->next = $e->setLast($this->next);
+    $this->next = $e->lastSet($this->next);
     return $this;
   }
-  function nextInfo(string ...$msg): self {
-    return $this->setNext(self::info(...$msg));
+  function nextFrom(object $e): self {
+    return $this->nextSet(self::from($e));
   }
-  function nextWarn(string ...$msg): self {
-    return $this->setNext(self::warn(...$msg));
-  }
-  function nextFail(string ...$msg): self {
-    return $this->setNext(self::fail(...$msg));
-  }
-  # }}}
-  function setFirst(self $e): self # {{{
-  {
-    return $e->setLast($this);
+  function firstSet(self $e): self {
+    return $e->lastSet($this);
   }
   function firstInfo(string ...$msg): self {
-    return $this->setFirst(self::info(...$msg));
+    return $this->firstSet(self::info(...$msg));
   }
   function firstWarn(string ...$msg): self {
-    return $this->setFirst(self::warn(...$msg));
+    return $this->firstSet(self::warn(...$msg));
   }
   function firstFail(string ...$msg): self {
-    return $this->setFirst(self::fail(...$msg));
-  }
-  # }}}
-  ###
-  function toError(): self {
-    return $this->setLevel(2);
-  }
-  function toWarining(): self {
-    return $this->setLevel(1);
-  }
-  function toInfo(): self {
-    return $this->setLevel(0);
+    return $this->firstSet(self::fail(...$msg));
   }
 }
 # }}}
@@ -549,49 +536,74 @@ class Promise # {{{
 }
 class PromiseResult # {{{
 {
-  public $ok = true,$error,$value;
+  public $ok = true,$trace = [],$value;
+  #public $next;
   function __construct() {
     $this->next();
   }
-  function next(): self # {{{
+  function next(): object # {{{
   {
-    $this->error = new ErrorEx(
-      0, [], null, $this->error
-    );
-    $this->value = &$this->error->value;
-    return $this;
+    array_unshift($this->trace, $e = new ErrorEx());
+    $this->value = &$e->value;
+    return $e;
   }
   # }}}
   function success(mixed $value = null): self # {{{
   {
-    count($this->error->msg) && $this->next();
+    if (count($this->trace[0]->msg)) {
+      $this->next();
+    }
     $this->value = $value;
     $this->ok = true;
     return $this;
   }
   # }}}
-  function failure(?object $e = null): self # {{{
+  function failure(?object $error = null): self # {{{
   {
-    count($this->error->msg) && $this->next();
-    $e && $this->error->setNext(
-      ErrorEx::from($e)
-    );
+    if (count(($e = $this->trace[0])->msg)) {
+      $e = $this->next();
+    }
+    $error && $e->nextFrom($error);
     $this->ok = false;
     return $this;
   }
   # }}}
   function message(string ...$msg): self # {{{
   {
-    return $this->ok
-      ? $this->error->nextInfo(...$msg)
-      : $this->error->nextFail(...$msg);
+    $this->trace[0]->nextSet($this->ok
+      ? new ErrorEx(0, $msg)
+      : new ErrorEx(2, $msg)
+    );
+    return $this;
   }
   # }}}
-  function confirm(...$a): self # {{{
+  function confirm(string ...$a): self # {{{
   {
+    if (count($this->trace[0]->msg)) {
+      $this->next();
+    }
     array_unshift($a, $this->ok);
-    $this->error->msg = $a;
+    $this->trace[0]->msg = &$a;
     return $this;
+  }
+  # }}}
+  function group(string ...$a): self # {{{
+  {
+    if (count($this->trace[0]->msg)) {
+      $this->next();
+    }
+    array_unshift($a, $this->ok);
+    $this->trace[0]->msg = &$a;
+    return $this;
+  }
+  # }}}
+  function isOk(int $i): bool # {{{
+  {
+    return ($e = $this->trace[$i] ?? null)
+      ? (count($e->msg)
+        ? $e->msg[0]
+        : $e->hasError())
+      : false;
   }
   # }}}
 }
@@ -1418,15 +1430,19 @@ class BotMasterConsole extends BotConsole # {{{
 class BotLog
 {
   # {{{
-  # ●◆◎∙ ▶▼ ■▄ ◥◢◤◣  ►◄
+  # ●◆◎∙▪■ ▶▼ ■▄ ◥◢◤◣  ►◄ ∙･·•
   const
-    COLOR  = ['green','red','yellow'],# [info,error,warn]
-    SEP    = ['►','◄'],# [output,input]
+    COLOR  = ['green','yellow','red'],# [info,warn,error]
+    SEP    = [' ► ',' ◄ ','·'],# [output,input,words]
+    GROUP  = ['•','･'],# result group
     PROMPT = ['◆','◆','cyan'];# [linePrefix,blockPrefix,color]
   public
     $errorCount = 0;
   # }}}
-  static function fgColor(string $str, string $name, int $strong=0): string # {{{
+  # static helpers {{{
+  static function fgColor(# {{{
+    string $str, string $name, int $strong = 0
+  ):string
   {
     static $z = '[0m';
     static $COLOR = [
@@ -1473,7 +1489,107 @@ class BotLog
       ? $s : preg_replace('/\\[\\d+m/', '', $s);
   }
   # }}}
-  static function parseCommands(# {{{
+  static function composeBlock(string $s): string # {{{
+  {
+    static $x;
+    if ($x === null)
+    {
+      $x = [
+        self::fgColor('└┬', self::PROMPT[2], 1),
+        self::fgColor(' ├', self::PROMPT[2], 1),
+        self::fgColor(' └', self::PROMPT[2], 1),
+        self::fgColor('└┐', self::PROMPT[2], 1),
+        self::fgColor(' │', self::PROMPT[2], 1),
+        self::fgColor('└─', self::PROMPT[2], 1),
+      ];
+    }
+    # trim and split into non-colored
+    # for reading and colored for writing
+    $s = trim($s);
+    $a = explode("\n", self::clearColors($s));
+    $b = explode("\n", $s);
+    # determine last line of the block
+    for ($i = 0,$j = count($a) - 1; ~$j; --$j)
+    {
+      # stop at pad or end-of-block
+      if (ctype_space($a[$j][0]) === false &&
+          strpos($a[$j], '└') !== 0)
+      {
+        $i = 1;
+        break;
+      }
+      # pad bottom lines
+      $b[$j] = '  '.$b[$j];
+    }
+    # check not a block
+    if ($i === 0) {
+      return $s;
+    }
+    # check at the first line
+    if ($j === 0) {
+      return $x[5].implode("\n", $b);
+    }
+    # compose
+    for ($i = 0; $i < $j; ++$i)
+    {
+      # select separator
+      if (ctype_space($a[$i][0]) === false &&
+          strpos($a[$i], '└') !== 0)
+      {
+        $k = 0;
+      }
+      else {
+        $k = 3;
+      }
+      $i && $k++;
+      $b[$i] = $x[$k].$b[$i];
+    }
+    $b[$j] = $x[2].$b[$j];
+    return implode("\n", $b);
+  }
+  # }}}
+  static function composeObject(# {{{
+    object $o, int $depth = 0
+  ):string
+  {
+    $pad = str_repeat('*', $depth);
+    $equ = ' = ';
+    $a = '';
+    $i = 0;
+    foreach ($o as $k => &$v)
+    {
+      if (is_bool($v)) {
+        $b = $equ.($v ? 'true' : 'false')."\n";
+      }
+      elseif (is_null($v)) {
+        $b = $equ."null\n";
+      }
+      elseif (is_string($v))
+      {
+        $c = (($j = strlen($v)) > 60 || strpos($v, "\n"))
+          ? '".." size='.$j
+          : '"'.$v.'"';
+        $b = $equ.$c."\n";
+      }
+      elseif (is_scalar($v)) {
+        $b = $equ.strval($v)."\n";
+      }
+      elseif (is_object($v)) {
+        $b = "\n".self::composeObject($v, $depth + 1);
+      }
+      elseif (is_array($v)) {
+        $b = $equ.'[..] count='.count($v)."\n";
+      }
+      else {
+        $b = "?\n";
+      }
+      $a = $a.$k.$b;
+      $i++;
+    }
+    return $a ? self::composeBlock($a)."\n" : '';
+  }
+  # }}}
+  static function composeTree(# {{{
     ?array &$tree,
     int    $pad,
     string $color,
@@ -1501,7 +1617,7 @@ class BotLog
       if ($node->children)
       {
         $indent[] = !$a;
-        $x .= self::parseCommands(
+        $x .= self::composeTree(
           $node->children, $pad, $color, $indent, $level + 1
         );
         array_pop($indent);
@@ -1510,100 +1626,9 @@ class BotLog
     return $x;
   }
   # }}}
-  static function parseBlock(string $s): string # {{{
-  {
-    static $x;
-    if ($x === null)
-    {
-      $x = [
-        self::fgColor('└┬', self::PROMPT[2], 1),
-        self::fgColor(' ├', self::PROMPT[2], 1),
-        self::fgColor(' └', self::PROMPT[2], 1),
-        self::fgColor('└┐', self::PROMPT[2], 1),
-        self::fgColor(' │', self::PROMPT[2], 1),
-        self::fgColor('└─', self::PROMPT[2], 1),
-      ];
-    }
-    # prepare
-    $s = trim($s);
-    $a = explode("\n", self::clearColors($s));
-    $b = explode("\n", $s);
-    # split and determine the last line
-    for ($i = 0,$j = count($a) - 1; ~$j; --$j)
-    {
-      # stop at pad/block character
-      if (strlen($a[$j]) && strpos(' └', $a[$j][0]) === false)
-      {
-        $i = 1;
-        break;
-      }
-      # pad otherwise
-      $b[$j] = '  '.$b[$j];
-    }
-    # check not a block
-    if ($i === 0) {
-      return $s;
-    }
-    # check at the first line
-    if ($j === 0) {
-      return $x[5].implode("\n", $b);
-    }
-    # compose the block
-    for ($i = 0; $i < $j; ++$i)
-    {
-      $k = (strlen($a[$i]) && strpos(' └', $a[$i][0]) === false)
-        ? 0 : 3;
-      #$k = (strlen($b[$i]) && !ctype_space($b[$i][0])) ? 0 : 3;
-      $i && $k++;
-      $b[$i] = $x[$k].$b[$i];
-    }
-    $b[$j] = $x[2].$b[$j];
-    return implode("\n", $b);
-  }
-  # }}}
-  static function parseObject(# {{{
-    object  $o,
-    int     $depth = 0
+  static function trace(# {{{
+    object $e, int $from = 0
   ):string
-  {
-    $pad = str_repeat('*', $depth);
-    $equ = ' = ';
-    $a = '';
-    $i = 0;
-    foreach ($o as $k => &$v)
-    {
-      if (is_bool($v)) {
-        $b = $equ.($v ? 'true' : 'false')."\n";
-      }
-      elseif (is_null($v)) {
-        $b = $equ."null\n";
-      }
-      elseif (is_string($v))
-      {
-        $c = (($j = strlen($v)) > 60 || strpos($v, "\n"))
-          ? '".." size='.$j
-          : '"'.$v.'"';
-        $b = $equ.$c."\n";
-      }
-      elseif (is_scalar($v)) {
-        $b = $equ.strval($v)."\n";
-      }
-      elseif (is_object($v)) {
-        $b = "\n".self::parseObject($v, $depth + 1);
-      }
-      elseif (is_array($v)) {
-        $b = $equ.'[..] count='.count($v)."\n";
-      }
-      else {
-        $b = "?\n";
-      }
-      $a = $a.$k.$b;
-      $i++;
-    }
-    return $a ? self::parseBlock($a)."\n" : '';
-  }
-  # }}}
-  static function parseTrace(object $e, int $from = 0): string # {{{
   {
     # prepare
     $a = '';
@@ -1627,17 +1652,117 @@ class BotLog
     return $a;
   }
   # }}}
-  static function separator(int $level, int $sep): string # {{{
+  static function &parseException(object $e): array # {{{
   {
-    $i = ($level === 2) ? 1 : 0;
-    return ' '.self::fgColor(self::SEP[$sep], self::COLOR[$level], $i).' ';
+    static $PATH = __DIR__.DIRECTORY_SEPARATOR;
+    if (ErrorEx::is($e))
+    {
+      # compose message
+      $x = $e->msg;
+      array_unshift($x, '✶');
+      # add reduced trace
+      $a = self::trace($e, 1);
+      $a = str_replace($PATH, '', $a);
+      $x[count($x) - 1] .= "\n".$a;
+    }
+    else
+    {
+      # compose message and trace
+      $a = $e->getMessage()."\n".
+        $e->getFile().'('.$e->getLine().")\n".
+        self::trace($e);
+      # truncate paths and complete
+      $a = str_replace($PATH, '', $a);
+      $x = ['✶', get_class($e), $a];
+    }
+    return $x;
   }
   # }}}
-  static function throwableToString(Throwable $e): string # {{{
+  static function errors(object $e): string # {{{
   {
-    return '## '.$e->getFile().'('.$e->getLine().'): '.$e->getMessage()."\n".
-           $e->getTraceAsString()."\n";
+    $a = '';
+    while ($e)
+    {
+      $b = trim(self::operation(
+        $e->level, $e->msg, true
+      ));
+      if ($b) {
+        $a .= $b."\n";
+      }
+      $e = $e->next;
+    }
+    return $a;
   }
+  # }}}
+  static function operation(# {{{
+    int $level, array &$msg, bool $opFirst = false
+  ):string
+  {
+    # compose element
+    $a = '';
+    $c = self::COLOR[$level];
+    switch($i = count($msg)) {
+    case 0:
+      break;
+    case 1:
+      # single message
+      $a .= $msg[0];
+      break;
+    case 2:
+      if ($opFirst)
+      {
+        # operation and message
+        $a .= self::fgColor($msg[0], $c, 1);
+        $a .= self::fgColor(self::SEP[0], $c);
+        $a .= $msg[1];
+      }
+      else
+      {
+        # path and operation
+        $a .= self::fgColor(
+          $msg[0].self::GROUP[1], $c
+        );
+        $a .= self::fgColor($msg[1], $c, 1);
+      }
+      break;
+    default:
+      # path, operation and message
+      $b = implode(
+        self::GROUP[1], array_slice($msg, 0, -2)
+      );
+      $a .= self::fgColor($b, $c);
+      $a .= self::fgColor(self::GROUP[1], $c);
+      $a .= self::fgColor($msg[$i - 2], $c, 1);
+      if ($msg[$i - 1] !== '')
+      {
+        $a .= self::fgColor(self::SEP[0], $c);
+        $a .= $msg[$i - 1];
+      }
+      break;
+    }
+    return (strpos($a, "\n") !== false)
+      ? self::composeBlock($a)
+      : $a;
+  }
+  # }}}
+  static function separator(# {{{
+    int $level, int $sep = 0
+  ):string
+  {
+    $i = ($level === 1) ? 1 : 0;
+    return self::fgColor(
+      self::SEP[$sep], self::COLOR[$level], $i
+    );
+  }
+  # }}}
+  static function throwable(Throwable $e): string # {{{
+  {
+    return
+      '## '.$e->getFile().'('.$e->getLine().'): '.
+      $e->getMessage()."\n".
+      $e->getTraceAsString()."\n";
+  }
+  # }}}
   # }}}
   function __construct(# {{{
     public object   $bot,
@@ -1660,7 +1785,14 @@ class BotLog
     return true;
   }
   # }}}
-  function &getPath(): array # {{{
+  function new(string $name): self # {{{
+  {
+    return ($name && $name !== $this->name)
+      ? new self($this->bot, $name, $this)
+      : $this;
+  }
+  # }}}
+  function &path(): array # {{{
   {
     $log  = $this;
     $path = [$log->name];
@@ -1672,19 +1804,52 @@ class BotLog
     return $path;
   }
   # }}}
-  function setName(string $name): void # {{{
+  function print(# {{{
+    int $level, int $sep, array &$msg
+  ):void
   {
-    $this->name = $name;
+    # filter empty messages
+    for ($i = 0, $j = count($msg); $i < $j; ++$i)
+    {
+      if ($msg[$i] === '') {
+        array_splice($msg, $i--, 1); $j--;
+      }
+    }
+    # compose message
+    $a = $this->message(
+      $level, self::separator($level, $sep), $msg
+    );
+    # output
+    $this->bot->console->write($a."\n");
   }
   # }}}
-  function new(string $name): self # {{{
+  function printObject(# {{{
+    object $o, int $level, array &$msg
+  ):void
   {
-    return ($name && $name !== $this->name)
-      ? new self($this->bot, $name, $this)
-      : $this;
+    $this->bot->console->write(
+      $this->message(
+        $level, self::separator($level, 0), $msg
+      )."\n".
+      self::composeObject($o)
+    );
   }
   # }}}
-  function message(int $level, string $sep, array &$msg): string # {{{
+  function obj(# {{{
+    object $o, int $level, array &$msg
+  ):void
+  {
+    $this->bot->console->write(
+      $this->message(
+        $level, self::separator($level, 0), $msg
+      )."\n".
+      self::composeObject($o)
+    );
+  }
+  # }}}
+  function message(# {{{
+    int $level, string $sep, array &$msg
+  ):string
   {
     # prepare
     $text  = '';
@@ -1699,8 +1864,10 @@ class BotLog
     # compose msg chain
     if ($msg)
     {
-      for ($i = 0, $j = count($msg) - 1; $i < $j; ++$i) {
-        $text = $text.$sep.self::fgColor($msg[$i], $color, 1);
+      for ($i = 0, $j = count($msg) - 1; $i < $j; ++$i)
+      {
+        $text = $text.$sep.
+          self::fgColor($msg[$i], $color, 1);
       }
       $text = (~$j && ($a = rtrim($msg[$j])))
         ? (($a[0] === "\n") ? $text.$a : $text.$sep.$a)
@@ -1709,48 +1876,29 @@ class BotLog
     # check multiline
     if (($n = strpos($text, "\n")) > 0)
     {
-      $text = substr($text, 0, ++$n).self::parseBlock(substr($text, $n));
+      $text = substr($text, 0, ++$n).
+        self::composeBlock(substr($text, $n));
       $n = 1;
     }
     else {# single line
       $n = 0;
     }
     # complete
-    return self::fgColor(self::PROMPT[$n], self::PROMPT[2], 1).
-           self::fgColor($p->name, self::PROMPT[2], 0).$text;
-  }
-  # }}}
-  function print(int $level, int $sep, string ...$msg): void # {{{
-  {
-    # filter empty messages
-    for ($i = 0, $j = count($msg); $i < $j; ++$i)
-    {
-      if ($msg[$i] === '') {
-        array_splice($msg, $i--, 1); $j--;
-      }
-    }
-    # output
-    $s = self::separator($level, $sep);
-    $this->bot->console->write(
-      $this->message($level, $s, $msg)."\n"
-    );
-  }
-  # }}}
-  function printObject(object $o, int $level, array &$msg): void # {{{
-  {
-    $a = $this->message($level, self::separator($level, 0), $msg);
-    $b = self::parseObject($o);
-    $this->bot->console->write($a."\n".$b);
+    return
+      self::fgColor(self::PROMPT[$n], self::PROMPT[2], 1).
+      self::fgColor($p->name, self::PROMPT[2], 0).$text;
   }
   # }}}
   function prompt(string ...$msg): void # {{{
   {
     array_push($msg, '');
     $s = self::separator(0, 1);
-    $this->bot->console->write($this->message(0, $s, $msg));
+    $this->bot->console->write(
+      $this->message(0, $s, $msg)
+    );
   }
   # }}}
-  function bannerConsole(): void # {{{
+  function banner(): void # {{{
   {
     $a = <<<EOD
 ███████████████████████████████████████ Process control:
@@ -1763,78 +1911,55 @@ EOD;
     $this->bot->console->write($a);
   }
   # }}}
-  function bannerCommands(): void # {{{
+  function commands(array &$tree, string $src): void # {{{
   {
-    $this->info(
-      $this->bot['source'],
-      "\n".self::parseCommands(
-        $this->bot->cmd->tree, 0, self::PROMPT[2]
-      )
-    );
+    $this->info($src, "\n".self::composeTree(
+      $tree, 0, self::PROMPT[2]
+    ));
   }
   # }}}
-  function info(string ...$msg): void # {{{
-  {
-    $this->print(0, 0, ...$msg);
+  # info/warn/error {{{
+  function info(string ...$msg): void {
+    $this->print(0, 0, $msg);
   }
-  # }}}
-  function infoInput(string ...$msg): void # {{{
-  {
-    $this->print(0, 1, ...$msg);
+  function infoInput(string ...$msg): void {
+    $this->print(0, 1, $msg);
   }
-  # }}}
-  function infoObject(object $o, string ...$msg): void # {{{
-  {
+  function infoObject(object $o, string ...$msg): void {
     $this->printObject($o, 0, $msg);
   }
-  # }}}
-  function warn(string ...$msg): void # {{{
-  {
-    $this->print(2, 0, ...$msg);
+  function warn(string ...$msg): void {
+    $this->print(1, 0, $msg);
   }
-  # }}}
-  function warnInput(string ...$msg): void # {{{
-  {
-    $this->print(2, 1, ...$msg);
+  function warnInput(string ...$msg): void {
+    $this->print(1, 1, $msg);
   }
-  # }}}
-  function warnObject(object $o, string ...$msg): void # {{{
-  {
+  function warnObject(object $o, string ...$msg): void {
     $this->printObject($o, 2, $msg);
   }
-  # }}}
-  function error(string ...$msg): void # {{{
+  function error(string ...$msg): void
   {
-    $this->print(1, 0, ...$msg);
-    $this->errorCount += 1;
+    $this->errorCount++;
+    $this->print(2, 0, $msg);
   }
-  # }}}
-  function errorInput(string ...$msg): void # {{{
+  function errorInput(string ...$msg): void
   {
-    $this->print(1, 1, ...$msg);
-    $this->errorCount += 1;
+    $this->errorCount++;
+    $this->print(2, 1, $msg);
   }
-  # }}}
-  function errorObject(object $o, string ...$msg): void # {{{
+  function errorObject(object $o, string ...$msg): void
   {
+    $this->errorCount++;
     $this->printObject($o, 1, $msg);
   }
   # }}}
   function exception(object $e): bool # {{{
   {
-    # check custom
-    if ($e instanceof ErrorEx) {
+    if (ErrorEx::is($e)) {
       return $this->exceptionEx($e);
     }
-    # compose standard error/exception
-    $a = $e->getMessage()."\n".
-      $e->getFile().'('.$e->getLine().")\n".
-      self::parseTrace($e);
-    # truncate paths
-    $a = str_replace(__DIR__.DIRECTORY_SEPARATOR, '', $a);
-    # output
-    $this->print(1, 0, '✱', get_class($e), $a);
-    $this->errorCount += 1;
+    $this->errorCount++;
+    $this->print(2, 0, self::parseException($e));
     return true;
   }
   # }}}
@@ -1842,58 +1967,66 @@ EOD;
   {
     if ($e->isFatal())
     {
-      # check fatal value,
-      # which is the common throwable object
-      if ($e->value) {
-        $this->exception($e->value);
-      }
-      # otherwise, display rised exception
-      # get message and prepend with bang
-      $a = $e->msg;
-      array_unshift($a, '✶');
-      # add reduced trace
-      $b = self::parseTrace($e, 1);
-      $b = str_replace(__DIR__.DIRECTORY_SEPARATOR, '', $b);
-      $a[count($a) - 1] .= "\n".$b;
-      # output
-      $this->error(...$a);
-    }
-    elseif ($e->msg)
-    {
-      if ($e->isError()) {
-        $this->error(...$e->msg);
-      }
-      elseif ($e->isWarning()) {
-        $this->warn(...$e->msg);
-      }
-      else {
-        $this->info(...$e->msg);
-      }
-    }
-    if ($e->next) {
-      $this->exceptionEx($e->next);
-    }
-    return $e->hasError();
-  }
-  # }}}
-  function result(object $x, string $op = ''): bool # {{{
-  {
-    if ($ok = $result->ok) {
-      $this->info($op, 'ok');
+      $this->errorCount++;
+      $this->print(2, 0, self::parseException(
+        $e->value ?? $e
+      ));
     }
     else
     {
-      $this->error($op, 'fail');
-      $this->exceptionEx($result->error);
+      $e->isError() && $this->errorCount++;
+      $this->print($e->level, 0, $e->msg);
     }
-    return $ok;
+    $e->next && $this->exceptionEx($e->next);
+    return $e->hasError();
   }
   # }}}
-  function dump(mixed $var): void # {{{
+  function result(object $x, string ...$msg): bool # {{{
   {
-    if ($proc = $this->bot->proc) {
-      $proc->print(var_export($var, true)."\n");
+    # prepare
+    $a = $x->ok ? 0 : 2;
+    $b = '';
+    $i = 0;
+    $k = count($x->trace);
+    # check not confirmed
+    if ($k && !($e = $x->trace[0])->msg) {
+      $e->msg = [$x->ok];
     }
+    # compose title
+    $a = $this->message(
+      $a, self::separator($a, 0), $msg
+    );
+    # compose groups
+    for ($i; $i < $k; $i++) {
+      $b .= "\n".$this->resultGroup($x->trace[$i]);
+    }
+    if ($b) {
+      $a .= "\n".self::composeBlock($b);
+    }
+    # complete
+    $x->ok && $this->errorCount++;
+    $this->bot->console->write($a."\n");
+    return $x->ok;
+  }
+  # }}}
+  function resultGroup(object $e): string # {{{
+  {
+    # prepare
+    $level = $e->msg[0] ? 0 : 2;
+    $color = self::COLOR[$level];
+    $msg   = array_slice($e->msg, 1);
+    $count = count($msg);
+    # compose
+    $a = self::fgColor(self::GROUP[0], $color, 1);
+    $a = $a.($count
+      ? self::operation($level, $msg)
+      : self::fgColor(' ', $color)
+    );
+    # compose nested errors
+    if (($e = $e->next) && ($b = self::errors($e))) {
+      $a .= "\n".self::composeBlock($b);
+    }
+    return $a;
   }
   # }}}
   function finit(): void # {{{
@@ -1965,12 +2098,6 @@ class BotConfig # {{{
         'canJoinGroups' => false,
         'canReadGroups' => false,
         'isInline'      => false,
-      ],
-      'BotApiPolling' => [# long polling protocol
-        'limit'       => 100,# getUpdates results limit (100=max)
-        'timeout'     => 60,# getUpdates timeout (telegram's max=50)
-        'retries'     => -1,# retries before termination (-1=unlimited)
-        'pause'       => 3000,# pause between retries (msec)
       ],
       'BotFile'   => [
         'timeout' => 5*60,# sec, unload timeout
@@ -2469,6 +2596,14 @@ class BotApi # {{{
       : '';
   }
   # }}}
+  static function oError(object $o): string # {{{
+  {
+    $a = strval($o->error_code ?? '');
+    $b = strval($o->description ?? '');
+    return ($a === '')
+      ? $b : trim('('.$a.') '.$b);
+  }
+  # }}}
   static function setopt(# {{{
     object $curl, ?array &$req = null
   ):?object
@@ -2502,7 +2637,7 @@ class BotApi # {{{
     );
     if ($o === null)
     {
-      throw ErrorEx::fail(
+      return ErrorEx::fail(
         "incorrect response\n".
         str_replace("\n", '\n', $s)
       )->addFail('json_decode',
@@ -2512,31 +2647,19 @@ class BotApi # {{{
     # check proper type
     if (!is_object($o) || !isset($o->ok))
     {
-      throw ErrorEx::fail(
+      return ErrorEx::fail(
         "incorrect response type\n".
         str_replace("\n", '\n', $s)
       );
     }
-    # check api failed
-    if (!$o->ok)
-    {
-      $a = isset($o->error_code)
-        ? strval($o->error_code)
-        : '';
-      $b = isset($o->description)
-        ? strval($o->description)
-        : '';
-      $a = ($a && $b)
-        ? ($a.': '.$b)
-        : ($a ?: $b);
-      throw ErrorEx::fail(
-        "unsuccessful response\n".$a
-      );
+    # check failure
+    if (!$o->ok) {
+      return $o;
     }
     # check has a result
     if (!isset($o->result))
     {
-      throw ErrorEx::fail(
+      return ErrorEx::fail(
         "incorrect response (no result)\n".
         str_replace("\n", '\n', $s)
       );
@@ -2544,15 +2667,20 @@ class BotApi # {{{
     return $o;
   }
   # }}}
+  static function confirmResult(# {{{
+    object $x, string &$method
+  ):void
+  {
+    echo "\n[AAAAAAAAAAAAAA]\n";
+  }
+  # }}}
   function __construct(public object $bot) # {{{
   {
-    # set logger
-    $this->log = $bot->log->new('api');
-    # set curl instance
     if (ErrorEx::is($curl = self::curl())) {
       throw $curl;
     }
     $this->curl = $curl;
+    $this->log  = $bot->log->new('api');
   }
   # }}}
   function init(): bool # {{{
@@ -2625,14 +2753,24 @@ class BotApi # {{{
       if ($e = self::setopt($curl, $req)) {
         throw $e;
       }
-      if (!($a = curl_exec($curl)))
+      if (($a = curl_exec($curl)) === false)
       {
         throw ErrorEx::fail('curl_exec',
           "fail\n".self::cError($curl)
         );
       }
-      # decode response
-      $res = self::decode($a)->result;
+      # decode and check the response
+      if (ErrorEx::is($e = self::decode($a))) {
+        throw $e;
+      }
+      if (!$e->ok)
+      {
+        throw ErrorEx::fail(
+          "unsuccessful response\n".
+          (self::oError($e) ?: $a)
+        );
+      }
+      $res = $e->result;
     }
     catch (Throwable $e)
     {
@@ -2645,76 +2783,55 @@ class BotApi # {{{
   }
   # }}}
   function promise(# {{{
-    string $method, ?object $file, array &$req
+    string  $method,
+    ?object $file,
+    array   $req,
+    array   $opts = []
   ):object
   {
-    $a = new BotApiAction($this->actions, $file, [
+    $req = [
       CURLOPT_URL  => $this->url($method),
       CURLOPT_POST => true,
-      CURLOPT_POSTFIELDS => &$req,
-    ]);
-    return new Promise($a);
+      CURLOPT_POSTFIELDS => $req,
+    ];
+    return new Promise(new BotApiAction(
+      $this->actions, $file, $req, $opts
+    ));
   }
   # }}}
   function sendPhoto(array $req): object # {{{
   {
-    # prepare
-    static $method = 'sendPhoto';
+    static $m = 'sendPhoto';
     static $k = 'photo';
-    $api  = $this;
-    $file = is_object($req[$k])
-      ? $req[$k] : null;
-    # compose request promise
     return $this
-    ->promise($method, $file, $req)
-    ->then(function($x) use ($log,&$method) {
-      # check and confirm
-      if ($x->ok && !is_object($x->value)) {
-        $x->failure()->message('unsuccessful');
-      }
-      $x->confirm($log, $method);
-    });
+      ->promise($m, BotApiFile::of($req[$k]), $req)
+      ->then(new BotApiConfirm($m));
   }
   # }}}
   function editMessageMedia(array $req): object # {{{
   {
     # prepare
-    static $method = 'editMessageMedia';
+    static $m = 'editMessageMedia';
     static $k = 'media';
-    $api = $this;
-    # set attachment and encode media
-    if (is_object($file = $req[$k][$k])) {
+    # set attachment and encode
+    if ($file = BotApiFile::of($req[$k][$k]))
+    {
+      $req[$k][$k] = 'attach://'.$file->postname;
       $req[$file->postname] = $file;
     }
-    else {
-      $file = null;
-    }
     $req[$k] = json_encode($req[$k]);
-    # compose promise
+    # compose
     return $this
-    ->promise($method, $file, $req)
-    ->then(function($x) use ($api,&$method) {
-      # check and confirm
-      if ($x->ok && !is_object($x->value)) {
-        $x->failure()->message('unsuccessful');
-      }
-      $x->confirm($api->log, $method);
-    });
+      ->promise($m, $file, $req)
+      ->then(new BotApiConfirm($m));
   }
   # }}}
   function deleteMessage(array $req): object # {{{
   {
-    static $method = 'deleteMessage';
-    $api = $this;
+    static $m = 'deleteMessage';
     return $this
-    ->promise($method, null, $req)
-    ->then(function($x) use ($api,&$method) {
-      # check and confirm
-      if ($x->ok && $x->value !== true) {
-        $x->failure()->message('unsuccessful');
-      }
-      $x->confirm($api->log, $method);
-    });
+      ->promise($m, null, $req)
+      ->then(new BotApiConfirm($m));
   }
   # }}}
   function &recieve(): array # {{{
@@ -2727,6 +2844,56 @@ class BotApi # {{{
     $this->reciever->finit();
     $this->actions->finit();
     curl_close($this->curl);
+  }
+  # }}}
+}
+# }}}
+class BotApiConfirm extends PromiseAction # {{{
+{
+  function __construct(
+    public string $method
+  ) {}
+  function stop(): ?object # {{{
+  {
+    $f = $this->method;
+    $x = $this->result;
+    $x->ok && $this->$f();
+    $x->confirm('api', $f);
+    return null;
+  }
+  # }}}
+  function isObject(): bool # {{{
+  {
+    if (is_object($this->result->value)) {
+      return true;
+    }
+    $this->result->failure()->message(
+      'incorrect type '.
+      '('.gettype($this->result->value).')'
+    );
+    return false;
+  }
+  # }}}
+  function isTrue(): bool # {{{
+  {
+    if ($this->result->value === true) {
+      return true;
+    }
+    $this->result->failure()->message(
+      'unsuccessful (not true)'
+    );
+    return false;
+  }
+  # }}}
+  # methods {{{
+  function sendPhoto(): void {
+    $this->isObject();
+  }
+  function editMessageMedia(): void {
+    $this->isObject();
+  }
+  function deleteMessage(): void {
+    $this->isTrue();
   }
   # }}}
 }
@@ -2746,7 +2913,7 @@ abstract class BotApiExt extends BotConfigAccess # {{{
 class BotApiActions extends BotApiExt # {{{
 {
   const LOGNAME = 'action';
-  public $murl,$gen,$acts = [];
+  public $murl,$gen,$acts = [],$ms = 0;
   function init(): bool # {{{
   {
     if (!($this->murl = curl_multi_init()))
@@ -2799,6 +2966,7 @@ class BotApiActions extends BotApiExt # {{{
       $murl  = $this->murl;
       $acts  = &$this->acts;
       $count = $running = count($acts);
+      $api   = $this->api;
       # operate
       while (1)
       {
@@ -2821,11 +2989,11 @@ class BotApiActions extends BotApiExt # {{{
           if (($a = curl_multi_select($murl, 0)) < 0)
           {
             throw ErrorEx::fail('curl_multi_select',
-              "fail\n".$this->api::mError($murl)
+              "fail\n".$api::mError($murl)
             );
           }
           # retry
-          if (++$d < 8)
+          if (++$d < 4)
           {
             sleep(0);
             continue;
@@ -2855,19 +3023,18 @@ class BotApiActions extends BotApiExt # {{{
               $a->set($c['result']))
           {
             array_splice($acts, $i, 1);
-            $count--;
             break;
           }
         }
+        $count--;
       }
       # the number of transfers must match,
       # otherwise, there is an error
       if ($running !== $count)
       {
-        $b = ($b = self::mError($murl))
-          ? "curl_multi_info_read\n".$b
-          : 'incomplete transfers remained';
-        throw ErrorEx::fail($b);
+        throw ErrorEx::fail('curl_multi_info_read',
+          "fail\n".$api::mError($murl)
+        );
       }
     }
     catch (Throwable $e)
@@ -2919,20 +3086,35 @@ class BotApiActions extends BotApiExt # {{{
 class BotApiAction extends PromiseAction # {{{
 {
   use HRTimeTouchable;
+  # {{{
   const OPTS = [# default options
+    'fails'   => 2,# fails before first retry
+    'retries' => -1,# retries before fatal (-1=unlimited)
+    'pause'   => 2000,# first retry pause (msec)
+    'backoff' => 6,# max retries in pause^retry
+    'report'  => false,# output retry warnings
     'timeout' => 0,# transfer timeout
-    'retries' => -1,# retries before termination (-1=unlimited)
-    'pause'   => 0,# pause between retries (msec)
-    'fails'   => 3,# retries before termination (-1=unlimited)
   ];
-  public $curl,$state = 1,$fails = 0;
+  public
+    $curl,$state = 1,$fails = 0;
+  # }}}
   function __construct(# {{{
     public object  $base,
     public ?object $file,
-    public array   $req,
-    public int     $retries = -1,
-    public int     $pause = 0
-  ) {}
+    public array   &$req,
+    public array   &$opts
+  ) {
+    # set defaults
+    foreach (self::OPTS as $k => $v)
+    {
+      if (isset($opts[$k]) === false) {
+        $opts[$k] = $v;
+      }
+    }
+    # set request timeout
+    $req[CURLOPT_TIMEOUT_MS] =
+      $opts['timeout'];
+  }
   # }}}
   function start(): bool # {{{
   {
@@ -2984,8 +3166,9 @@ class BotApiAction extends PromiseAction # {{{
     if ($this->state === 1) {# finished
       return false;
     }
-    # pending retry, check time has come
-    return ($this->timeDelta() > $this->pause)
+    # pending retry, check timeout
+    $i = $this->base->bot->proc->time;
+    return ($this->timeDelta($i) > 0)
       ? $this->start()
       : true;
   }
@@ -3001,12 +3184,12 @@ class BotApiAction extends PromiseAction # {{{
       if ($x) {
         throw ErrorEx::warn(curl_strerror($x));
       }
-      # get response content
-      if (($a = curl_multi_getcontent($curl)) === null) {
-        $a = '';
-      }
-      # get and check HTTP response code
-      if (($x = curl_getinfo($curl, CURLINFO_RESPONSE_CODE)) === false)
+      # get response and check HTTP code
+      $v = curl_multi_getcontent($curl);
+      $x = curl_getinfo(
+        $curl, CURLINFO_RESPONSE_CODE
+      );
+      if ($x === false)
       {
         throw ErrorEx::fail('curl_getinfo',
           "fail\n".$api::cError($curl)
@@ -3014,71 +3197,87 @@ class BotApiAction extends PromiseAction # {{{
       }
       if ($x !== 200)
       {
-        $a = ($a === '') ? "\n".$a : '';
-        $a = 'unexpected HTTP status '.$x.$a;
-        if ($x >= 500) {
+        $a = '('.$x.') unsuccessful HTTP status';
+        if ($v !== null)
+        {
+          $b = $api::oError($api::decode($v));
+          $a = $a."\n".($b ?: $v);
+        }
+        if ($x >= 500) {# not my fault
           throw ErrorEx::warn($a);
         }
         else {
           throw ErrorEx::fail($a);
         }
       }
-      # decode response
-      $a = ($a === '')
-        ? null : $api::decode($a)->result;
+      # obtain the result
+      if ($v !== null)
+      {
+        if (ErrorEx::is($v = $api::decode($v))) {
+          throw $v;
+        }
+        $v = $v->result;
+      }
     }
     catch (Throwable $e) {
-      return $this->setFail(ErrorEx::from($e));
+      return $this->setFail($e);
     }
     # success
-    $this->result->success($a);
+    $this->result->success($v);
     return $this->detach();
   }
   # }}}
   function setFail(object $e): bool # {{{
   {
-    # check critical
-    if (($e = ErrorEx::from($e))->isError())
+    # handle critical
+    if (($e = ErrorEx::from($e))->isError() ||
+        ($i = $this->opts['fails']) <= 0)
     {
       $this->result->failure($e);
       return $this->detach();
     }
-    # retry
-    $this->fails++;
-    return $this->retries
-      ? $this->setRetry($e)
-      : $this->setRetryFail($e);
-  }
-  # }}}
-  function setRetry(object $e): bool # {{{
-  {
-    # check delayed retry
-    $this->retries--;
-    if ($this->pause)
-    {
+    # handle recoverable
+    if (($o = &$this->opts)['report']) {
       $this->base->log->exception($e);
-      return $this->timeTouch()->detach(-1);
     }
-    # re-attach and retry now
-    return ($this->detach() && $this->attach)
-      ? false # dont remove the action
-      : true; # failed
+    if (++$this->fails < $i) {
+      return $this->restart();
+    }
+    if (($j = $o['retries']) === 0)
+    {
+      $this->result->failure($e)->message(
+        'too many failures ('.$i.')'
+      );
+      return $this->detach();
+    }
+    if ($j > 0 && $this->fails - $i > $j)
+    {
+      $this->result->failure($e)->message(
+        'retry limit exceeded ('.$j.')'
+      );
+      return $this->detach();
+    }
+    return $this->retry();
   }
   # }}}
-  function setRetryFail(object $e): bool # {{{
+  function restart(): bool # {{{
   {
-    # prepare
-    $res = $this->result->failure($e);
-    if (($x = $this->fails) > 1)
-    {
-      $res->failure(
-        ErrorEx::fail("retry limit exceeded ($x)")
-      );
-    }
-    $e = (($x = $this->fails) > 1)
-      ? $e->firstFail("retry limit exceeded ($x)")
-      : $e->toError();
-    return $this->detach();
+    return ($this->detach() && $this->attach())
+      ? false # ok, keep spinning
+      : true; # fail, stop
+  }
+  # }}}
+  function retry(object $e): bool # {{{
+  {
+    $o = &$this->opts;
+    $i = min(
+      $this->fails - $o['fails'],
+      $o['backoff']
+    );
+    return $this
+      ->timeTouch($this->base->bot->proc->time)
+      ->timeAdd(pow($o['pause'], $i))
+      ->detach(-1);
   }
   # }}}
   function detach(int $state = 1): bool # {{{
@@ -3118,11 +3317,14 @@ class BotApiPolling extends BotApiExt # {{{
   public $req,$offset = 0;
   function init(): bool # {{{
   {
-    $this->req = $this->api->promise('getUpdates', [
+    $this->req = $this->api->promise('getUpdates', null, [
       'offset'  => $this->offset,
-      'limit'   => $this['limit'],
-      'timeout' => $this['timeout'],
-    ], null, $this['retries'], $this['pause']);
+      'limit'   => 100, # results limit, max=100
+      'timeout' => 50,# experimental max=50
+    ], [
+      'report'  => true,
+      'timeout' => 49000,
+    ]);
     return true;
   }
   # }}}
@@ -3130,27 +3332,27 @@ class BotApiPolling extends BotApiExt # {{{
   {
     static $NONE = [];
     # operate
-    if (!($res = $this->req->complete())) {
+    if (!($x = $this->req->complete())) {
       return $NONE;
     }
     # check result
-    if (!$res->ok)
+    if (!$x->ok)
     {
-      $this->log->exception($res->error);
+      $this->log->result($x, 'getUpdates');
       throw ErrorEx::skip();
     }
-    if (!is_array($x = $res->value()))
+    if (!is_array($a = $x->value))
     {
       $this->log->error('incorrect response');
       throw ErrorEx::skip();
     }
     # update offset
-    if (($a = count($x) - 1) >= 0) {
-      $this->offset = 1 + $x[$a]->update_id;
+    if (($i = count($a) - 1) >= 0) {
+      $this->offset = 1 + $a[$i]->update_id;
     }
     $this->init();
     # complete
-    return $x;
+    return $a;
   }
   # }}}
   function finit(): void # {{{
@@ -3198,6 +3400,9 @@ class BotApiFile extends CURLFile # {{{
     $o->isTemp   = $isTemp;
     return $o;
   }
+  static function of(&$file): ?self {
+    return ($file instanceof self) ? $file : null;
+  }
   function destruct(): void
   {
     # remove temporary file
@@ -3213,62 +3418,56 @@ class BotApiFile extends CURLFile # {{{
 }
 # }}}
 # }}}
-# updates {{{
-class BotUpdates
+# events {{{
+class BotEvents
 {
-  # {{{
   public
-    $log,$queue = [],$count = 0,
-    $loadable = true;
-  # }}}
-  function __construct(public object $bot) # {{{
-  {
-    $this->log = $bot->log->new('update');
+    $log,$queue = [];
+  function __construct(public object $bot) {
+    $this->log = $bot->log->new('event');
   }
-  # }}}
-  function load(object $upd): bool # {{{
+  function load(object $o): bool # {{{
   {
-    # construct the request
-    if (!($q = BotRequest::fromUpdate($this->bot, $upd))) {
+    # transform
+    if (!($q = BotRequest::fromUpdate($this->bot, $o))) {
       return false;
     }
     # check
-    if ($q instanceof ErrorEx)
+    if (ErrorEx::is($q))
     {
       if ($q->level) {
-        $this->log->errorObject($upd, $q->getMsg('incorrect'));
+        $this->log->errorObject($o, $q->getMsg('incorrect'));
       }
       else {
-        $this->log->warnObject($upd, 'unknown');
+        $this->log->warnObject($o, 'unknown');
       }
       return false;
     }
-    # construct and stash the response
-    if (isset($this->queue[$id = $q->id()])) {
-      $this->queue[$id]->then($q->response());
+    # construct
+    $k = $q->id();
+    $q = $q->response();
+    # stash
+    if (isset($this->queue[$k])) {
+      $this->queue[$k]->then($q);
     }
-    else
-    {
-      $this->queue[$id] = new PromiseOne($q->response());
-      $this->count++;
+    else {
+      $this->queue[$k] = new PromiseOne($q);
     }
     return true;
   }
   # }}}
-  function apply(): int # {{{
+  function dispatch(): int # {{{
   {
-    if ($cnt = $this->count)
+    if (($c = $this->count()) === 0) {
+      return 0;
+    }
+    foreach ($this->queue as $k => $p)
     {
-      foreach ($this->queue as $id => $q)
-      {
-        if ($q->complete())
-        {
-          unset($this->queue[$id]);
-          $this->count--;
-        }
+      if ($p->complete()) {
+        unset($this->queue[$k]);
       }
     }
-    return $cnt;
+    return $c;
   }
   # }}}
 }
@@ -3292,6 +3491,7 @@ class BotText
     $this->log = $bot->log->new('text');
     $this->hlp = ArrayUnion::construct('')->push([
       'NBSP'    => "\xC2\xA0",# non-breakable space
+      'NNBSP'   => "\xE2\x80\xAF",# narrow nbsp
       'ZWSP'    => "\xE2\x80\x8B",# zero-width space
       'ZS'      => "\xE3\x80\x80",# Ideographic Space
       'LINEPAD' => "\xC2\xAD".str_repeat(' ', 120)."\xC2\xAD",
@@ -3602,6 +3802,7 @@ class BotCommands implements ArrayAccess
 # process {{{
 class BotProcess extends BotConfigAccess # {{{
 {
+  use HRTimeTouchable;
   # {{{
   const
     PROC_UUID       = '22c4408d490143b5b29f0640755327db',
@@ -3610,6 +3811,7 @@ class BotProcess extends BotConfigAccess # {{{
     IDLE_DELAY      = 20000,# usec, minimal delay
     IDLE_STEP       = 1000,# delays before idle
     IDLE_LIMIT      = 10,# maximal idle factor
+    BUSY_TOUCH      = 100,# time touch after
     TIMEOUT         = 15000,# ms
     BUF_UUID        = 'c25de777e80d49f69b6b7b57091d70d5',
     BUF_SIZE        = 200,
@@ -3622,7 +3824,8 @@ class BotProcess extends BotConfigAccess # {{{
     EXIT_SIGTERM    = 102;
   public
     $id,$log,$pidfile,$active,$syncbuf,
-    $idleTicks,$idleStep,$idleFactor,$idleDelay,
+    $busyTicks,$idleTicks,$idleStep,
+    $idleFactor,$idleDelay,
     $map = [],$exitcode = self::EXIT_DIRTY;
   # }}}
   static function construct(object $bot): object # {{{
@@ -3742,7 +3945,9 @@ class BotProcess extends BotConfigAccess # {{{
     {
       # prepare
       $bot = $this->bot;
-      $this->log->bannerCommands();
+      $bot->log->commands(
+        $bot->cmd->tree, $bot['source']
+      );
       # work
       while ($this->check())
       {
@@ -3772,6 +3977,9 @@ class BotProcess extends BotConfigAccess # {{{
     $this->idleFactor = 1;
     $this->idleStep   = self::IDLE_STEP;
     $this->idleDelay  = self::IDLE_DELAY;
+    if (++$this->busyTicks > self::BUSY_TOUCH) {
+      $this->timeTouch()->busyTicks = 0;
+    }
   }
   # }}}
   function wait(): void # {{{
@@ -3789,6 +3997,7 @@ class BotProcess extends BotConfigAccess # {{{
       $this->idleDelay = intval(self::IDLE_DELAY * $z);
     }
     usleep($this->idleDelay);
+    $this->timeTouch();
   }
   # }}}
   function startChildren(): void # {{{
@@ -3915,7 +4124,7 @@ class BotConsoleProcess extends BotProcess # {{{
   {
     try
     {
-      $this->log->bannerConsole();
+      $this->log->banner();
       while ($this->check()) {
         usleep(100000);# 100ms
       }
@@ -4170,7 +4379,7 @@ class BotProcessChild # {{{
 }
 # }}}
 # }}}
-## mediators
+## core
 # bot {{{
 class Bot extends BotConfigAccess
 {
@@ -4179,12 +4388,13 @@ class Bot extends BotConfigAccess
     EXP_USERNAME = '/^[a-z]\w{4,32}$/i',
     EXP_BOTNAME  = '/^[a-z]\w{1,29}bot$/i',
     INIT = [
-      'console','cfg','log','file','api','text','cmd','proc'
+      'console','cfg','log','file',
+      'api','text','cmd','proc'
     ];
   public
     $bot,$id,$task,
-    $console,$log,$cfg,$api,$update,$text,$cmd,$file,$proc,$inited = [],
-    $users = [],$chats = [];
+    $console,$log,$cfg,$api,$events,$text,$cmd,$file,$proc,
+    $inited = [],$users = [],$chats = [];
   # }}}
   static function start(string $args = ''): never # {{{
   {
@@ -4205,7 +4415,7 @@ class Bot extends BotConfigAccess
     {
       # compose failure report
       $e = "\n".__METHOD__."\n".
-        BotLog::throwableToString($e);
+        BotLog::throwable($e);
       # output
       if ($args === '') {
         fwrite(STDOUT, $e);
@@ -4228,7 +4438,7 @@ class Bot extends BotConfigAccess
     $this->cfg     = new BotConfig($this, $id);
     $this->file    = new BotFile($this);
     $this->api     = new BotApi($this);
-    $this->updates = new BotUpdates($this);
+    $this->events  = new BotEvents($this);
     $this->text    = new BotText($this);
     $this->cmd     = new BotCommands($this);
     $this->proc    = BotProcess::construct($this);
@@ -4285,13 +4495,10 @@ class Bot extends BotConfigAccess
   # }}}
   function operate(): int # {{{
   {
-    if ($this->updates->loadable)
-    {
-      foreach ($this->api->recieve() as $update) {
-        is_object($update) && $this->updates->load($update);
-      }
+    foreach ($this->api->recieve() as $e) {
+      $this->events->load($e);
     }
-    return $this->updates->apply();
+    return $this->events->dispatch();
   }
   # }}}
   function getUser(object $user): object # {{{
@@ -4701,7 +4908,6 @@ class BotRequestMember extends BotRequest # {{{
       return $chat->kicked($data);
     }
     # not handled
-    $this->log->dump($data);
     return false;
   }
   # }}}
@@ -4827,7 +5033,8 @@ abstract class BotChat # {{{
       return ($v = BotNode::reconstruct($bot, $v)) !== null;
     });
     # set filters
-    $a->jsonFilter = $b->jsonFilter = (function(array &$in) use ($bot) {
+    $a->jsonFilter = $b->jsonFilter =
+    (function(array &$in) use ($bot) {
       # skip empty containers and unknown items upon saving
       $out = [];
       foreach ($in as $id => $cfg)
@@ -4869,7 +5076,8 @@ abstract class BotChat # {{{
   }
   # }}}
   function callback(# {{{
-    object $req, ?object $node, object $item, string &$func, string &$args
+    object $req, ?object $node, object $item,
+    string &$func, string &$args
   ):object
   {
     return new Promise(new BotChatCallback(
@@ -4963,7 +5171,7 @@ class BotAnonChat extends BotChat # {{{
 # }}}
 class BotChatCallback extends PromiseAction # {{{
 {
-  const COMMON_FUNC = ['up'=>1,'close'=>1];
+  const NAVI = ['up'=>1,'close'=>1];
   function __construct(# {{{
     public object  $req,
     public ?object $node,
@@ -4978,7 +5186,7 @@ class BotChatCallback extends PromiseAction # {{{
     $node = $this->node
       ?? $this->req->chat->nodeOfItem($item);
     # handle common navigation
-    if (isset(self::COMMON_FUNC[$a = $this->query->func]))
+    if (isset(self::NAVI[$a = $this->query->func]))
     {
       if (!$node || $node->item !== $item)
       {
@@ -5002,99 +5210,98 @@ class BotChatCallback extends PromiseAction # {{{
     return $item
       ? ($node
         ? (($node->item === $item)
-          ? $this->change($node)
-          : $this->refresh($node, $item))
-        : $this->create($item))
-      : $this->delete($node);
+          ? $this->opChange($node)
+          : $this->opReplace($node, $item))
+        : $this->opCreate($item))
+      : $this->opDelete($node);
   }
   # }}}
-  function delete(object $node, ?object $ctx = null): ?object # {{{
+  function opDelete(object $node): ?object # {{{
   {
-    # prepare
-    $req  = $this->req;
-    $chat = $req->chat;
-    # operate
-    if (!$ctx && !($ctx = $node->item->ctx('close', $req))) {
-      return null;# cancel operation
+    $req = $this->req;
+    return ($ctx = $node->item->ctx('close', $req))
+      ? $this->delete($node, $ctx)
+      : null;
+  }
+  # }}}
+  function opCreate(object $item): ?object # {{{
+  {
+    if (($ctx  = $item->ctx('open', $this->req)) &&
+        ($node = $item->node($ctx, $this->query)))
+    {
+      return $this->create($node, $ctx);
     }
-    # complete
-    return $node->delete(
-      $chat
-    )->then(function($x) use ($chat,$node,$ctx) {
-      $ctx->log->ok($this->result, 'delete') &&
+    return null;
+  }
+  # }}}
+  function opReplace(object $node0, object $item1): ?object # {{{
+  {
+    $req = $this->req;
+    if (($ctx0  = $node0->item->ctx('close', $req)) &&
+        ($ctx1  = $item1->ctx('open', $req)) &&
+        ($node1 = $item1->node($ctx1, $this->query)))
+    {
+      return $this->update($node0, $node1, $ctx0);
+    }
+    return null;
+  }
+  # }}}
+  function opChange(object $node0): ?object # {{{
+  {
+    $item = $node0->item;
+    if (($ctx  = $item->ctx('change', $this->req)) &&
+        ($node = $item->node($ctx, $this->query)))
+    {
+      return $this->update($node0, $node, $ctx);
+    }
+    return null;
+  }
+  # }}}
+  function delete(object $node, object $ctx): object # {{{
+  {
+    return $node
+    ->delete(
+      $chat = $this->req->chat
+    )
+    ->then(function($x) use ($chat,$node,$ctx) {
+      $ctx->log->result($x, 'delete') &&
       $chat->view->delete($node);
     });
   }
   # }}}
-  function create(object $item): ?object # {{{
+  function create(object $node, object $ctx): object # {{{
   {
-    # prepare
-    $req  = $this->req;
-    $user = $req->user;
-    $chat = $req->chat;
-    $qry  = $this->query;
-    # operate
-    if (!($ctx  = $item->ctx('open', $req)) ||
-        !($node = BotNode::construct($item, $ctx, $qry)))
-    {
-      return null;# cancel operation
-    }
-    # complete
-    return $node->send(
-      $chat, $user
-    )->then(function() use ($chat,$node,$ctx) {
-      $ctx->log->ok($this->result, 'create') &&
+    return $node
+    ->create(
+      $chat = $this->req->chat,
+      $this->req->user
+    )
+    ->then(function($x) use ($chat,$node,$ctx) {
+      $ctx->log->result($x, 'create') &&
       $chat->view->prepend($node);
     });
-  }
-  # }}}
-  function refresh(object $node0, object $item1): ?object # {{{
-  {
-    # prepare
-    $req = $this->req;
-    $qry = $this->query;
-    # operate
-    if (!($ctx0  = $node0->item->ctx('close', $req)) ||
-        !($ctx1  = $item1->ctx('open', $req)) ||
-        !($node1 = BotNode::construct($item1, $ctx1, $qry)))
-    {
-      return null;
-    }
-    # complete
-    return $node1->isEmpty()
-      ? $this->delete($node0, $ctx0)
-      : $this->update($node0, $node1, $ctx0);
-  }
-  # }}}
-  function change(object $node0): ?object # {{{
-  {
-    # prepare
-    $item = $node0->item;
-    $req  = $this->req;
-    $qry  = $this->query;
-    # operate
-    if (!($ctx   = $item->ctx('change', $req)) ||
-        !($node1 = BotNode::construct($item, $ctx, $qry)))
-    {
-      return null;
-    }
-    # complete
-    return $node1->isEmpty()
-      ? $this->delete($node0, $ctx)
-      : $this->update($node0, $node1, $ctx);
   }
   # }}}
   function update(# {{{
     object $node0, object $node1, object $ctx
   ):object
   {
+    return $node1->isEmpty()
+      ? $this->delete($node0, $ctx)
+      : $this->change($node0, $node1, $ctx);
+  }
+  # }}}
+  function change(# {{{
+    object $node0, object $node1, object $ctx
+  ):object
+  {
     if (!$node0->isCompatible($node1)) {
       return $this->replace($node0, $node1, $ctx);
     }
-    return $node0->edit(
-      $chat, $node1
-    )->then(function() use ($ctx) {
-      $ctx->log->ok($this->result, 'update');
+    return $node0
+    ->update($this->req->chat, $node1)
+    ->then(function($x) use ($ctx) {
+      $ctx->log->result($x, 'change');
     });
   }
   # }}}
@@ -5103,12 +5310,22 @@ class BotChatCallback extends PromiseAction # {{{
   ):object
   {
     $chat = $this->req->chat;
+    $user = $this->req->user;
     $view = $chat->view;
     return Promise::OneStop([
-      $node0->delete($chat),
-      $node1->send($chat, $this->req->user)
-    ])->then(function() use ($view,$node0,$node1,$ctx) {
-      $ctx->log->ok($this->result, 'replace') &&
+      $node1->create($chat, $user),
+      $node0->delete($chat)
+    ])
+    ->then(function($x) use ($view,$node0,$node1,$ctx) {
+      if ($x->ok || $x->isOk(1))
+      {
+        /***
+        $view
+          ->delete($node0)
+          ->prepend($node1);
+        /***/
+      }
+      $ctx->log->result($x, 'replace') &&
       $view->delete($node0)->prepend($node1);
     });
   }
@@ -5117,7 +5334,7 @@ class BotChatCallback extends PromiseAction # {{{
 # }}}
 class BotChatCommand extends BotChatCallback # {{{
 {
-  function update(
+  function change(
     object $node0, object $node1, object $ctx
   ):object
   {
@@ -5126,8 +5343,6 @@ class BotChatCommand extends BotChatCallback # {{{
 }
 # }}}
 # }}}
-## components
-# base
 # node {{{
 class BotNode implements JsonSerializable
 {
@@ -5152,28 +5367,11 @@ class BotNode implements JsonSerializable
     return new self($item, $a[1], $a[2], $a[3]);
   }
   # }}}
-  static function construct(# {{{
-    object $item, object $ctx, object $query
-  ):?self
-  {
-    # render messages
-    try {
-      $msgs = $item->render($ctx, $query);
-    }
-    catch (Throwable $e)
-    {
-      $ctx->log->exception($e);
-      return null;
-    }
-    # construct
-    return new self($item, $msgs, 0, '');
-  }
-  # }}}
   function __construct(# {{{
     public object $item,
     public array  &$msgs,
-    public int    $time,
-    public string $owner
+    public int    $time  = 0,
+    public string $owner = ''
   ) {}
   # }}}
   function __debugInfo(): array # {{{
@@ -5245,32 +5443,34 @@ class BotNode implements JsonSerializable
         $a[] = $message->zap($chat);
       }
     }
-    # delete altogether
-    $me = $this;
-    return Promise::AllStop($a)
-    ->then(function($x) use ($me) {
-      $x->confirm($me->log, 'delete');
-    });
+    # complete all
+    return Promise::AllStop($a);
   }
   # }}}
-  function send(object $chat, object $user): object # {{{
+  function create(object $chat, object $user): object # {{{
   {
     # create message promises
     $a = [];
     foreach ($this->msgs as $message) {
       $a[] = $message->send($chat);
     }
-    # complete
+    # complete one by one
     $me = $this;
     return Promise::Fn(function() use ($me,$user) {
-      # set timestamp and owner
+      # first, set timestamp and owner
       $me->time  = time();
       $me->owner = $user->id;
     })
-    ->thenOneStop($a);
+    ->thenOneStop($a)
+    ->then(function($x) use ($me) {
+      #$this->result = $x->group();
+      $x->confirm(
+        'node',$me->item->type,'create',''
+      );
+    });
   }
   # }}}
-  function edit(object $chat, object $node): object # {{{
+  function update(object $chat, object $node): object # {{{
   {
     # prepare
     $n0 = count($m0 = &$this->msgs);
@@ -5285,24 +5485,21 @@ class BotNode implements JsonSerializable
       }
     }
     # delete any extra messages
-    if ($i < $n0)
+    for ($i; $i < $n0; ++$i)
     {
-      for ($i; $i < $n0; ++$i)
-      {
-        $ed[] = $m0[$i]->delete($chat);
-        $rm[] = $i;
-      }
+      $ed[] = $m0[$i]->delete($chat);
+      $rm[] = $i;
     }
-    # compose result
-    return Promise::AllStop(
-      $ed
-    )->then(function() use (&$m0,$rm) {
-      # remove message entries upon success
-      if ($this->result)
-      {
-        foreach ($rm as $i) {
-          array_splice($m0, $i);
-        }
+    # complete all
+    return Promise::AllStop($ed)
+    ->then(function($x) use (&$m0,&$rm) {
+      # check failed or nothing to do
+      if (!$x->ok || !$rm) {
+        return null;
+      }
+      # remove message entries
+      foreach (array_reverse($rm) as $i) {
+        array_splice($m0, $i);
       }
     });
   }
@@ -5409,7 +5606,7 @@ abstract class BotItem implements ArrayAccess # {{{
   {
     # create context
     $ctx = new BotItemCtx($this, $req);
-    # check events are disabled for this class/spec
+    # check events disabled for this class/spec
     if (!$this['events']) {
       return $ctx;
     }
@@ -5436,6 +5633,19 @@ abstract class BotItem implements ArrayAccess # {{{
       return null;
     }
     return $ctx;
+  }
+  # }}}
+  function node(object $ctx, object $query): object # {{{
+  {
+    try {
+      $msgs = $this->render($ctx, $query);
+    }
+    catch (Throwable $e)
+    {
+      $ctx->log->exception($e);
+      return null;
+    }
+    return new BotNode($this, $msgs);
   }
   # }}}
   function event(
@@ -5972,7 +6182,7 @@ class BotTxtMessage extends BotMessage # {{{
 }
 # }}}
 # }}}
-# compound
+## components
 class BotImgItem extends BotItem # {{{
 {
   const OPTION = [# {{{

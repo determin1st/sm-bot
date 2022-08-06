@@ -138,7 +138,7 @@ $o = new class {
       $e = '';
     }
     catch (Throwable $e) {
-      $e = BotLog::throwableToString($e);
+      $e = BotLog::throwable($e);
     }
     return $e;
   }
@@ -152,7 +152,7 @@ $o = new class {
       $e = '';
     }
     catch (Throwable $e) {
-      $e = BotLog::throwableToString($e);
+      $e = BotLog::throwable($e);
     }
     if ($e) {
       return $e;
@@ -186,7 +186,7 @@ $o = new class {
       $e = '';
     }
     catch (Throwable $e) {
-      $e = BotLog::throwableToString($e);
+      $e = BotLog::throwable($e);
     }
     return $e;
   }
