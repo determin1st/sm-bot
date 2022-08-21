@@ -7,17 +7,18 @@
     ['!up'],
   ],
   'text' => [
-    'bots' => 'bot list',
+    #'bots' => 'bot list',
   ],
 ],
 # }}}
 '/start/bots' => # {{{
 [
   'type' => 'list',
-  'config' => [
-    'order' => 'order',
-    'item'  => 'bot',
-  ],
+  'list.type'  => 'open',
+  'list.order' => 'order',
+  'list.item'  => 'bot',
+  'data.scope' => 'bot',
+  'data.refresh' => 5,
   'text' => [
     'en' => ['@' => 'bots'],
     'ru' => ['@' => 'боты'],
@@ -26,7 +27,7 @@
     'head' => [['!create','!refresh']],
   ],
   'caps' => [
-    'listItem' => '
+    'list.open' => '
     {{#isMaster}}
       {{name}}
     {{|}}

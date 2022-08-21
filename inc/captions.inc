@@ -22,8 +22,8 @@
   'stop'     => '{:double_vertical_bar:} {{.}}',
   'clear'    => '{{.}} {:leftwards_arrow_with_hook:}',
   ###
-  'listItem' => '{{id}}:{{name}}',
-  'select'   => '{{#v}}{:green_circle:}{{/v}} {{x}}',
+  'list.open'   => '{{id}}:{{name}}',
+  'list.select' => '{{#v}}{:green_circle:}{{/v}} {{x}}',
   ###
   'fav_on'   => '{:star:}',
   'fav_off'  => '{:sparkles:}{:star:}{:sparkles:}',
