@@ -23,7 +23,7 @@
   'clear'    => '{{.}} {:leftwards_arrow_with_hook:}',
   ###
   'list.open'   => '{{id}}:{{name}}',
-  'list.select' => '{{#v}}{:green_circle:}{{/v}} {{x}}',
+  'list.select' => '{{#v}}{:green_circle:}{{/v}} {{name}}',
   ###
   'fav_on'   => '{:star:}',
   'fav_off'  => '{:sparkles:}{:star:}{:sparkles:}',

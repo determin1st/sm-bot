@@ -2,11 +2,12 @@
   'en' => [# {{{
     '#List' => # {{{
     '
-    {{#cnt}}
-      Page <b>{{page}}</b> of {{total}} (total items: {{cnt}})
+    {{#count}}
+      Page <b>{{page}}</b> of {{pageCount}}
+      (total items: {{count}})
     {{|}}
       List is empty
-    {{/cnt}}
+    {{/count}}
     ',# }}}
     '#Form' => # {{{
     '
@@ -112,11 +113,12 @@
   'ru' => [# {{{
     '#List' => # {{{
     '
-    {{#cnt}}
-      Страница <b>{{page}}</b> из {{total}} (всего элементов: {{cnt}})
+    {{#count}}
+      Страница <b>{{page}}</b> из {{pageCount}}
+      (всего элементов: {{count}})
     {{|}}
       Список пуст
-    {{/cnt}}
+    {{/count}}
     ',# }}}
     # ! {{{
     '!inline-markup' => '

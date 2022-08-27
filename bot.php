@@ -1,5 +1,5 @@
 <?php declare(strict_types=1);
-# defs {{{
+# globals {{{
 namespace SM;
 use
   JsonSerializable,ArrayAccess,Iterator,
@@ -21,7 +21,7 @@ use function
   strpos,strrpos,strlen,trim,rtrim,uniqid,ucfirst,
   str_repeat,str_replace,
   lcfirst,strncmp,substr_count,preg_match,preg_match_all,
-  hash,
+  hash,http_build_query,
   json_encode,json_decode,json_last_error,
   json_last_error_msg,
   ### filesystem
@@ -849,16 +849,19 @@ class ArrayNode implements ArrayAccess, JsonSerializable # {{{
   # }}}
   function __debugInfo(): array # {{{
   {
-    return $this->arr;
+    return [
+      'limit' => $this->limit,
+      'array' => $this->arr,
+    ];
   }
   # }}}
   function restruct(int $limit): self # {{{
   {
-    # check potential
-    if ($limit > $this->limit) {
+    # check growth possibility
+    if ($this->limit > $limit) {
       return $this;
     }
-    # update
+    # grow
     $this->limit = $limit;
     if (($this->count = count($this->arr)) &&
         ($limit = $limit - 1) >= 0)
@@ -874,7 +877,7 @@ class ArrayNode implements ArrayAccess, JsonSerializable # {{{
     return $this;
   }
   # }}}
-  function change(?self $node = null): void # {{{
+  function change(?self $node = null): self # {{{
   {
     if ($this->brr === null && $this->parent) {
       $this->parent->change($node ?? $this);
@@ -882,6 +885,7 @@ class ArrayNode implements ArrayAccess, JsonSerializable # {{{
     else {
       $this->changed = true;
     }
+    return $this;
   }
   # }}}
   # transaction {{{
@@ -993,19 +997,17 @@ class ArrayNode implements ArrayAccess, JsonSerializable # {{{
     return $i;
   }
   # }}}
-  function indexOfValue(mixed $value): int # {{{
+  function indexOfValue(mixed &$value): int # {{{
   {
-    $i = $j = -1;
+    $i = 0;
     foreach ($this->arr as &$v)
     {
-      $j++;
-      if ($v === $value)
-      {
-        $i = $j;
-        break;
+      if ($v === $value) {
+        return $i;
       }
+      $i++;
     }
-    return $i;
+    return -1;
   }
   # }}}
   function prepend(mixed $value): self # {{{
@@ -1027,12 +1029,22 @@ class ArrayNode implements ArrayAccess, JsonSerializable # {{{
     return $this;
   }
   # }}}
+  function replace(mixed $v0, mixed $v1): self # {{{
+  {
+    if (($i = $this->indexOfValue($v0)) >= 0)
+    {
+      $this->arr[$i] = $v1;
+      $this->change();
+    }
+    return $this;
+  }
+  # }}}
   function obtain(string $k): ?object # {{{
   {
     if (isset($this->arr[$k])) {
       return $this->arr[$k];
     }
-    if (($limit = $this->limit - 1) >= 0) {
+    if (($limit = $this->limit - 1) < 0) {
       return null;
     }
     $this->count++;
@@ -1086,27 +1098,36 @@ class ArrayNode implements ArrayAccess, JsonSerializable # {{{
     $i = 0;
     foreach ($this->arr as $k => &$v)
     {
-      if (!$f($v, $i++, $k)) {
-        break;
+      if (!$f($v, $i, $k)) {
+        return $i;
       }
+      $i++;
     }
-    return $i;
+    return -1;
   }
   # }}}
-  function set(array $a): void # {{{
+  function set(array $a): self # {{{
   {
-    $this->setRef($a);
+    return $this->setRef($a);
   }
   # }}}
-  function setRef(array &$a): void # {{{
+  function setRef(array &$a): self # {{{
   {
     $this->arr = &$a;
-    $this->restruct($this->limit)->change();
+    return $this->restruct($this->limit)->change();
   }
   # }}}
   function keys(): array # {{{
   {
     return array_string_keys($this->arr);
+  }
+  # }}}
+  function &slice(# {{{
+    int $idx = 0, ?int $len = null
+  ):array
+  {
+    $a = array_slice($this->arr, $idx, $len);
+    return $a;
   }
   # }}}
 }
@@ -3203,6 +3224,13 @@ class BotApiAction extends PromiseAction # {{{
 {
   use TimeTouchable;
   public $curl,$log,$state = 1,$fails = 0;
+  static function formenc(array &$req): string # {{{
+  {
+    return http_build_query(
+      $req, '', null, PHP_QUERY_RFC3986
+    );
+  }
+  # }}}
   function __construct(# {{{
     public object  $base,
     public ?object $file,
@@ -3225,7 +3253,9 @@ class BotApiAction extends PromiseAction # {{{
     $req = [
       CURLOPT_URL  => $api->url($method),
       CURLOPT_POST => true,
-      CURLOPT_POSTFIELDS => $req,
+      CURLOPT_POSTFIELDS => (
+        $file ? $req : self::formenc($req)
+      ),
       CURLOPT_TIMEOUT_MS => $opt['timeout'],
     ];
     # set logger
@@ -3753,7 +3783,7 @@ class BotCommands implements ArrayAccess
       '([0-9a-f]{16}){1}'.    # id
       '(=([0-9]{1,15})){1}'.  # tick (state id)
       '(!([a-z]+)){0,1}'.     # func
-      '([ \n](.*)){0,1}'.     # args
+      '([ \n](.*)){0,1}'.     # argument
       '$|is',
     SEPARATOR_NAME = '-',
     SEPARATOR_PATH = '/';
@@ -4785,7 +4815,7 @@ class BotRequestCallback extends BotRequest # {{{
       $node = $chat->nodeOfMessage(
         $id = $qry->message->message_id
       );
-      # check
+      # check valid
       if (!$node)
       {
         $self->log->warn(
@@ -4793,11 +4823,12 @@ class BotRequestCallback extends BotRequest # {{{
         );
         return null;
       }
-      if ((($b = $node->tick) && $b !== ++$a[1]) ||
-          ($b === 0 && $a[1] !== 0))
+      $i = $node->tick;
+      if (($i === 0 && $a[1] !== 0) ||
+          ($i !== 0 && $a[1] !== $i - 1))
       {
         $self->log->warn(
-          'invalid, wrong tick='.$a[1].'<>'.$b
+          'invalid, wrong tick='.$a[1].'+1<>'.$i
         );
         return null;
       }
@@ -5372,7 +5403,8 @@ class BotChatCallback extends PromiseAction # {{{
       if (!$node || $node->item !== $item)
       {
         $this->req->log->warn($item->path,
-          "$a\nitem node is not in the chat"
+          #"\n$a: item node is not in the chat"
+          "\n$a: wrong node ".$node->item->path
         );
         return null;
       }
@@ -5419,7 +5451,10 @@ class BotChatCallback extends PromiseAction # {{{
     if ($e = $item0->detach($this->req)) {
       return $this->opFail($e, $item0, $op, $item);
     }
-    $node1 = $item->attach($this->req, $this->query);
+    $node1 = $item->attach(
+      $this->req, $this->query,
+      ($node0->tick ?: 1) - 1
+    );
     return ErrorEx::is($node1)
       ? $this->opFail($node1, $item0, $op, $item)
       : ($node1->isEmpty()
@@ -5431,7 +5466,8 @@ class BotChatCallback extends PromiseAction # {{{
   {
     $item0 = $node0->item;
     $node1 = $item0->attach(
-      $this->req, $this->query, $node0->tick
+      $this->req, $this->query,
+      ($node0->tick ?: 1) - 1
     );
     return ErrorEx::is($node1)
       ? $this->opFail($node1, $item0, 'update')
@@ -5488,14 +5524,16 @@ class BotChatCallback extends PromiseAction # {{{
       return $this->replace($node0, $node1);
     }
     return $node0
-    ->update(
-      $chat = $this->req->chat, $node1
-    )
+    ->update($chat = $this->req->chat, $node1)
     ->then(function($r) use ($chat,$node0,$node1) {
+      # replace node
+      $r->ok &&
+      $chat->view->replace($node0, $node1);
+      # complete
       $a = $node0->item;
       $b = $node1->item;
       $c = ($a === $b)
-        ? ['item',$a->path,'change','']
+        ? ['item',$a->path,'update','']
         : ['item',$a->path,'morph',$b->path];
       $r->pack()->confirms($c);
     });
@@ -5550,8 +5588,8 @@ class BotChatCallback extends PromiseAction # {{{
 # }}}
 class BotChatCommand extends BotChatCallback # {{{
 {
-  function update(object $node0, object $node1): ?object {
-    return $this->replace($node0, $node1);
+  function update(object $n0, object $n1): ?object {
+    return $this->replace($n0, $n1);
   }
 }
 # }}}
@@ -5561,18 +5599,17 @@ abstract class BotItem implements ArrayAccess # {{{
 {
   # {{{
   const OPTION = [
-    'on.enter'   => false,
-    'on.leave'   => false,
-    'data'       => false,
+    'type.enter' => false,
+    'type.leave' => false,
     'data.name'  => '',
     'data.scope' => 'chat',
-    'data.load'  => 0,# -1=always,0=once,X=seconds
+    'data.fetch' => 0,# -1=always,0=never,X=seconds
   ];
   public
     $base,$caps,$texts,
     $parent,$root,$children;
   # }}}
-  function __construct(# {{{
+  final function __construct(# {{{
     public object   $bot,
     public string   $path,
     public int      $depth,
@@ -5598,14 +5635,14 @@ abstract class BotItem implements ArrayAccess # {{{
     $this->texts = &$spec['text'];
   }
   # }}}
-  function __debugInfo(): array # {{{
+  final function __debugInfo(): array # {{{
   {
     return [
       $this::class => $this->path.($this->hand ? '(...)' : '')
     ];
   }
   # }}}
-  function build(array &$schema, ?object $parent): object # {{{
+  final function build(array &$schema, ?object $parent): object # {{{
   {
     # set parent and root
     $this->root = ($this->parent = $parent)
@@ -5626,7 +5663,7 @@ abstract class BotItem implements ArrayAccess # {{{
   }
   # }}}
   # [spec/base] access {{{
-  function baseType(string &$k): string
+  final function baseType(string &$k): string
   {
     foreach ($this->base as $type)
     {
@@ -5636,10 +5673,10 @@ abstract class BotItem implements ArrayAccess # {{{
     }
     return '';
   }
-  function offsetExists(mixed $k): bool {
+  final function offsetExists(mixed $k): bool {
     return $this->baseType($k) !== '';
   }
-  function offsetGet(mixed $k): mixed
+  final function offsetGet(mixed $k): mixed
   {
     if (isset($this->spec[$k])) {
       return $this->spec[$k];
@@ -5648,22 +5685,22 @@ abstract class BotItem implements ArrayAccess # {{{
       ? $type::OPTION[$k]
       : null;
   }
-  function offsetSet(mixed $k, mixed $v): void
+  final function offsetSet(mixed $k, mixed $v): void
   {}
-  function offsetUnset(mixed $k): void
+  final function offsetUnset(mixed $k): void
   {}
   # }}}
-  function attach(# {{{
+  final function attach(# {{{
     object $req, object $qry, int $id = 0
   ):object
   {
-    static $q = new BotItemQuery('enter');
+    static $Q = new BotItemQuery('enter');
     try
     {
       # create context
-      $x = BotItemCtx::construct($req, $this, $id);
+      $x = new BotItemCtx($this, $id, $req);
       # invoke handlers
-      if ($id === 0 && $this['on.enter'])
+      if ($id === 0 && $this['type.enter'])
       {
         if (!$this->enter($x, $x->conf->isEmpty()))
         {
@@ -5671,7 +5708,7 @@ abstract class BotItem implements ArrayAccess # {{{
             'denied by component'
           );
         }
-        if (($f = $this->hand) && !$f->call($x, $q))
+        if (($f = $this->hand) && !$f->call($x, $Q))
         {
           throw ErrorEx::warn(__FUNCTION__,
             'denied by service'
@@ -5679,8 +5716,8 @@ abstract class BotItem implements ArrayAccess # {{{
         }
       }
       # render messages and construct new node
-      $x = $this->render($x, $qry);
-      $e = new BotNode($this, $x, $id);
+      $a = $this->render($x, $qry);
+      $e = new BotNode($this, $a, $id);
     }
     catch (Throwable $e) {
       # TODO: delete next line
@@ -5690,22 +5727,22 @@ abstract class BotItem implements ArrayAccess # {{{
     return $e;
   }
   # }}}
-  function detach(object $req): ?object # {{{
+  final function detach(object $req): ?object # {{{
   {
-    static $q = new BotItemQuery('leave');
-    if (!$this['on.leave']) {
+    static $Q = new BotItemQuery('leave');
+    if (!$this['type.leave']) {
       return null;
     }
     try
     {
-      $x = BotItemCtx::construct($req, $this);
+      $x = new BotItemCtx($this, -1, $req);
       if (!$this->leave($x))
       {
         throw ErrorEx::warn(__FUNCTION__,
           'denied by component'
         );
       }
-      if (($f = $this->hand) && !$f->call($x, $q))
+      if (($f = $this->hand) && !$f->call($x, $Q))
       {
         throw ErrorEx::warn(__FUNCTION__,
           'denied by service'
@@ -5718,34 +5755,17 @@ abstract class BotItem implements ArrayAccess # {{{
     return null;
   }
   # }}}
-  function &load(object $ctx): array # {{{
-  {
-    static $q = new BotItemQuery('data');
-    ###
-    $a = [];
-    if (!($data = $ctx->data)) {
-      return $a;
-    }
-    if ($f = $this->hand)
-    {
-      if (!$f->call($ctx, $q)) {
-        return $a;
-      }
-    }
-    if (($f = $this->hand) && !$f->call($ctx, $q)) {
-      return $a;
-    }
-    return $a;
-  }
-  # }}}
   function enter(
     object $ctx, bool $init
   ):bool {return true;}
   function leave(
     object $ctx
   ):bool {return true;}
+  function &load(
+    object $ctx, array &$data
+  ):array {return $data;}
   abstract function render(
-    object $ctx, object $query
+    object $ctx, object $q
   ):array;
 }
 # }}}
@@ -5799,13 +5819,6 @@ class BotItemText implements ArrayAccess # {{{
 class BotItemQuery # {{{
 {
   public $res;
-  static function __callStatic(
-    string $func, array $args
-  ):self
-  {
-    $a = $args ? $args[0] : '';
-    return new self($func, $a);
-  }
   function __construct(
     public string $func,
     public string &$args = ''
@@ -5814,12 +5827,18 @@ class BotItemQuery # {{{
     string $func = '', string $args = ''
   ):self
   {
-    if ($func) {
-      $this->func = &$func;
+    if (func_num_args()) {
+      $this->func = $func;
     }
     $this->args = &$args;
     $this->res  = null;
     return $this;
+  }
+  function result(): mixed
+  {
+    $res = $this->res;
+    $this->res = null;
+    return $res;
   }
 }
 # }}}
@@ -5827,49 +5846,27 @@ class BotItemCtx implements ArrayAccess # {{{
 {
   # {{{
   const
-    CHR_TITLE = '@',
-    NOP = ['text'=>' ','callback_data'=>'!'];
+    TITLE = '@';
   public
-    $chat,$user,$lang,$req,$log,
+    $user,$chat,$lang,$log,
     $caps,$text,$conf,$opts,$data;
   # }}}
-  static function construct(# {{{
-    object $req, object $item, int $id = -1
-  ):object
-  {
-    $ctx = new self(
-      $bot = $item->bot, $item, $id
-    );
-    $ctx->chat = ($chat = $req->chat)->info;
-    $ctx->user = ($user = $req->user)->info;
-    $ctx->lang = $lang = $req->lang();
-    $ctx->req  = $req->data;
-    $ctx->log  = $req->log->new($item->path);
-    $ctx->caps = $item->caps;
-    $ctx->text = $item->texts[$lang];
-    $ctx->conf = $chat->conf->obtain($item->id);
-    $ctx->opts = new BotItemCtxOptions(
+  function __construct(# {{{
+    public object $item,
+    public int    $id,
+    object $req
+  ) {
+    $this->user = $req->user;
+    $this->chat = $chat = $req->chat;
+    $this->lang = $lang = $req->lang();
+    $this->log  = $req->log->new($item->path);
+    $this->caps = $item->caps;
+    $this->text = $item->texts[$lang];
+    $this->conf = $chat->conf->obtain($item->id);
+    $this->opts = new BotItemCtxOptions(
       $item, $chat->opts->obtain($item->id)
     );
-    if ($item['data'])
-    {
-      $a = $item['data.name']
-        ?? self::CHR_TITLE.$bot->cmd::filename($item);
-      $a = match ($item['data.scope']) {
-        'global' => $bot->cfg->dirDataRoot.$a,
-        'bot'    => $bot->cfg->dirData.$a,
-        default  => $chat->dir.$a,
-      };
-      $ctx->data = $bot->file->node($a.'.json');
-    }
-    return $ctx;
   }
-  # }}}
-  function __construct(# {{{
-    private object $bot,
-    private object $item,
-    private int    $id
-  ) {}
   # }}}
   # [conf] access {{{
   function offsetExists(mixed $k): bool {
@@ -5885,9 +5882,69 @@ class BotItemCtx implements ArrayAccess # {{{
     $this->conf[$k] = null;
   }
   # }}}
+  function load(): object # {{{
+  {
+    static $Q = new BotItemQuery('data');
+    # check already loaded
+    if ($this->data) {
+      return $this->data[1];
+    }
+    # prepare
+    $item = $this->item;
+    $bot  = $item->bot;
+    $file = match ($item['data.scope']) {
+      'global' => $bot->cfg->dirDataRoot,
+      'bot'    => $bot->cfg->dirData,
+      'chat'   => $this->chat->dir,
+      default  => '',
+    };
+    if ($file === '')
+    {
+      # temporary (mem only)
+      throw ErrorEx::warn('TODO');
+    }
+    else
+    {
+      # persistent
+      $file = $file.(
+        $item['data.name'] ?:
+        '@'.$bot->cmd::filename($item)
+      ).'.json';
+    }
+    # load and initialize
+    $this->data = $x = $bot->file->node($file, 1);
+    $x->isEmpty() && $x->set([
+      ['time' => 0], [] # metadata and data
+    ]);
+    # try fetching
+    if (!($a = $item['data.fetch']) ||
+        !($f = $item->hand) ||
+        (($a > 0) &&
+         ($b = time()) - $x[0]['time'] < $a) ||
+        !$f->call($this, $Q))
+    {
+      return $x[1];
+    }
+    # reset query and checkout the result
+    if (!is_array($c = $Q->result()))
+    {
+      throw ErrorEx::fail(__FUNCTION__,
+        'incorrect datatype: '.gettype($c)
+      );
+    }
+    # update fetch timestamp (when necessary)
+    if ($a > 0) {
+      $x[0]['time'] = $b;
+    }
+    # refine through item load, store and complete
+    return $x[1]->setRef(
+      $item->load($this, $c)
+    );
+  }
+  # }}}
   function markup(# InlineKeyboardMarkup {{{
-    ?array $flag = null,
-    ?array $mkup = null
+    ?array $mkup = null,
+    ?array $flag = null
   ):string
   {
     $a = [];
@@ -5897,7 +5954,7 @@ class BotItemCtx implements ArrayAccess # {{{
         $a[] = $c;
       }
     }
-    if (!$a) {
+    if (count($a) === 0) {
       return '';
     }
     return json_encode(
@@ -5926,18 +5983,18 @@ class BotItemCtx implements ArrayAccess # {{{
       # check NOP
       if ($c === 1)
       {
-        $a[] = self::NOP;
+        $a[] = $this->markupNop();
         continue;
       }
       # render
-      if ($d = $this->markupBtn($b, $flag)) {
+      if ($d = $this->markupItem($b, $flag)) {
         $a[] = $d;
       }
     }
     return $a;
   }
   # }}}
-  function markupBtn(# {{{
+  function markupItem(# {{{
     string &$text, ?array &$flag
   ):?array
   {
@@ -5952,9 +6009,8 @@ class BotItemCtx implements ArrayAccess # {{{
     # check another item
     if (($a = $a[0]) !== '' && $a !== $item->path)
     {
-      # render item navigation
-      return ($o = $bot->cmd[$a])
-        ? $this->markupBtnItem($o, $func, $args)
+      return ($item = $bot->cmd[$a])
+        ? $this->markupItemBtn($item, $func, $args)
         : null;
     }
     # apply flag
@@ -5966,7 +6022,7 @@ class BotItemCtx implements ArrayAccess # {{{
       }
       # check NOP
       if ($a < 0) {
-        return self::NOP;
+        return $this->markupNop();
       }
       # continue
     }
@@ -5976,7 +6032,7 @@ class BotItemCtx implements ArrayAccess # {{{
       if ($o = $item->parent)
       {
         $a = $this->caps[$func];
-        $b = $o->texts[$this->lang][self::CHR_TITLE]
+        $b = $o->texts[$this->lang][self::TITLE]
           ?: $o->name;
       }
       else
@@ -5985,13 +6041,10 @@ class BotItemCtx implements ArrayAccess # {{{
         $b = $this->text[$b];
       }
       $a = $bot->text->tp->render($a, $b);
-      $b = $bot->cmd::callback(
-        $item, $this->id, $func, $args
-      );
-      return ['text'=>$a,'callback_data'=>$b];
+      return $this->markupBtn($a, $item, $func);
     }
-    # render caption text
-    $a = $this->texts[$func];
+    # determine caption
+    $a = $this->text[$func];
     if ($b = $this->caps[$func]) {
       $a = $bot->text->tp->render($a, $b);
     }
@@ -5999,27 +6052,49 @@ class BotItemCtx implements ArrayAccess # {{{
     if ($func === 'play') {
       return ['text'=>$a,'callback_game'=>null];
     }
-    # render callback button
-    $b = $bot->cmd::callback(
-      $item, $this->id, $func, $args
+    # render button
+    return $this->markupBtn(
+      $a, $item, $func, $args
     );
-    return ['text'=>$a,'callback_data'=>$b];
   }
   # }}}
-  function markupBtnItem(# {{{
+  function markupItemBtn(# {{{
     object $item, string &$func, string &$args
   ):array
   {
     $a = $this->caps['open'];
     $b = $this->text[$item->name]
-      ?: $item->texts[$this->lang][self::CHR_TITLE]
+      ?: $item->texts[$this->lang][self::TITLE]
       ?: $item->name;
-    $c = $item->bot;
-    $a = $c->text->tp->render($a, $b);
-    $b = $c->cmd::callback(
+    $a = $item->bot->text->tp->render($a, $b);
+    return $this->markupBtn(
+      $a, $item, $func, $args
+    );
+  }
+  # }}}
+  function markupBtn(# {{{
+    string &$text, object $item,
+    string $func = '',
+    string &$args = ''
+  ):array
+  {
+    $data = $item->bot->cmd::callback(
       $item, $this->id, $func, $args
     );
-    return ['text'=>$a,'callback_data'=>$b];
+    return [
+      'text' => $text,
+      'callback_data' => $data
+    ];
+  }
+  # }}}
+  function markupNop(# {{{
+    string $text = ' ', ?object $item = null
+  ):array
+  {
+    return [
+      'text' => $text,
+      'callback_data' => '!'
+    ];
   }
   # }}}
 }
@@ -6030,9 +6105,6 @@ class BotItemCtxOptions implements ArrayAccess # {{{
     private object $item,
     private object $spec
   ) {}
-  function grab(string $k): object {
-    return new BotItemCtxOption($this, $k.'.');
-  }
   function offsetExists(mixed $k): bool {
     return isset($this->item[$k]);
   }
@@ -6050,26 +6122,6 @@ class BotItemCtxOptions implements ArrayAccess # {{{
   }
   function offsetUnset(mixed $k): void {
     $this->spec[$k] = null;
-  }
-}
-# }}}
-class BotItemCtxOption implements ArrayAccess # {{{
-{
-  function __construct(
-    private object $opts,
-    private string $from
-  ) {}
-  function offsetExists(mixed $k): bool {
-    return isset($this->opts[$this->from.$k]);
-  }
-  function offsetGet(mixed $k): mixed {
-    return $this->opts[$this->from.$k];
-  }
-  function offsetSet(mixed $k, mixed $v): void {
-    $this->opts[$this->from.$k] = $v;
-  }
-  function offsetUnset(mixed $k): void {
-    $this->opts[$this->from.$k] = null;
   }
 }
 # }}}
@@ -6257,12 +6309,14 @@ class BotNode implements JsonSerializable
     });
   }
   # }}}
-  function update(object $chat, object $node): object # {{{
+  function update(# {{{
+    object $chat, object $node1
+  ):?object
   {
     # prepare
-    $I  = $this;
+    $node0 = $this;
     $n0 = count($m0 = &$this->msgs);
-    $n1 = count($m1 = &$node->msgs);
+    $n1 = count($m1 = &$node1->msgs);
     $up = [];
     # change messages (when they differ)
     for ($i = 0; $i < $n1; ++$i)
@@ -6277,20 +6331,28 @@ class BotNode implements JsonSerializable
       $up[] = $m0[$i]->delete($chat);
     }
     $n0 = ($n2 = count($up)) - $n1;
-    # TODO: up is empty, n2 === 0
+    # check no updates made
+    if ($n2 === 0) {
+      return null;
+    }
     # compose
     return Promise::AllStop($up)
-    ->then(function($r) use ($I,$node,$n0,$n1,$n2) {
-      # replace messages
-      if ($r->ok && $n2)
+    ->then(function($r) use ($node0,$node1,$n0,$n1) {
+      # get items
+      $item0 = $node0->item;
+      $item1 = $node1->item;
+      # setup new node
+      if ($r->ok)
       {
-        $I->msgs = $node->msgs;
-        $I->tick++;
+        $node1->tick  = 1 + $node0->tick;
+        $node1->time  = $node0->time;
+        $node1->owner = $node0->owner;
       }
       # complete
       $r->confirm(
-        $I->item->type, 'update',
-        ($n2 ? 'tick='.$I->tick : 'skip')
+        $item0->type,$item1->type,'update',
+        'delete='.$n0.' edit='.$n1.
+        ' tick='.$node1->tick
       );
     });
   }
@@ -6316,7 +6378,8 @@ abstract class BotMessage
       $bot, 0, static::hashData($a), $a
     );
   }
-  function __construct(
+  # }}}
+  function __construct(# {{{
     public object $bot,
     public int    $id,
     public string $hash,
@@ -6325,9 +6388,7 @@ abstract class BotMessage
   # }}}
   function jsonSerialize(): array # {{{
   {
-    return [
-      $this::class, $this->id, $this->hash
-    ];
+    return [$this::class, $this->id, $this->hash];
   }
   # }}}
   function delete(object $chat): object # {{{
@@ -6341,7 +6402,9 @@ abstract class BotMessage
   abstract static function hashData(array &$a): string;
   abstract function zap(object $chat): object;
   abstract function send(object $chat): object;
-  abstract function edit(object $chat, object $msg): object;
+  abstract function edit(
+    object $chat, object $msg
+  ):object;
 }
 class BotImgMessage extends BotMessage # {{{
 {
@@ -6452,7 +6515,8 @@ class BotImgMessage extends BotMessage # {{{
       if (!$x->ok) {
         return null;
       }
-      # store hash
+      # equalize
+      $msg->id = $self->id;
       $self->hash = $msg->hash;
       # store file identifier
       if (is_object($msg->data['image']))
@@ -6563,9 +6627,10 @@ class BotImgItem extends BotItem # {{{
       [135,206,235],# text color
       [140,32],# draw coordinates
     ],
+    'markup' => [['!up']],
   ];
   # }}}
-  # img {{{
+  # hlp {{{
   static function imgFileTexts(# {{{
     string $file, array &$texts
   ):object
@@ -6760,46 +6825,33 @@ class BotImgItem extends BotItem # {{{
     return BotApiFile::construct($file, true);
   }
   # }}}
-  # }}}
-  function render(object $ctx, object $q): array # {{{
+  static function &renderImg(object $ctx): array # {{{
   {
-    # invoke custom renderer
-    if (($f = $this->hand) && !$f->call($ctx, $q)) {
+    static $Q = new BotItemQuery('render');
+    # prepare
+    $item = $ctx->item;
+    $bot  = $item->bot;
+    $opts = $ctx->opts;
+    # custom render
+    if (($f = $item->hand) && !$f->call($ctx, $Q)) {
       throw ErrorEx::skip();
     }
-    $a = is_array($q->res)
-      ? $q->res : [];
+    # checkout message skel
+    if (!is_array($msg = $Q->result())) {
+      $msg = [];
+    }
+    if (isset($msg['path'], $msg['image'])) {
+      return $msg;
+    }
     # standard render
-    if (!isset($a['path']) || !isset($a['image'])) {
-      $this->renderImage($ctx, $a);
-    }
-    if (!isset($a[$b = 'text'])) {
-      $a[$b] = $ctx->text->render();
-    }
-    if (!isset($a[$b = 'markup'])) {
-      $a[$b] = $ctx->markup();
-    }
-    # complete
-    return [
-      BotImgMessage::construct($this->bot, $a)
-    ];
-  }
-  # }}}
-  function renderImage(# {{{
-    object $ctx, array &$msg
-  ):self
-  {
-    # prepare
-    $bot = $this->bot;
-    $opt = $ctx->opts;
     # check variant
-    switch ($opt['img.variant']) {
+    switch ($opts['img.variant']) {
     case 'file':
       # determine path
-      if (!($path = $opt['img.file.name'])) {
-        $path = $bot->cmd::filename($this);
+      if (!($path = $opts['img.file.name'])) {
+        $path = $bot->cmd::filename($item);
       }
-      if ($opt['img.file.vary'] && isset($msg['name'])) {
+      if ($opts['img.file.vary'] && isset($msg['name'])) {
         $path = $path.$msg['name'];
       }
       if (!($path = $bot->file->image($path))) {
@@ -6813,15 +6865,17 @@ class BotImgItem extends BotItem # {{{
       break;
     default:
       # determine path
-      $text = $msg['title'] ?? $ctx->text['@'] ?: $this->name;
-      $path = $bot->cmd::hash($this, $text);
+      $text = $msg['title']
+        ?? $ctx->text['@']
+        ?: $item->name;
+      $path = $bot->cmd::hash($item, $text);
       # get identifier from cache
       if ($file = $bot->file->id($path)) {
         break;
       }
       # prepare texts
       $a = [];
-      if ($b = $opt['img.title.header'])
+      if ($b = $opts['img.title.header'])
       {
         if (!($b[0] = $bot->file->font($b[0]))) {
           throw ErrorEx::fail();
@@ -6829,18 +6883,18 @@ class BotImgItem extends BotItem # {{{
         $b[] = $text;
         $a[] = $b;
       }
-      if ($b = $opt['img.title.breadcrumb'])
+      if ($b = $opts['img.title.breadcrumb'])
       {
         if (!($b[0] = $bot->file->font($b[0]))) {
           throw ErrorEx::fail();
         }
-        $b[] = $this->path;
+        $b[] = $item->path;
         $a[] = $b;
       }
       # create file for transmission
-      $file = ($b = $opt['img.title.filename'])
+      $file = ($b = $opts['img.title.filename'])
         ? self::imgFileTexts($b, $a)
-        : self::imgBlankTexts($opt['img.title.blank'], $a);
+        : self::imgBlankTexts($opts['img.title.blank'], $a);
       # check
       if ($file instanceof ErrorEx) {
         throw $file;
@@ -6850,7 +6904,22 @@ class BotImgItem extends BotItem # {{{
     # complete
     $msg['path']  = $path;
     $msg['image'] = $file;
-    return $this;
+    return $msg;
+  }
+  # }}}
+  # }}}
+  function render(object $ctx, object $q): array # {{{
+  {
+    $a = self::renderImg($ctx);
+    if (!isset($a[$b = 'text'])) {
+      $a[$b] = $ctx->text->render();
+    }
+    if (!isset($a[$b = 'markup'])) {
+      $a[$b] = $ctx->markup();
+    }
+    return [
+      BotImgMessage::construct($this->bot, $a)
+    ];
   }
   # }}}
 }
@@ -6858,22 +6927,164 @@ class BotImgItem extends BotItem # {{{
 class BotListItem extends BotImgItem # {{{
 {
   const OPTION = [# {{{
-    'list.type'    => 'select',
-    'list.cols'    => 1,# columns in markup
-    'list.rows'    => 8,# rows in markup
-    'list.flexy'   => true,# hide empty rows
-    'list.order'   => 'id',# tag name
-    'list.desc'    => false,# descending order
-    'list.timeout' => 0,# refresh timeout (sec), 0=always
-    'list.item'    => '',
-    'on.enter'     => true,
-    'data'         => true,
-    'markup'       => [
-      'head'       => [],
-      'foot'       => [['!prev','!next'],['!up']],
-      'empty'      => [['!up']],
+    'type.enter' => true,
+    # behaviour
+    'list.type'  => 'select',# default action
+    'list.open'  => '',# child item to open
+    'list.cycle' => false,# cycle movement (first<=>last)
+    # layout
+    'list.cols'  => 1,
+    'list.rows'  => 6,
+    'list.flexy' => true,# shrink rows
+    # data sorting tag and direction
+    'list.order' => 'id',
+    'list.desc'  => false,
+    # markup states
+    'markup.empty' => [['!up']],
+    'markup.head'  => [],
+    'markup.foot'  => [['!prev','!next'],['!up']],
+    'markup.flags' => [
+      # single page
+      'prev/next'  => -1,
+      'first/last' =>  0,
     ],
   ];
+  # }}}
+  # hlp {{{
+  static function pageSize(object $o): int # {{{
+  {
+    return $o['list.cols'] * $o['list.rows'];
+  }
+  # }}}
+  static function pageCount(# {{{
+    object $data, int $pageSize
+  ):int
+  {
+    $i = (int)(ceil($data->count / $pageSize));
+    return $i ?: 1;
+  }
+  # }}}
+  static function &pageMarkup(# {{{
+    object $ctx, array &$data
+  ):array
+  {
+    # prepare
+    $item = $ctx->item;
+    $opts = $ctx->opts;
+    $size = count($data);
+    $rows = $opts['list.rows'];
+    $cols = $opts['list.cols'];
+    $cap  = $opts['list.type'];
+    $cap  = $ctx->caps['list.'.$cap];
+    $flex = $opts['list.flexy'];
+    $mkup = [];
+    # iterate
+    for ($i = 0, $a = 0; $a < $rows; ++$a)
+    {
+      # create row
+      $mkup[$a] = [];
+      for ($b = 0; $b < $cols; ++$b, ++$i)
+      {
+        # create callback button
+        if ($i < $size)
+        {
+          $c = $cap
+            ? $ctx->text->render($data[$i], $cap)
+            : $data[$i]['name'];
+          $c = $ctx->markupBtn(
+            $c, $item, 'id', $data[$i]['id']
+          );
+        }
+        else {
+          $c = $ctx->markupNop();
+        }
+        $mkup[$a][$b] = $c;
+      }
+      # check flexy and no more items
+      if ($flex && $i >= $size) {
+        break;
+      }
+    }
+    return $mkup;
+  }
+  # }}}
+  static function &dataPage(# {{{
+    object $ctx, int $pageSize
+  ):array
+  {
+    # slice
+    $a = $ctx->data[1]->slice(
+      $ctx['page'] * $pageSize, $pageSize
+    );
+    # set markers
+    $id = &self::dataSelected($ctx);
+    foreach ($a as &$b) {
+      $b['v'] = in_array($b['id'], $id, true);
+    }
+    return $a;
+  }
+  # }}}
+  static function &dataSelected(# {{{
+    object $ctx
+  ):array
+  {
+    $k = 'id.'.$ctx->opts['list.type'];
+    $a = $ctx->data[0][$k] ?? [];
+    return $a;
+  }
+  # }}}
+  static function markup(object $ctx): string # {{{
+  {
+    # prepare
+    $opts = $ctx->opts;
+    $data = $ctx->data[1];
+    # check empty
+    if ($data->count === 0) {
+      return $ctx->markup($opts['markup.empty']);
+    }
+    # render page markup
+    $pageSize = self::pageSize($opts);
+    $pageCnt  = self::pageCount($data, $pageSize);
+    $pageMkup = self::pageMarkup(
+      $ctx, self::dataPage($ctx, $pageSize)
+    );
+    # compose
+    $a = [];
+    foreach ($opts['markup.head'] as $b) {
+      $a[] = $b;
+    }
+    foreach ($pageMkup as $b) {
+      $a[] = $b;
+    }
+    foreach ($opts['markup.foot'] as $b) {
+      $a[] = $b;
+    }
+    # complete
+    return $ctx->markup(
+      $a, self::markupFlags($ctx, $pageCnt)
+    );
+  }
+  # }}}
+  static function markupFlags(# {{{
+    object $ctx, int $pageCount
+  ):array
+  {
+    if ($pageCount < 2)
+    {
+      # single page
+      $o  = $ctx->opts['markup.flags'];
+      $F1 = $o['prev|next'];
+      $F2 = $o['first|last'];
+    }
+    else {
+      $F1 = $F2 = 1;
+    }
+    return [
+      'prev'=>$F1,'next'=>$F1,
+      'back'=>$F1,'forward'=>$F1,
+      'first'=>$F2,'last'=>$F2,
+    ];
+  }
   # }}}
   static function sort(array &$data, string $tag, bool $desc): bool # {{{
   {
@@ -6910,6 +7121,7 @@ class BotListItem extends BotImgItem # {{{
     return $res;
   }
   # }}}
+  # }}}
   function enter(object $ctx, bool $init): bool # {{{
   {
     if ($init) {
@@ -6918,247 +7130,131 @@ class BotListItem extends BotImgItem # {{{
     return true;
   }
   # }}}
+  function &load(# {{{
+    object $ctx, array &$data
+  ):array
+  {
+    #self::sort($b, $cfg['order'], $cfg['desc']);
+    return $data;
+  }
+  # }}}
   function render(object $ctx, object $q): array # {{{
   {
-    ###
-    $mkup = [];
-    $msg  = [];
-    $data = [
-      'time' => 0,
-      'list' => []
-    ];
-    # invoke handler
-    if (($hand = $this->hand) &&
-        !$hand->call($ctx, $p))
-    {
-      throw ErrorEx::skip();
-    }
-    # prepare
+    # prepare {{{
+    $hand = $this->hand;
+    $data = $ctx->load();
+    $meta = $ctx->data[0];
     $opts = $ctx->opts;
-    $size = $opts['list.cols'] * $opts['list.rows'];
-    if (!($total = intval(ceil($data->count / $size)))) {
-      $total = 1;
+    $pageSize  = self::pageSize($opts);
+    $pageCount = self::pageCount($data, $pageSize);
+    $pageLast  = $pageCount - 1;
+    if (($page = $ctx['page']) > $pageLast) {
+      $page = $pageLast;
     }
-    $lastPage = $total - 1;
-    if (($page = $ctx['page']) > $lastPage) {
-      $page = $lastPage;
-    }
-    $nextPage = ($page > 0) ? $page - 1 : $lastPage;
-    $prevPage = ($page < $total - 1) ? $page + 1 : 0;
-    ###
+    # }}}
+    # operate {{{
     switch ($q->func) {
     case '':
     case 'refresh':
       break;
     case 'first':
-      $this['page'] = 0;
+      $ctx['page'] = 0;
       break;
     case 'last':
-      $this['page'] = $total - 1;
+      $ctx['page'] = $pageLast;
       break;
     case 'prev':
     case 'back':
-      $this['page'] = ($page < $total - 1)
-        ? $page + 1
-        : 0;
+      $ctx['page'] = ($page > 0)
+        ? $page - 1
+        : ($opts['list.cycle']
+          ? $pageLast
+          : 0);
       break;
     case 'next':
     case 'forward':
-      $page = $nextPage;
-      break;
-    case 'add':
-    case 'create':
-      # redirect to the child
-      if ($item = $this->items[$func] ?? null) {
-        return $item->attach($this->user);
-      }
+      $ctx['page'] = ($page < $pageLast)
+        ? $page + 1
+        : ($opts['list.cycle']
+          ? 0
+          : $pageLast);
       break;
     case 'id':
-      # check empty
-      if ($args === '')
+      # list item action
+      # locate item
+      if (($id = $q->args) === '') {
+        throw ErrorEx::fail($q->func, 'no argument');
+      }
+      $i = $data->each(function(&$v) use (&$id) {
+        return ($v['id'] !== $id);
+      });
+      if ($i === -1)
       {
-        $this->log->error(__METHOD__.":$func: no argument");
-        return null;
-      }
-      # locate item index
-      if (($i = $data->indexOf('id', $args)) === -1)
-      {
-        $this->log->warn(__METHOD__.":$func:$args: item not found");
-        break;# refresh the list
-      }
-      # invoke handler
-      if ($item = $this->items[$cfg['item']] ?? null) {
-        return $item->attach($this->user, $cfg['func'], $args, $data[$i]);
-      }
-      # TODO: select/multiselect
-      # fail
-      $this->log->error(__METHOD__.":$func: handler not found");
-      return null;
-    default:
-      $this->log->error(__METHOD__.":$func: unknown");
-      return null;
-    }
-    # sync
-    $this['page'] = $page;
-    # render markup {{{
-    if ($data->count)
-    {
-      # non-empty,
-      # add top controls
-      $list = (isset($this->skel[$a = 'markup'][$b = 'head']))
-        ? ($this->skel[$a][$b] ?? [])
-        : $cfg[$a][$b];
-      foreach ($list as &$c) {
-        $mkup[] = $c;
-      }
-      # extract items from the data set and create markup
-      $list = $data->slice($page * $size, $size);
-      $list = $this->renderListMarkup($list, $cfg);
-      foreach ($list as &$c) {
-        $mkup[] = $c;
-      }
-      # add bottom controls
-      $list = (isset($this->skel[$a][$b = 'foot']))
-        ? ($this->skel[$a][$b] ?? [])
-        : $cfg[$a][$b];
-      foreach ($list as &$c) {
-        $mkup[] = $c;
-      }
-      unset($c);
-      # determine control flags
-      $a = ($total === 1) ? -1 : 1;
-      $b = ($total === 1) ?  0 : 1;
-      $list = [
-        'prev'    => $a,
-        'back'    => $a,
-        'next'    => $a,
-        'forward' => $a,
-        'first'   => $b,
-        'last'    => $b,
-      ];
-    }
-    else
-    {
-      # empty,
-      # add controls
-      $list = (isset($this->skel[$a = 'markup'][$b = 'empty']))
-        ? ($this->skel[$a][$b] ?? [])
-        : $cfg[$a][$b];
-      foreach ($list as &$c) {
-        $mkup[] = $c;
-      }
-      unset($c);
-      # determine no flags
-      $list = null;
-    }
-    $msg['markup'] = $this->markup($mkup, $list);
-    # }}}
-    # render text {{{
-    $msg['text'] = $this->text->render([
-      'cnt'   => $data->count,
-      'page'  => 1 + $page,
-      'total' => $total,
-    ]);
-    # }}}
-    # create message
-    if (!($m = $this->image($msg))) {
-      return null;
-    }
-    $this->msgs[] = $m;
-    return $this;
-  }
-  # }}}
-  function loadData(object $ctx, object $q): array # {{{
-  {
-    $opts = $ctx->opts;
-    $hand = $this->item->hand;
-    $data = $this->data;
-    ###
-    $cfg  = $this->config();
-    $mkup = [];
-    $msg  = [];
-    # refresh data
-    if (($hand = $this->skel['handler']) &&
-        (!($a = $cfg['timeout'])    ||
-         !($b = $this['time'] ?? 0) ||
-         ($c = time()) - $b > $a))
-    {
-      # fetch with handler
-      if (($b = $hand($this)) === null)
-      {
-        $this->log->warn(__METHOD__.":$hand: failed");
-        return null;
-      }
-      # set order
-      self::sort($b, $cfg['order'], $cfg['desc']);
-      # set update time
-      $a && ($this['time'] = $c);
-      # store
-      $data->set($b);
-    }
-    # determine page size
-    $size = $cfg['rows'] * $cfg['cols'];
-    # determine total page count
-    if (!($total = intval(ceil($data->count / $size)))) {
-      $total = 1;
-    }
-    # determine current page
-    if (($page = $this['page'] ?? 0) >= $total) {
-      $page = $total - 1;
-    }
-    # determine last/prev/next pages
-    $lastPage = $total - 1;
-    $nextPage = ($page > 0) ? $page - 1 : $lastPage;
-    $prevPage = ($page < $total - 1) ? $page + 1 : 0;
-  }
-  # }}}
-  function renderListMarkup(# {{{
-    array &$list,
-    array &$cfg
-  ):array
-  {
-    # prepare
-    $bot  = $this->bot;
-    $mkup = [];
-    $size = count($list);
-    $rows = $cfg['rows'];
-    $cols = $cfg['cols'];
-    $tpl  = $this->caps['listItem'];
-    $cmd  = '/'.$this->id.'!id ';
-    # iterate rows
-    for ($i = 0, $a = 0; $a < $rows; ++$a)
-    {
-      # create row
-      $mkup[$a] = [];
-      # iterate columns
-      for ($b = 0; $b < $cols; ++$b, ++$i)
-      {
-        # determine caption and data
-        if ($i < $size)
-        {
-          $c = $tpl
-            ? $bot->tp->render($tpl, $list[$i])
-            : $list[$i]['name'];
-          $d = $cfg['item']
-            ? $cmd.$list[$i]['id']
-            : '!';
-        }
-        else
-        {
-          $c = ' ';
-          $d = '!';
-        }
-        # create callback button
-        $mkup[$a][$b] = ['text'=>$c,'callback_data'=>$d];
-      }
-      # check no more items left and
-      # stop creating new rows when flexy option set
-      if ($i >= $size && $cfg['flexy']) {
+        # message may be outdated,
+        # report issue and refresh
+        $ctx->log->warn($q->func,
+          'list item[id='.$id.'] not found'
+        );
         break;
       }
+      # act
+      switch ($opts['list.type']) {
+      case 'select':
+        # single-select
+        $meta['id'] = ($meta['id'] === $id)
+          ? null
+          : $id;
+        break;
+      case 'check':
+        # multi-select
+        $i = array_search(
+          $id, $a = $meta['id'], true
+        );
+        if ($i === false) {
+          $a[] = $id;# check
+        }
+        else {
+          array_splice($a, $i, 1);# uncheck
+        }
+        $meta['id'] = $a ?: null;
+        break;
+      case 'open':
+        # ...
+        # ...
+        break;
+      default:
+        # custom action
+        if ($hand && !$hand->call($ctx, $q)) {
+          throw ErrorEx::skip();
+        }
+        break;
+      }
+      break;
+    default:
+      # custom action
+      if ($hand && !$hand->call($ctx, $q)) {
+        throw ErrorEx::skip();
+      }
+      break;
     }
-    # complete
-    return $mkup;
+    # }}}
+    # render {{{
+    $a = self::renderImg($ctx);
+    if (!isset($a[$b = 'text']))
+    {
+      $a[$b] = $ctx->text->render([
+        'count'     => $data->count,
+        'pageCount' => $pageCount,
+        'page'      => 1 + $ctx['page'],
+      ]);
+    }
+    if (!isset($a[$b = 'markup'])) {
+      $a[$b] = self::markup($ctx);
+    }
+    # }}}
+    return [
+      BotImgMessage::construct($this->bot, $a)
+    ];
   }
   # }}}
 }
@@ -8382,6 +8478,7 @@ class BotTxtItem extends BotItem # {{{
 # }}}
 # TODO {{{
 /**
+* feature: temporary (mem only) file (ArrayNode)
 * feature: item trespassing and fixation
 * command: item refresh filter
 * fix/test: file save & unload
@@ -8391,7 +8488,7 @@ class BotTxtItem extends BotItem # {{{
 * solve: form data separation, user changes its own data until completion
 * fix: compatible msg update: unnecessary re-creation in private chat
 * solve: old message callback action does ZAP? or.. REFRESH?!
-* architect: BotConfig ~ BotDir
+* architect: BotConfig dirs (where to put dirs?)
 * perf: mustache parser text reference and prepare()
 * perf: api.actions pool of curl instances
 *

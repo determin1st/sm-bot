@@ -13,20 +13,19 @@
 # }}}
 '/start/bots' => # {{{
 [
-  'type' => 'list',
-  'list.type'  => 'open',
+  'type'       => 'list',
+  'list.type'  => 'select',
+  'list.open'  => 'bot',
   'list.order' => 'order',
-  'list.item'  => 'bot',
   'data.scope' => 'bot',
-  'data.refresh' => 5,
+  'data.fetch' => 5,
   'text' => [
-    'en' => ['@' => 'bots'],
-    'ru' => ['@' => 'боты'],
+    'en' => ['@' => 'bot list'],
+    'ru' => ['@' => 'список ботов'],
   ],
-  'markup' => [
-    'head' => [['!create','!refresh']],
-  ],
+  'markup.head' => [['!create','!refresh']],
   'caps' => [
+    /***
     'list.open' => '
     {{#isMaster}}
       {{name}}
@@ -37,6 +36,7 @@
       {{name}}
     {{/isMaster}}
     ',
+    /***/
   ],
 ],
 # }}}

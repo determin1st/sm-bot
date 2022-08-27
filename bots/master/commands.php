@@ -3,7 +3,17 @@
 # }}}
 function getBotList(object $bot): array # {{{
 {
-  return [];
+  return [
+    ['id'=>'1','name'=>'name1'],
+    ['id'=>'2','name'=>'name2'],
+    ['id'=>'3','name'=>'name3'],
+    ['id'=>'4','name'=>'name4'],
+    ['id'=>'5','name'=>'name5'],
+    ['id'=>'6','name'=>'name6'],
+    ['id'=>'7','name'=>'name7'],
+    ['id'=>'8','name'=>'name8'],
+    ['id'=>'9','name'=>'name9'],
+  ];
   # prepare
   $dir  = $bot->cfg->dirDataRoot;
   $data = [];
@@ -142,12 +152,13 @@ function getBotClassMap(object $item): ?array # {{{
 return [
 '/start/bots' => function (object $q): bool # {{{
 {
+  $this->log->info($q->func);
   switch ($q->func) {
   case 'data':
     $q->res = getBotList($this->item->bot);
     break;
   }
-  return false;
+  return true;
 },
 # }}}
 '/start/bots/bot' => function (object $q): bool # {{{
