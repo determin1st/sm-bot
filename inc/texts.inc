@@ -3,7 +3,7 @@
     '#List' => # {{{
     '
     {{#count}}
-      Page <b>{{page}}</b> of {{pageCount}}
+      Page <b>{{page}}</b> of {{pageCount}} 
       (total items: {{count}})
     {{|}}
       List is empty
@@ -114,7 +114,7 @@
     '#List' => # {{{
     '
     {{#count}}
-      Страница <b>{{page}}</b> из {{pageCount}}
+      Страница <b>{{page}}</b> из {{pageCount}} 
       (всего элементов: {{count}})
     {{|}}
       Список пуст

@@ -1,88 +1,45 @@
 <?php declare(strict_types=1);
-# {{{
+# globals {{{
+namespace SM;
 # }}}
-function getBotList(object $bot): array # {{{
+function getBotList(object $ctx): array # {{{
 {
-  return [
-    ['id'=>'1','name'=>'name1'],
-    ['id'=>'2','name'=>'name2'],
-    ['id'=>'3','name'=>'name3'],
-    ['id'=>'4','name'=>'name4'],
-    ['id'=>'5','name'=>'name5'],
-    ['id'=>'6','name'=>'name6'],
-    ['id'=>'7','name'=>'name7'],
-    ['id'=>'8','name'=>'name8'],
-    ['id'=>'9','name'=>'name9'],
-  ];
-  # prepare
-  $dir  = $bot->cfg->dirDataRoot;
-  $data = [];
-  # get bot directories
-  if (($list = @scandir($dir, SCANDIR_SORT_DESCENDING)) === false)
+  $bot  = $ctx->item->bot;
+  $list = [];
+  foreach ($bot->listBots() as &$a)
   {
-    $item->log->error("scandir($dir) failed");
-    return null;
-  }
-  # iterate and create data
-  foreach ($list as $id)
-  {
-    # skip special directories ('.' or '..')
-    if ($id[0] !== '.' && ($a = getBotInfo($bot, $id))) {
-      $data[] = $a;
+    if ($b = getBotInfo($ctx, $a)) {
+      $list[] = $b;
     }
   }
-  # done
-  return $data;
+  return $list;
 }
 # }}}
-function getBotInfo(# {{{
-  object  $bot,
-  string  $id,
-  bool    $extra = false
-):?array
+function getBotInfo(object $ctx, string $id): ?array # {{{
 {
-  # determine config file path
-  $dirData = $bot->dir->dataRoot.$id.DIRECTORY_SEPARATOR;
-  $fileCfg = $dirData.BotConfig::FILE_JSON;
   # read bot configuration
-  if (!($cfg = $bot->file->getJSON($fileCfg))) {
+  $bot = $ctx->item->bot;
+  $cfg = file_get_json($bot->cfg->path($id));
+  if (!$cfg || !isset($cfg['Bot'])) {
     return null;
   }
-  # to determine if bot is running,
-  # check configuration is locked
-  $isRunning = file_exists($fileCfg.'.lock');
-  # determine identifier
-  if ($isMaster = ($id === 'master'))
-  {
-    $botId = $cfg['token'];
-    $botId = substr($botId, 0, strpos($botId, ':'));
-  }
-  else {
-    $botId = $id;
-  }
-  # determine ascending order index:
-  # master => running => type => name
+  # prepare
+  $cfg = $cfg['Bot'];
+  $isMaster  = $cfg['source'] === 'master';
+  $isRunning = file_persist($bot->proc->path($id));
+  # determine ascending order tag
   $order  = $isMaster  ? '0' : '1';
   $order .= $isRunning ? '0' : '1';
   $order .= $cfg['source'].$cfg['name'];
-  # create base
-  $info = [
-    'id'    => $id,
-    'botId' => $botId,
-    'name'  => $cfg['name'],
-    'order' => $order,
-    'type'  => $cfg['source'],
+  # complete
+  return [
+    'id'        => $id,
+    'name'      => $cfg['name'],
+    'source'    => $cfg['source'],
     'isMaster'  => $isMaster,
     'isRunning' => $isRunning,
+    'order'     => $order,
   ];
-  if (!$extra) {
-    return $info;
-  }
-  # set extra information
-  $info['isError'] = false;
-  $info['message'] = '';
-  # complete
-  return $info;
 }
 # }}}
 function dropCache(object $item, array &$data): bool # {{{
@@ -152,12 +109,12 @@ function getBotClassMap(object $item): ?array # {{{
 return [
 '/start/bots' => function (object $q): bool # {{{
 {
-  $this->log->info($q->func);
   switch ($q->func) {
   case 'data':
-    $q->res = getBotList($this->item->bot);
+    $q->res = getBotList($this);
     break;
   }
+  #$this->log->info($q->func);
   return true;
 },
 # }}}

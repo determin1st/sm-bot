@@ -1,5 +1,5 @@
 <?php return [
-  'play'     => '{:arrow_forward:} {{.}}',
+  'game'     => '{:arrow_forward:} {{.}}',
   'up'       => '{:eject_symbol:} {{.}}',
   'close'    => '{:stop_button:} {{.}}',
   'open'     => '{{.}}',
@@ -23,7 +23,12 @@
   'clear'    => '{{.}} {:leftwards_arrow_with_hook:}',
   ###
   'list.open'   => '{{id}}:{{name}}',
-  'list.select' => '{{#v}}{:green_circle:}{{/v}} {{name}}',
+  'list.select' => '
+    {{#selected}}
+      {:green_circle:}{:NBSP:}
+    {{/selected}}
+    {{name}}
+  ',
   ###
   'fav_on'   => '{:star:}',
   'fav_off'  => '{:sparkles:}{:star:}{:sparkles:}',

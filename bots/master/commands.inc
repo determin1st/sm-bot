@@ -25,7 +25,7 @@
   ],
   'markup.head' => [['!create','!refresh']],
   'caps' => [
-    /***
+    /***/
     'list.open' => '
     {{#isMaster}}
       {{name}}

@@ -2,23 +2,32 @@
 <summary>definitions</summary>
 
 ## bot
-A computer program that acts for the user and by the user
-in relationship with the agency -
-telegram - a freeware instant messaging service.
+A computer program that has an identity (character)
+and acts for the user and by the user
+in relationship with the agency (in the middle).
+
 Agency requests initiated by the end user
 are passed to the bot for servicing.
 
 ## multibot
-Multiple bots running on the same machine, compose a multibot.
-These bots serve the same purpose, share codebase and
-often run in a single (asynchroneous) process.
-Requests are distributed to the separate data stores.
-Rarely data is shared, for the only purpose of avoiding
+Multiple bots running on the same machine
+compose a multibot.
+
+These bots serve the same purpose (domain),
+share codebase and often run
+in a single (asynchroneous) process.
+
+Requests are distributed and
+applied to the separate data stores.
+
+Rarely, data is common, for the only purpose of avoiding
 agency limits (content rules).
 
 ## masterbot
-Masterbot acts as a bot supervisor.
-It creates, deletes, starts, stops and manages other bots.
+Masterbot acts as a bot supervisor,
+...
+it manages other bots which run as separate processes (or threads),
+may or may not share codebase or data.
 
 </details>
 <details>
