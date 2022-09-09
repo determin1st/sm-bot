@@ -2,44 +2,64 @@
 # globals {{{
 namespace SM;
 # }}}
-function getBotList(object $ctx): array # {{{
+function getBotList(object $bot): array # {{{
 {
-  $bot  = $ctx->item->bot;
   $list = [];
   foreach ($bot->listBots() as &$a)
   {
-    if ($b = getBotInfo($ctx, $a)) {
+    if ($b = getBotInfo($bot, $a)) {
       $list[] = $b;
     }
   }
   return $list;
 }
 # }}}
-function getBotInfo(object $ctx, string $id): ?array # {{{
+function getBotInfo(object $bot, string $id): ?array # {{{
 {
   # read bot configuration
-  $bot = $ctx->item->bot;
-  $cfg = file_get_json($bot->cfg->path($id));
-  if (!$cfg || !isset($cfg['Bot'])) {
+  $a = file_get_json($bot->cfg->path($id));
+  if (!$a || !isset($a['Bot'])) {
     return null;
   }
-  # prepare
-  $cfg = $cfg['Bot'];
-  $isMaster  = $cfg['source'] === 'master';
-  $isRunning = file_persist($bot->proc->path($id));
-  # determine ascending order tag
-  $order  = $isMaster  ? '0' : '1';
-  $order .= $isRunning ? '0' : '1';
-  $order .= $cfg['source'].$cfg['name'];
+  # set flags
+  $a = $a['Bot'];
+  $a['isMaster'] = $a['source'] === 'master';
+  $a['isRunning'] = file_persist($bot->proc->path($id));
+  # determine order field
+  $a['order'] =
+    ($a['isMaster'] ? '0' : '1').
+    ($a['isRunning'] ? '0' : '1').
+    $a['source'].$a['name'];
   # complete
-  return [
-    'id'        => $id,
-    'name'      => $cfg['name'],
-    'source'    => $cfg['source'],
-    'isMaster'  => $isMaster,
-    'isRunning' => $isRunning,
-    'order'     => $order,
-  ];
+  return $a;
+}
+# }}}
+function getBotSources(object $item): ?array # {{{
+{
+  # prepare
+  $bot = $item->bot;
+  $dir = $bot->dir->srcRoot;
+  $map = [];
+  # operate
+  try
+  {
+    if (!($a = scandir($dir))) {
+      throw BotError::text("scandir($dir) failed");
+    }
+    foreach ($a as $b)
+    {
+      if ($b[0] !== '.' && $b !== 'master') {
+        $map[$b] = $b;
+      }
+    }
+  }
+  catch (\Throwable $e)
+  {
+    # failure
+    $item->log->exception($e);
+    return null;
+  }
+  return $map;
 }
 # }}}
 function dropCache(object $item, array &$data): bool # {{{
@@ -78,106 +98,84 @@ function dropCache(object $item, array &$data): bool # {{{
   return true;
 }
 # }}}
-function getBotClassMap(object $item): ?array # {{{
-{
-  # prepare
-  $bot = $item->bot;
-  $dir = $bot->dir->srcRoot;
-  $map = [];
-  # operate
-  try
-  {
-    if (!($a = scandir($dir))) {
-      throw BotError::text("scandir($dir) failed");
-    }
-    foreach ($a as $b)
-    {
-      if ($b[0] !== '.' && $b !== 'master') {
-        $map[$b] = $b;
-      }
-    }
-  }
-  catch (\Throwable $e)
-  {
-    # failure
-    $item->log->exception($e);
-    return null;
-  }
-  return $map;
-}
-# }}}
 return [
 '/start/bots' => function (object $q): bool # {{{
 {
   switch ($q->func) {
-  case 'data':
-    $q->res = getBotList($this);
+  case '.data':
+    $q->res = getBotList($this->item->bot);
     break;
   }
-  #$this->log->info($q->func);
   return true;
 },
 # }}}
 '/start/bots/bot' => function (object $q): bool # {{{
 {
-  # prepare
-  # determine bot identifier
-  $id = (!$func && $args)
-    ? $args # take from request
-    : ($item['id'] ?? '');# take from config
-  # get information
-  if (!$id || !($data = getBotInfo($item->bot, $id, true)))
+  # set identifier
+  if ($q->func === 'id')
   {
-    $item->log->warn($id
-      ? "failed to get info: $id"
-      : "no identifier specified"
-    );
-    return null;
+    $this['id'] = $q->args;
+    return true;
+  }
+  # get identifier
+  if (!($id = $this['id'])) {
+    return false;
   }
   # operate
-  if ($func)
-  {
-    $item->log->print(0, 0, $func, $data['name']);
-    switch ($func) {
-    case 'start':
-      if ($item->bot->proc->start($id)) {
-        return startbotsbot($item, '', $id);
-      }
-      $data['isError'] = true;
-      $data['message'] = $item->bot->text['op-fail'];
-      break;
-    case 'stop':
-      if ($item->bot->proc->stop($id)) {
-        return startbotsbot($item, '', $id);
-      }
-      $data['isError'] = true;
-      $data['message'] = $item->bot->text['op-fail'];
-      break;
-    case 'dropCache':
-      # invoke handler
-      dropCache($item, $data);
-      break;
+  switch ($q->func) {
+  case '.render':# {{{
+    # get details
+    $bot = $this->item->bot;
+    if (!($a = getBotInfo($bot, $id, true))) {
+      return false;
     }
+    # compose markup
+    $b = $this->opts['markup'];
+    if ($bot->id === $id) {
+      $b = $this->markup($b['master']);
+    }
+    else
+    {
+      $c = $a['isRunning'];
+      $b = $item->markup($b['slave'], [
+        'start'     => $c ? 0 : 1,
+        'stop'      => $c ? 1 : 0,
+        'dropCache' => $c ? 0 : 1,
+      ]);
+    }
+    # compose result
+    $q->res = [
+      'title'  => $a['name'],
+      'text'   => $this->text->render($a),
+      'markup' => $b,
+    ];
+    break;
+    # }}}
+  /***
+  case 'start':# {{{
+    if ($item->bot->proc->start($id)) {
+      return startbotsbot($item, '', $id);
+    }
+    $data['isError'] = true;
+    $data['message'] = $item->bot->text['op-fail'];
+    break;
+    # }}}
+  case 'stop':# {{{
+    if ($item->bot->proc->stop($id)) {
+      return startbotsbot($item, '', $id);
+    }
+    $data['isError'] = true;
+    $data['message'] = $item->bot->text['op-fail'];
+    break;
+    # }}}
+  case 'dropCache':# {{{
+    # invoke handler
+    dropCache($item, $data);
+    break;
+    # }}}
+  /***/
   }
-  # render markup
-  $mkup = $data['isMaster']
-    ? [['!up']]
-    : $item->skel['markup'];
-  $mkup = $item->markup($mkup, [
-    'start' => $data['isRunning'] ? 0 : 1,
-    'stop'  => $data['isRunning'] ? 1 : 0,
-    'dropCache' => $data['isRunning'] ? 0 : 1,
-  ]);
-  # store identifier
-  $item['id'] = $id;
-  # complete
-  return [
-    'id'     => $data['id'],
-    'file'   => '',# dynamic title, no cache
-    'title'  => $data['name'],
-    'text'   => $item->bot->tp->render($item->text['#'], $data),
-    'markup' => $mkup,
-  ];
+  return true;
 },
 # }}}
 '/start/bots/create' => function (object $q): bool # {{{
@@ -187,7 +185,7 @@ return [
   case 'options':# {{{
     # there is only one field with options,
     # get and return available bot classes
-    return getBotClassMap($item);
+    return getBotSources($item);
   # }}}
   case 'input':# {{{
     # parse forwarded BotFather message

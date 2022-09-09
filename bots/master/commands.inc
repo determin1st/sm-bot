@@ -14,7 +14,7 @@
 '/start/bots' => # {{{
 [
   'type'       => 'list',
-  'list.type'  => 'select',
+  'list.type'  => 'open',
   'list.open'  => 'bot',
   'list.order' => 'order',
   'data.scope' => 'bot',
@@ -25,18 +25,74 @@
   ],
   'markup.head' => [['!create','!refresh']],
   'caps' => [
-    /***/
     'list.open' => '
-    {{#isMaster}}
-      {{name}}
+    {{source}}
+    {{#isRunning}}
+      {:small_orange_diamond:}
     {{|}}
-      {{#isRunning}}{:zap:}{{/isRunning}}
-      {{type}}
-      {:white_small_square:}
-      {{name}}
-    {{/isMaster}}
+      {:small_blue_diamond:}
+    {{/isRunning}}
+    {{name}}
     ',
-    /***/
+  ],
+],
+# }}}
+'/start/bots/bot' => # {{{
+[
+  'markup' => [
+    'master' => [
+      ['!refresh'],
+      ['!up'],
+    ],
+    'slave' => [
+      ['!start','!stop','!refresh'],
+      ['!dropCache'],
+      ['!up'],
+    ],
+  ],
+  'text' => [
+    'en' => [
+      '#' => '
+      {:BEG:}
+      {:black_medium_small_square:} 
+      <b>source</b>: {{source}}
+      {:BR:}
+      {:black_medium_small_square:} 
+      <b>id</b>: <a href="https://t.me/{{name}}">{{id}}</a>
+      {:BR:}
+      {:black_medium_small_square:} 
+      <b>api</b>:
+      {{#polling}}
+        {:NBSP:}polling
+      {{|}}
+        {:NBSP:}webhook
+      {{/polling}}
+      {:BR:}
+      {:black_medium_small_square:} <b>state</b>
+      {{#isRunning}}
+        {:NBSP:}{:zap:}{:NBSP:}
+      {{|}}
+        {:NBSP:}──
+      {{/isRunning}}
+      {:BR:}
+      {{#info}}
+        {:BR:}
+        {{#info.ok}}
+          {:red_circle:}
+        {{|}}
+          {:green_circle:}
+        {{/info.ok}}
+        {:NBSP:}{{info.text}}
+      {{/info}}
+      {:END:}
+      ',
+      'dropCache' => 'reset cache',
+      'cacheDropped' => 'cache dropped (%s)',
+    ],
+    'ru' => [
+      'dropCache' => 'сбросить кэш',
+      'cacheDropped' => 'кэш сброшен (%s)',
+    ],
   ],
 ],
 # }}}
@@ -75,51 +131,6 @@
       'in-use' => '
       идентификатор уже используется ботом @{{name}}
       ',
-    ],
-  ],
-],
-# }}}
-'/start/bots/bot' => # {{{
-[
-  'markup'=> [
-    ['!start','!stop','!refresh'],
-    ['!dropCache'],
-    ['!up'],
-  ],
-  'text'=> [
-    'en' => [
-      '#' => '
-      {{BEG}}
-      {:black_medium_small_square:} <b>class</b>: {{type}}{{BR}}
-      {:black_medium_small_square:} <b>id</b>: <a href="https://t.me/{{name}}">{{botId}}</a>{{BR}}
-      {:black_medium_small_square:} <b>webhook</b>
-      {{#webhook}}
-        {{#isWebhook}}{:NBSP:}{:zap:}{{|}}:{{/isWebhook}}
-        {:NBSP:}<code>{{webhook}}</code>
-      {{|}}
-        {:NBSP:}──
-      {{/webhook}}
-      {{BR}}
-      {:black_medium_small_square:} <b>state</b>
-      {{#isRunning}}
-        {:NBSP:}{:zap:}{:NBSP:}<code>{{isRunning}}</code>
-      {{|}}
-        {:NBSP:}──
-      {{/isRunning}}
-      {{BR}}
-      {{#message}}
-        {{BR}}
-        {{#isError}}{:red_circle:}{{|}}{:green_circle:}{{/isError}} 
-        {{message}}
-      {{/message}}
-      {{END}}
-      ',
-      'dropCache' => 'reset cache',
-      'cacheDropped' => 'cache dropped (%s)',
-    ],
-    'ru' => [
-      'dropCache' => 'сбросить кэш',
-      'cacheDropped' => 'кэш сброшен (%s)',
     ],
   ],
 ],

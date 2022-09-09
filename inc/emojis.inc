@@ -69,5 +69,10 @@
   'keycap'                    => "\xEF\xB8\x8F\xE2\x83\xA3",
   'keycap_asterisk'           => "*\xEF\xB8\x8F\xE2\x83\xA3",
   'stopwatch'                 => "\xE2\x8F\xB1",
+  'gear'                      => "\xE2\x9A\x99",
+  'robot_face'                => "\xF0\x9F\xA4\x96",
+  'new_moon'                  => "\xF0\x9F\x8C\x91",
+  'full_moon'                 => "\xF0\x9F\x8C\x95",
+  'zzz'                       => "\xF0\x9F\x92\xA4",
 ];
 ?>
