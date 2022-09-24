@@ -19,11 +19,13 @@
   'list.order' => 'order',
   'data.scope' => 'bot',
   'data.fetch' => 5,
+  'markup' => [
+    'head' => [['!create','!refresh']],
+  ],
   'text' => [
     'en' => ['@' => 'bot list'],
     'ru' => ['@' => 'список ботов'],
   ],
-  'markup.head' => [['!create','!refresh']],
   'caps' => [
     'list.open' => '
     {{source}}
@@ -100,12 +102,14 @@
 [
   'type'     => 'form',
   'datafile' => 1,
-  'config'   => [
-  ],
   'markup'  => [],
   'fields'  => [# bits: 1:required+2:persistent+4:nullable+8:hidden
-    'class' => [1, 'select', 1],
-    'token' => [1+8, 'string', 46, \SM\BotConfig::EXP_TOKEN],
+    'class' => ['select', 1, [
+      1
+    ]],
+    'token' => ['string', 1+8, [
+      46, \SM\BotConfig::EXP_TOKEN
+    ]],
   ],
   'text'  => [
     'en'  => [
