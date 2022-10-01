@@ -6048,8 +6048,8 @@ abstract class BotItem implements ArrayAccess # {{{
         # handle query
         if ($q->func && !$I->operate($ctx, $q))
         {
-          throw ErrorEx::warn($I->path, $q->func,
-            'operation cancelled'
+          throw ErrorEx::warn(
+            $I->path, $q->func, 'cancelled'
           );
         }
         # extract next item
@@ -7734,10 +7734,8 @@ class BotListItem extends BotImgItem # {{{
       }
       # }}}
       break;
-    default:# custom
-      return $this($ctx, $q);
     }
-    return true;
+    return $this($ctx, $q);
   }
   # }}}
   function render(object $ctx): array # {{{
@@ -7766,48 +7764,50 @@ class BotListItem extends BotImgItem # {{{
 class BotFormItem extends BotImgItem # {{{
 {
   const OPTION = [# {{{
-    ## behaviour
     'type.enter'    => true,
+    'type.input'    => true,
     'form.key'      => 'state',# storage key
     'form.data'     => false,# false=>config storage
     'form.enter'    => [
       'autoReset'   => false,# reset on entry?
-      'resetStatus' => [-2,-1,0,2],# resettable statuses
+      'resetStatus' => [-2,-1,1],# auto-resettable
       'resetAll'    => false,# all steps (repeat)?
     ],
-    'form.confirm'  => true,# enable confirmation
-    ###
+    # field/step transition flags
+    # (1) step down from the first field
+    # (2) reset fields when (1)
+    # (4) step up from the last field
+    # (8) submit at the last step's field
+    # (16) submit only at the last field
+    'form.transit'  => 1|4|8,
+    'form.cycle'    => false,# first/last field cycling
+    'form.noskip'   => false,# dont skip required fields
+    'form.retry'    => true,# resubmit failed
+    'form.confirm'  => false,# enable confirmation
     ###
     'isPersistent' => false,# form type, change instead of repeat
     'resetFailed' => true,# allow to reset from negative state
     'resetCompleted' => true,# allow to reset from positive state
     'resetAll' => false,# do a full reset (all steps)
     'okConfirm' => true,# enable confirmation step
-    ###
-    # allow to cycle back/forward
-    'moveAround' => false,
+    'forwardSkip' => false,# allow to skip required field
+    'moveAround' => false,# allow to cycle back/forward
+    'backStep' => true,# allow to return to the previous step
+    'backStepReset' => true,# reset current step before returning
+    'retryFailed' => true,# allow to retry failed submission
+    'okIsForward' => false,# ok acts as forward until the last field
+    # disable retry rather than hide
+    'retryDisable' => true,
     # disable at start position
     'backDisable' => false,
-    # allow to return to the previous step
-    'backStep' => true,
-    # reset current step before returning
-    'backStepReset' => true,
     # disable at last position
     'forwardDisable' => false,
-    # allow to skip required field
-    'forwardSkip' => false,
     # last forward becomes ok
     'forwardToOk' => true,
-    # ok acts as forward until last field
-    'okIsForward' => false,
     # ok only when all required fields filled
     'okWhenReady' => true,
     # disable ok when missing required
     'okDisable' => true,
-    # allow to retry failed submission
-    'retryFailed' => true,
-    # disable retry rather than hide
-    'retryDisable' => true,
     # show empty bar when clearing is not feasible
     'clearSolid' => true,
     # allow to de-select selected option
@@ -7837,12 +7837,6 @@ class BotFormItem extends BotImgItem # {{{
   ];
   # }}}
   # TODO: hlp {{{
-  function eventInit(object $req): bool # {{{
-  {
-    $cfg = &$this->config();
-    return $this->init($cfg);
-  }
-  # }}}
   function renderBob(# {{{
     array  &$cfg,
     string $fieldName,
@@ -7876,507 +7870,6 @@ class BotFormItem extends BotImgItem # {{{
       'markup' => $mkup,
     ];
     return BotTxtMessage::construct($bot, $mkup);
-  }
-  # }}}
-  function inputAccept(# {{{
-    array   &$cfg,
-    array   &$state,
-    string  &$info
-  ):bool
-  {
-    # check current mode/status
-    if ($state[0] !== 0)
-    {
-      $this->log->warn(__FUNCTION__, 'incorrect state '.implode(':', $state));
-      return false;
-    }
-    # prepare
-    $bot    = $this->bot;
-    $fields = &$this->skel['fields'][$state[1]];
-    $name   = array_key($fields, $state[2]);
-    $field  = &$fields[$name];
-    $value  = $this->input;
-    $op     = $value ? '✱' : '·';
-    # try custom handler
-    if (($hand = $this->skel['handler']) &&
-        ($a = $hand($this, 'input', $name, $value)))
-    {
-      # accepted,
-      # report result
-      if (!$a[0]) {
-        $this->log->infoInput(__FUNCTION__, $name, "($op)");
-      }
-      else {
-        $this->log->warnInput(__FUNCTION__, $name, "($op)");
-      }
-      # set info and complete
-      $info = $a[1] ?? '';
-      return true;
-    }
-    # default handler
-    if ($value)
-    {
-      switch ($field[1]) {
-      case 'string':
-        # {{{
-        # get text
-        if (($value = $value->text ?? null) === null) {
-          return false;
-        }
-        # validate size
-        if (isset($field[2]) && $field[2] && strlen($value) > $field[2])
-        {
-          # hidden data is considered fragile, so,
-          # instead of cutting, discard it
-          if ($field[0] & 8)
-          {
-            unset($this->data[$name]);
-            $info = $bot->text['oversized'];
-            return true;
-          }
-          # cut to maximal allowed size
-          $value = substr($value, 0, $field[2]);
-          $info  = $bot->text['oversized'];
-        }
-        # validate syntax
-        if (isset($field[3]) && !preg_match($field[3], $value))
-        {
-          # discard fragile/hidden content
-          if ($field[0] & 8) {
-            unset($this->data[$name]);
-          }
-          $info = $bot->text['bad-data'];
-          return true;
-        }
-        # }}}
-        break;
-      case 'int':
-        # {{{
-        # integer[-2147483648..2147483648] or long[0..4294967295]
-        # get text
-        if (($value = $value->text ?? null) === null) {
-          return false;
-        }
-        # extract sign and positive value
-        $a = ($value[0] === '-');
-        $a && ($value = substr($value, 1));
-        # check length and digits
-        if (!($b = strlen($value)) || $b > 10 || !ctype_digit($value))
-        {
-          $info = $bot->text['bad-data'];
-          return true;
-        }
-        # cast to integer
-        $value = intval($value);
-        $a && ($value = -$value);
-        # check minimum and maximum
-        if (isset($field[2]) && $value < $field[2])
-        {
-          $info = $bot->tp->render($bot->text['min-value'], [
-            'x' => $field[2]
-          ]);
-          return true;
-        }
-        elseif (isset($field[3]) && $value > $field[3])
-        {
-          $info = $bot->tp->render($bot->text['max-value'], [
-            'x' => $field[3]
-          ]);
-          return true;
-        }
-        # }}}
-        break;
-      default:
-        $this->log->errorInput(__FUNCTION__, $name, 'unknown type: '.$field[1]);
-        return false;
-      }
-    }
-    elseif (!($field[0] & 4))
-    {
-      # clear is not allowed
-      $this->log->warnInput(__FUNCTION__, $name, $op);
-      return false;
-    }
-    # skip equal
-    if ($value === $this->data[$name]) {
-      return false;
-    }
-    # callback skip
-    if ($hand && ($a = $hand($this, 'change', $name, $value)) && !$a[0])
-    {
-      # check reason specified
-      $this->log->warnInput(__FUNCTION__, $name, $op);
-      if ($info = $a[1] ?? '') {
-        return true;
-      }
-      return false;
-    }
-    # change and complete
-    $this->data[$name] = $value;
-    $this->log->infoInput(__FUNCTION__, $name, $op);
-    return true;
-  }
-  # }}}
-  ###
-  function dataSubmit(# {{{
-    array   &$cfg,
-    array   &$state,
-    string  &$info
-  ):bool
-  {
-    # check current mode/status
-    $a = $state[0];
-    if (($a !== 0 && $a !== 1 && $a !== -2) ||
-        ($a === -2 && !$cfg['retryFailed']))
-    {
-      $this->log->warn(__FUNCTION__, 'incorrect state: '.self::STATUS[$a]);
-      return false;
-    }
-    # prepare
-    $fields = &$this->skel['fields'][$state[1]];
-    $name   = array_key($fields, $state[2]);
-    if ($a === 0)
-    {
-      # act as forward before last field is reached
-      if ($cfg['okIsForward'] && $state[2] < count($fields) - 1) {
-        return $this->fieldForward($cfg, $state, $info);
-      }
-      # switch to the miss state when any empty required found
-      if (~($b = $this->fieldFindFirst($fields, 1, 1)))
-      {
-        $this['status'] = -1;
-        $this['field']  = $b;
-        return true;
-      }
-    }
-    # determine action variant
-    $lastStep = count($this->skel['fields']) - 1;
-    $a = (
-      ($state[1] < $lastStep) ||
-      ($cfg['okConfirm'] && ($a === 0 || $a === -2))
-    );
-    $b = $a
-      ? 'ok'      # next step / last step confirmation
-      : 'submit'; # submission
-    # callback
-    if (($c = $this->skel['handler']) &&
-        ($c = $c($this, $b, $state)))
-    {
-      # handle result
-      if ($c[0] === -2)
-      {
-        $this->log->warn(__FUNCTION__, $b, 'TODO: ✶task');
-        return false;
-      }
-      elseif ($c[0] === -1)
-      {
-        # back to the input
-        $this['status'] = 0;
-        if (isset($c[1]))
-        {
-          # TODO: step back or forward
-        }
-        return true;
-      }
-      elseif ($c[0] === 0)
-      {
-        $this['status'] = -2;
-        $info = $c[1] ?? $bot->text['op-fail'];
-        return true;
-      }
-      elseif ($c[0] === 2 && $a) {
-        $a = false;
-      }
-      $info = $c[1] ?? '';
-    }
-    # confirm
-    if ($a)
-    {
-      if ($state[1] < $lastStep)
-      {
-        $this['step']  = $state[1] + 1;
-        $this['field'] = 0;
-      }
-      else {
-        $this['status'] = 1;
-      }
-      return true;
-    }
-    # submit
-    #$this->log->info(__FUNCTION__, 'submit', implode('|', array_keys($a)));
-    $this['status'] = 2;
-    if ($cfg['isPersistent'])
-    {
-      /***
-      # copy persistent fields
-      $a = [];
-      foreach ($this->skel['fields'] as &$b)
-      {
-        foreach ($b as $c => &$d)
-        {
-          if (($d[0] & 2) && isset($this->data[$c]))
-          {
-            $a[$c] = $this->data[$c];
-          }
-        }
-      }
-      $this->data->set($a);
-      /***/
-    }
-    return true;
-  }
-  # }}}
-  function dataReset(# {{{
-    array &$cfg,
-    array &$state
-  ):bool
-  {
-    # check current mode/status
-    $a = $state[0];
-    if (($a < 0 && $a > -3 && !$cfg['resetFailed']) ||
-        ($a > 0 && $a <  3 && !$cfg['resetCompleted']))
-    {
-      $this->log->warn(__FUNCTION__, self::STATUS[$a]);
-      return false;
-    }
-    # hard reset
-    if ($cfg['resetAll'])
-    {
-      $this->dataResetAll();
-      $this['status'] = $this['step'] = $this['field'] = 0;
-    }
-    else
-    {
-      $this->dataResetStep($state[1]);
-      $this['status'] = $this['field'] = 0;
-    }
-    $this->log->info(__FUNCTION__, self::STATUS[$a]);
-    return true;
-  }
-  # }}}
-  function dataChange(# {{{
-    array &$cfg,
-    array &$state
-  ):bool
-  {
-    # check current mode/status
-    if (($a = $state[0]) !== -2 && $a !== 2)
-    {
-      $this->log->warn(__FUNCTION__, self::STATUS[$a]);
-      return false;
-    }
-    # back to the input
-    $this->log->info(__FUNCTION__, self::STATUS[$a].' → '.self::STATUS[0]);
-    $this['status'] = 0;
-    # keep failed state data
-    if ($a === -2) {
-      return true;
-    }
-    # reset complete data
-    if ($cfg['resetAll'] || $cfg['isPersistent'])
-    {
-      # hard
-      $this->dataResetAll(true);
-      $this['step'] = $this['fields'] = 0;
-    }
-    else
-    {
-      # soft
-      $this->dataResetStep($a = $this['step'], true);
-      $fields = &$this->skel['fields'][$a];
-      $a = $this->fieldFindFirst($fields, -2);
-      $b = $this->fieldFindFirst($fields, 1, 1);
-      $this['field'] = ~$a
-        ? (~$b
-          ? (($a < $b) ? $a : $b)
-          : $a)
-        : (~$b
-          ? $b
-          : 0);
-    }
-    return true;
-  }
-  # }}}
-  ###
-  function fieldBack(# {{{
-    array &$cfg,
-    array &$state
-  ):bool
-  {
-    # check current mode/status
-    if ($state[0] === 0)
-    {
-      # return to the previous input field
-      if ($state[2] > 0)
-      {
-        $this['field'] = $state[2] - 1;
-        return true;
-      }
-      # at the first field,
-      # return to the previous step
-      if ($state[1] > 0 && $cfg['backStep'])
-      {
-        $cfg['backStepReset'] && $this->dataResetStep($state[1]);
-        $this['step']  = $a = $state[1] - 1;
-        $this['field'] = count($this->skel['fields'][$a]) - 1;
-        return true;
-      }
-      # move to the last field
-      if ($cfg['moveAround'])
-      {
-        $this['field'] = count($this->skel['fields'][$state[1]]) - 1;
-        return true;
-      }
-      # no action
-      return false;
-    }
-    if ($state[0] === 1 || $state[0] === -2)
-    {
-      # return to the input from confirmation/failure
-      $this['status'] = 0;
-      return true;
-    }
-    # fail
-    $this->log->warn(__FUNCTION__, 'incorrect state '.implode(':', $state));
-    return false;
-  }
-  # }}}
-  function fieldForward(# {{{
-    array   &$cfg,
-    array   &$state,
-    string  &$info
-  ):bool
-  {
-    # check current mode/status
-    if ($state[0] !== 0)
-    {
-      $this->log->warn(__FUNCTION__, 'incorrect state '.implode(':', $state));
-      return false;
-    }
-    # preapre
-    $fields = &$this->skel['fields'][$state[1]];
-    $name   = array_key($fields, $state[2]);
-    # check field is required, empty and skipping is prohibited
-    if (($fields[$name][0] & 1) &&
-        !isset($this->data[$name]) &&
-        !$cfg['forwardSkip'])
-    {
-      $info = $this->bot->text['req-field'];
-      return false;
-    }
-    # jump to the next field
-    if ($state[2] < ($a = count($fields) - 1))
-    {
-      $this['field'] = $state[2] + 1;
-      return true;
-    }
-    # at the last field,
-    # jump to the first field
-    if ($cfg['moveAround'])
-    {
-      $this['field'] = 0;
-      return true;
-    }
-    # do nothing..
-    return false;
-  }
-  # }}}
-  function fieldFindFirst(# {{{
-    array &$fields,
-    int   $bit   = 0,# 0=any,1=required,2=persistent,4=nullable,..
-    int   $empty = 0 # 0=any,1=yes,-1=nope
-  ):int
-  {
-    # prepare
-    $count = count($fields);
-    if ($bit < 0)
-    {
-      $not = true;
-      $bit = -$bit;
-    }
-    else {
-      $not = false;
-    }
-    # search
-    reset($fields);
-    for ($a = 0; $a < $count; ++$a, next($fields))
-    {
-      # get field name
-      $b = key($fields);
-      # check
-      if ($bit)
-      {
-        $c = $fields[$b][0];
-        if ($not)
-        {
-          if (!($c & $bit))
-          {
-            if ($empty)
-            {
-              $d = isset($this->data[$b]);
-              if ($empty > 0)
-              {
-                if (!$d) {
-                  break;
-                }
-              }
-              elseif ($d) {
-                break;
-              }
-            }
-            else {
-              break;
-            }
-          }
-        }
-        elseif ($c & $bit)
-        {
-          if ($empty)
-          {
-            $d = isset($this->data[$b]);
-            if ($empty > 0)
-            {
-              if (!$d) {
-                break;
-              }
-            }
-            elseif ($d) {
-              break;
-            }
-          }
-          else {
-            break;
-          }
-        }
-      }
-      elseif ($empty)
-      {
-        $d = isset($this->data[$b]);
-        if ($empty > 0)
-        {
-          if (!$d) {
-            break;
-          }
-        }
-        elseif ($d) {
-          break;
-        }
-      }
-      else {
-        break;
-      }
-    }
-    # complete
-    return ($a < $count) ? $a : -1;
-  }
-  # }}}
-  function fieldMissCount(array &$fields): int # {{{
-  {
-    $c = 0;
-    foreach ($fields as $a => &$b) {
-      ($b[0] & 1) && !isset($this->data[$a]) && $c++;
-    }
-    return $c;
   }
   # }}}
   ###
@@ -8577,6 +8070,13 @@ class BotFormItem extends BotImgItem # {{{
       : $this->init($ctx);
   }
   # }}}
+  function field(int $step, int $index): object # {{{
+  {
+    return $this['fields'][
+      $this['steps'][$step][$index]
+    ];
+  }
+  # }}}
   function &fields(int $step): array # {{{
   {
     $a = [];
@@ -8600,7 +8100,7 @@ class BotFormItem extends BotImgItem # {{{
     return $a;
   }
   # }}}
-  function &fieldsTo(int $step): array # {{{
+  function &fieldsTo(int $step = -1): array # {{{
   {
     $a = [];
     $b = $this['steps'];
@@ -8612,6 +8112,19 @@ class BotFormItem extends BotImgItem # {{{
     {
       foreach ($b[$c] as $name) {
         $a[$name] = $this['fields'][$name];
+      }
+    }
+    return $a;
+  }
+  # }}}
+  function &fieldsMissing(object $ctx): array # {{{
+  {
+    $a = [];
+    $s = $this->state($ctx);
+    foreach ($this->fields($s[1]) as $k => $o)
+    {
+      if ($o->required && !isset($ctx->conf[$k])) {
+        $a[$k] = $o;
       }
     }
     return $a;
@@ -8630,208 +8143,328 @@ class BotFormItem extends BotImgItem # {{{
     }
   }
   # }}}
-  function fieldsRestore(# {{{
-    object $ctx, int $step = -1
-  ):void
+  function fieldsRestore(object $ctx): void # {{{
   {
     $data = $ctx->load()[0];
     $conf = $ctx->conf;
-    foreach ($this->fieldsTo($step) as $k => $o) {
+    foreach ($this->fieldsTo() as $k => $o) {
       $conf[$k] = $data[$k];
     }
   }
   # }}}
-  function repeat(object $ctx): bool # {{{
+  # }}}
+  # operations {{{
+  function opEnter(object $ctx): bool # {{{
   {
-    static $Q = new BotItemQuery('repeat');
-    # invoke handler
-    if (!$this($ctx, $Q($s = $this->state($ctx)))) {
-      throw ErrorEx::warn($Q->func, 'denied');
+    # restore when bound
+    if ($this['form.data']) {
+      return $this->restore($ctx);
     }
-    # reset state and fields
-    $s->set([0, 0, 0]);
-    $this->fieldsReset($ctx, 0);
+    # check option
+    $o = $this['form.enter'];
+    if ($o['autoReset'])
+    {
+      # check current status resettable
+      $s = $this->state($ctx);
+      $a = &$o['resetStatus'];
+      if (!in_array($s[0], $a, true)) {
+        return true;
+      }
+      # reset
+      return $o['resetAll']
+        ? $this->restore($ctx)
+        : $this->opReset($ctx);
+    }
     return true;
   }
   # }}}
-  function reset(object $ctx): bool # {{{
+  function opBack(object $ctx): bool # {{{
   {
-    # check current status
-    $s = $this->state($ctx);
-    switch ($s[0]) {
-    case -2:# failed
-      break;
-    case -1:# missing
-      break;
+    switch (($s = $this->state($ctx))[0]) {
     case 0:# input
-      $this->fieldsReset($ctx, $s[1]);
-      $s[2] = 0;
+      # get back to the previous field
+      if ($s[2] > 0)
+      {
+        $s[2] = $s[2] - 1;
+        return true;
+      }
+      # at the first field,
+      # get back to the previous step
+      $i = $this['form.transit'];
+      if ($s[1] > 0 && $i & 1) {
+        return $this->opStepDown($ctx, (bool)($i & 2));
+      }
+      # cycle from the first to the last field
+      if ($cfg['form.cycle'])
+      {
+        $s[2] = count($this['steps'][$s[1]]) - 1;
+        return true;
+      }
       break;
-    case 1:# confirmation
+    case -2:# failure
+    case  1:# confirmation
+      # get back to the input
       $s[0] = 0;
-      break;
-    case 2:# complete
-      break;
+      return true;
     }
-    return true;
-    # reset state
-    if ($status)
+    return false;
+  }
+  # }}}
+  function opForward(object $ctx): bool # {{{
+  {
+    # check current status (must be input)
+    if (($s = $this->state($ctx))[0]) {
+      return false;
+    }
+    # prepare
+    $steps  = $this['steps'];
+    $step   = $s[1];
+    $fields = $steps[$step];
+    $field  = $s[2];
+    # check unconditional skipping is prohibited
+    if ($this['noskip'])
     {
-      # back to the input
-      $this['status'] = 0;
-      if ($status === -2 || $status === 2) {
-        $this['field'] = 0;
+      # required field must be filled
+      $a = $fields[$field];
+      $b = $this['fields'][$a];
+      if ($b->required && !isset($ctx->conf[$a]))
+      {
+        # TODO: notify
+        #$ctx->text['req-field'];
+        return false;
+      }
+    }
+    # go to the next field
+    if ($field < count($fields) - 1)
+    {
+      $s[2] = $field + 1;
+      return true;
+    }
+    # at the last field,
+    # check more steps to go
+    $i = $this['form.transit'];
+    if ($step < count($steps) - 1)
+    {
+      # go to the next step
+      if ($i & 4) {
+        return $this->opStepUp($ctx);
       }
     }
     else
     {
-      # seek specific field
-      $fields = &$this->skel['fields'][$step];
-      $this['fields'] = ~($a = $this->fieldFindFirst($fields, -2))
-        ? ((~($b = $this->fieldFindFirst($fields, 1, 1)) && $b < $a)
-          ? $b  # empty required
-          : $a) # non-persistent
-        : 0;    # first
+      # submit at the last step
+      if ($i & 8) {
+        return $this->opSubmit($ctx);
+      }
     }
+    # go to the first field
+    if ($this['form.cycle'])
+    {
+      $s[2] = 0;
+      return true;
+    }
+    return false;
+  }
+  # }}}
+  function opStepDown(object $ctx, bool $reset): bool # {{{
+  {
+    static $Q = new BotItemQuery('step.down');
+    # prepare
+    $s = $this->state($ctx);
+    if (($i = $s[1]) === 0) {
+      return true;
+    }
+    # invoke handler
+    if (!$this($ctx, $Q($i))) {
+      return false;
+    }
+    # reset fields
+    if ($reset) {
+      $this->fieldsReset($ctx, $i);
+    }
+    # get back to the previous step
+    $s[1] = $i = $i - 1;
+    $s[2] = count($this['steps'][$i]) - 1;
     return true;
   }
   # }}}
-  ###
-  function dataResetAll(# {{{
-    bool $softly = false
-  ):bool
+  function opStepUp(object $ctx): bool # {{{
   {
-    # get defaults
-    $defs = $this->skel['defs'];
-    if ($hand = $this->skel['handler']) {
-      $hand($this, 'defs', $defs);
-    }
-    # keep persistent fields
-    if ($softly && $this->data->count)
+    static $Q = new BotItemQuery('step.up');
+    # prepare
+    $s = $this->state($ctx);
+    # check missing required fields
+    if ($a = &$this->fieldsMissing($ctx))
     {
-      foreach ($this->skel['fields'] as &$a)
-      {
-        foreach ($a as $b => &$c)
-        {
-          if (($c[0] & 2) && isset($this->data[$b])) {
-            $defs[$b] = $this->data[$b];
-          }
-        }
-      }
+      # transition to the missing state
+      $s[0] = -1;
+      $s[2] = $a[0]->index;
+      return true;
     }
-    # replace
-    return $this->data->set($defs);
+    # invoke handler
+    if (!$this($ctx, $Q($i = $s[1])))
+    {
+      # transition to the failed state
+      $s[0] = -2;
+      return true;
+    }
+    # go to the next step
+    $s[1] = $i + 1;
+    $s[2] = 0;
+    return true;
   }
   # }}}
-  function dataResetStep(# {{{
-    int  $step,
-    bool $softly = false
-  ):bool
+  function opReset(object $ctx): bool # {{{
   {
-    # clear step fields
-    # (excluding persistent if softly flag set)
-    $a = &$this->skel['fields'][$step];
-    foreach ($a as $b => &$c)
+    static $Q = new BotItemQuery('reset');
+    # check current status
+    $s = $this->state($ctx);
+    switch ($s[0]) {
+    case -2:# failed
+      # get back to confirmation or input
+      if ($this['form.confirm'] &&
+          $s[1] === count($this['steps']) - 1)
+      {
+        $s[0] = 1;
+      }
+      else {
+        $s[0] = 0;
+      }
+      return true;
+    case -1:# missing
+      # get back to the input
+      $s[0] = 0;
+      return true;
+    case 0:# input ~ TRUE RESET
+      # invoke handler
+      if (!$this($ctx, $Q)) {
+        break;
+      }
+      # reset current step fields and
+      # seek to the first field
+      $this->fieldsReset($ctx, $s[1]);
+      $s[2] = 0;
+      return true;
+    case 1:# confirmation
+      # get back to the last step input
+      $s[0] = $s[2] = 0;
+      return true;
+    case 2:# complete
+      # repeat without resetting
+      $s[0] = $s[1] = $s[2] = 0;
+      return true;
+    }
+    return false;
+  }
+  # }}}
+  function opSubmit(object $ctx): bool # {{{
+  {
+    static $VALID = [-2,0,1];
+    static $Q = new BotItemQuery('submit');
+    # check current status
+    $s = $this->state($ctx);
+    if (!in_array($i = $s[0], $VALID, true) ||
+        ($i === -2 && !$cfg['form.retry']))
     {
-      if (!$softly || !($c[0] & 2)) {
-        unset($this->data[$b]);
+      return false;
+    }
+    # prepare
+    $steps  = $this['steps'];
+    $step   = $s[1];
+    $fields = $steps[$step];
+    $field  = $s[2];
+    # before submission,
+    # all steps must be completed
+    if ($step < count($steps) - 1)
+    {
+      # while in the input mode,
+      # check being at the last field is required,
+      # but not met
+      if ($i === 0 &&
+          $this['form.transit'] & 16 &&
+          $field < count($fields) - 1)
+      {
+        return $this->opForward($ctx);
+      }
+      return $this->opStepUp($ctx);
+    }
+    # check confirmation required
+    if ($i === 0 && $this['form.confirm'])
+    {
+      $s[0] = 1;
+      return true;
+    }
+    # invoke handler
+    if (!$this($ctx, $Q($i)))
+    {
+      # transition to the failed state
+      $s[0] = -2;
+      return true;
+    }
+    # store data
+    if ($this['form.data'])
+    {
+      # set state
+      $ctx->data[1][$this['form.key']] = [2,0,0];
+      # set fields
+      $data = $ctx->data[0];
+      $conf = $ctx->conf;
+      foreach ($this['fields'] as $k => $o) {
+        $data[$k] = $conf[$k];
       }
     }
-    return $this->data->changed;
+    # complete
+    $s[0] = 2;
+    return true;
+  }
+  # }}}
+  function opInput(object $ctx): bool # {{{
+  {
+    static $Q = new BotItemQuery('input');
+    # check current status
+    if (($s = $this->state($ctx))[0]) {
+      return false;
+    }
+    # get field value
+    $o = $this->field($s[1], $s[2]);
+    if (($v = $o->value($ctx->input)) === null) {
+      return false;
+    }
+    # store and complete
+    $ctx->conf[$o->name] = $v;
+    return false;
   }
   # }}}
   # }}}
   function operate(object $ctx, object $q): bool # {{{
   {
-    # handle event
     switch ($q->func) {
-    case '.enter':# {{{
-      # restore when bound
-      if ($this['form.data']) {
-        return $this->restore($ctx);
-      }
-      # check option
-      $o = $this['form.enter'];
-      if ($o['autoReset'])
-      {
-        # check current status resettable
-        $s = $this->state($ctx);
-        $a = &$o['resetStatus'];
-        if (!in_array($s[0], $a, true)) {
-          return true;
-        }
-        # reset
-        return $o['resetAll']
-          ? $this->restore($ctx)
-          : $this->reset($ctx);
-      }
-      return true;
-      # }}}
-    }
-    return true;
-    # prepare {{{
-    # get current state
-    $s = $this->state($ctx);
-    ###
-    $state = [
-      ($this['status'] ?? 0),
-      ($this['step']   ?? 0),
-      ($this['field']  ?? 0),
-    ];
-    # create vars
-    $cfg  = &$this->config();
-    $bot  = $this->bot;
-    $data = $this->data;
-    $hand = $this->skel['handler'];
-    $info = '';
-    $progress  = 0;
-    $fieldOpts = null;# fetched once
-    # }}}
-    # operate {{{
-    switch ($func) {
-    case '':
-    case 'refresh':
-      break;
+    case '.enter':
+      return $this->opEnter($ctx);
+    case '.input':
+      return $this->opInput($ctx);
     case 'back':
     case 'prev':
-      $this->fieldBack($cfg, $state);
-      break;
+      return $this->opBack($ctx);
     case 'forward':
     case 'next':
-      $this->fieldForward($cfg, $state, $info);
-      break;
-    case 'select':
-      $this->fieldSetOption($cfg, $state, $info, $fieldOpts, $args);
-      break;
-    case 'input':
-    case 'clear':
-      if (!$this->inputAccept($cfg, $state, $info)) {
-        return null;
-      }
-      break;
-    case 'ok':
-    case 'submit':
-    case 'retry':
-      if (!$this->dataSubmit($cfg, $state, $info)) {
-        return null;
-      }
-      break;
+      return $this->opForward($ctx);
     case 'reset':
-      if (!$this->dataReset($cfg, $state)) {
-        return null;
-      }
-      break;
-    case 'change':
     case 'repeat':
-      if (!$this->dataChange($cfg, $state)) {
-        return null;
-      }
-      break;
-    default:
-      $this->log->error("operation unknown: $func");
-      return null;
+    case 'change':
+      return $this->opReset($ctx);
+    case 'ok':
+    case 'retry':
+    case 'submit':
+      return $this->opSubmit($ctx);
+    case 'select':
+      return false;
     }
-    # }}}
+    return $this($ctx, $q);
+  }
+  # }}}
+  function render(object $ctx): array # {{{
+  {
     # sync {{{
     $a = '';
     if ($state[0] !== ($c = $this[$b = 'status']))
@@ -8858,10 +8491,6 @@ class BotFormItem extends BotImgItem # {{{
     $field          = &$fields[$fieldName];
     $fieldIsLast    = $state[2] === count($fields) - 1;
     # }}}
-  }
-  # }}}
-  function render(object $ctx): array # {{{
-  {
     # compose markup {{{
     if ($state[0])
     {
@@ -8986,9 +8615,24 @@ abstract class BotFormField # {{{
   ):self
   {
     static $T = '\\'.__NAMESPACE__.'\\BotFormField';
-    $type = $T.ucfirst($spec[0]);
-    $flag = $spec[1];
-    return new $type($item, $name,
+    $type  = $T.ucfirst($spec[0]);
+    $flag  = $spec[1];
+    $step  = 0;
+    $index = 0;
+    $steps = $item['steps'];
+    for ($i = 0, $j = count($steps); $i < $j; ++$i)
+    {
+      foreach ($steps as $k)
+      {
+        if ($k === $name) {
+          break 2;
+        }
+        $index++;
+      }
+      $step++;
+    }
+    return new $type(
+      $item, $name, $step, $index,
       (bool)($flag & 1),
       (bool)($flag & 2),
       (bool)($flag & 4),
@@ -9000,6 +8644,8 @@ abstract class BotFormField # {{{
   final function __construct(# {{{
     public object $item,
     public string $name,
+    public int    $step,
+    public int    $index,
     public bool   $required,
     public bool   $persistent,
     public bool   $nullable,
@@ -9012,6 +8658,140 @@ abstract class BotFormField # {{{
   final function defaultValue(object $ctx): mixed # {{{
   {
     return null;
+  }
+  # }}}
+  function value(object $data): mixed # {{{
+  {
+    return null;
+  }
+  # }}}
+  function v(object $ctx): bool # {{{
+  {
+    # prepare
+    $bot    = $this->bot;
+    $fields = &$this->skel['fields'][$state[1]];
+    $name   = array_key($fields, $state[2]);
+    $field  = &$fields[$name];
+    $value  = $this->input;
+    $op     = $value ? '✱' : '·';
+    # try custom handler
+    if (($hand = $this->skel['handler']) &&
+        ($a = $hand($this, 'input', $name, $value)))
+    {
+      # accepted,
+      # report result
+      if (!$a[0]) {
+        $this->log->infoInput(__FUNCTION__, $name, "($op)");
+      }
+      else {
+        $this->log->warnInput(__FUNCTION__, $name, "($op)");
+      }
+      # set info and complete
+      $info = $a[1] ?? '';
+      return true;
+    }
+    # default handler
+    if ($value)
+    {
+      switch ($field[1]) {
+      case 'string':
+        # {{{
+        # get text
+        if (($value = $value->text ?? null) === null) {
+          return false;
+        }
+        # validate size
+        if (isset($field[2]) && $field[2] && strlen($value) > $field[2])
+        {
+          # hidden data is considered fragile, so,
+          # instead of cutting, discard it
+          if ($field[0] & 8)
+          {
+            unset($this->data[$name]);
+            $info = $bot->text['oversized'];
+            return true;
+          }
+          # cut to maximal allowed size
+          $value = substr($value, 0, $field[2]);
+          $info  = $bot->text['oversized'];
+        }
+        # validate syntax
+        if (isset($field[3]) && !preg_match($field[3], $value))
+        {
+          # discard fragile/hidden content
+          if ($field[0] & 8) {
+            unset($this->data[$name]);
+          }
+          $info = $bot->text['bad-data'];
+          return true;
+        }
+        # }}}
+        break;
+      case 'int':
+        # {{{
+        # integer[-2147483648..2147483648] or long[0..4294967295]
+        # get text
+        if (($value = $value->text ?? null) === null) {
+          return false;
+        }
+        # extract sign and positive value
+        $a = ($value[0] === '-');
+        $a && ($value = substr($value, 1));
+        # check length and digits
+        if (!($b = strlen($value)) || $b > 10 || !ctype_digit($value))
+        {
+          $info = $bot->text['bad-data'];
+          return true;
+        }
+        # cast to integer
+        $value = intval($value);
+        $a && ($value = -$value);
+        # check minimum and maximum
+        if (isset($field[2]) && $value < $field[2])
+        {
+          $info = $bot->tp->render($bot->text['min-value'], [
+            'x' => $field[2]
+          ]);
+          return true;
+        }
+        elseif (isset($field[3]) && $value > $field[3])
+        {
+          $info = $bot->tp->render($bot->text['max-value'], [
+            'x' => $field[3]
+          ]);
+          return true;
+        }
+        # }}}
+        break;
+      default:
+        $this->log->errorInput(__FUNCTION__, $name, 'unknown type: '.$field[1]);
+        return false;
+      }
+    }
+    elseif (!($field[0] & 4))
+    {
+      # clear is not allowed
+      $this->log->warnInput(__FUNCTION__, $name, $op);
+      return false;
+    }
+    # skip equal
+    if ($value === $this->data[$name]) {
+      return false;
+    }
+    # callback skip
+    if ($hand && ($a = $hand($this, 'change', $name, $value)) && !$a[0])
+    {
+      # check reason specified
+      $this->log->warnInput(__FUNCTION__, $name, $op);
+      if ($info = $a[1] ?? '') {
+        return true;
+      }
+      return false;
+    }
+    # change and complete
+    $this->data[$name] = $value;
+    $this->log->infoInput(__FUNCTION__, $name, $op);
+    return true;
   }
   # }}}
   abstract function restruct(array &$spec):void;
