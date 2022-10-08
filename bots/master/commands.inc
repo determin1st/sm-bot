@@ -13,8 +13,10 @@
 # }}}
 '/start/bots' => # {{{
 [
-  'type'       => 'list',
-  'list.type'  => 'open',
+  'type'        => 'list',
+  'list.layout' => [
+    'func'      => 'open',
+  ],
   'list.open'  => 'bot',
   'list.order' => 'order',
   'data.scope' => 'bot',
@@ -100,36 +102,43 @@
 # }}}
 '/start/bots/create' => # {{{
 [
-  'type'     => 'form',
-  'datafile' => 1,
-  'markup'  => [],
-  'fields'  => [# bits: 1:required+2:persistent+4:nullable+8:hidden
-    'class' => ['select', 1, [
-      1
-    ]],
-    'token' => ['string', 1+8, [
-      46, \SM\BotConfig::EXP_TOKEN
-    ]],
+  'type' => 'form',
+  'fields' => [
+    'class' =>
+    [
+      'type'     => 'select',
+    ],
+    'token' =>
+    [
+      'type'     => 'string',
+      'hidden'   => true,
+      'maxSize'  => 46,
+      'regexp'   => \SM\BotConfig::EXP_TOKEN,
+    ],
   ],
-  'text'  => [
-    'en'  => [
+  'text' => [
+    'en' => [
       '@' => 'new bot',
       '#desc' => '
       To obtain <b>username</b> and <b>token</b> for a new bot,
-      navigate to @BotFather and follow instructions.
+      goto @BotFather and follow instructions.
       ',
-      '>token' => 'input a token from @BotFather or forward message about bot creation here',
+      '?token' => '
+      enter a token from @BotFather or
+      forward a message of bot creation
+      ',
       'in-use' => '
       identifier is already in use by @{{name}}
       ',
     ],
-    'en'  => [
+    'ru'  => [
       '@' => 'новый бот',
-      '#desc' => '
-      ',
       '.class' => 'класс',
       '.token' => 'токен',
-      '>token' => 'введите токен полученный в @BotFather или перешлите сюда сообщение о создании бота',
+      '?token' => '
+      введите токен полученный от @BotFather или
+      перешлите сюда сообщение о создании бота
+      ',
       '.id'    => 'идентификатор',
       '.name'  => 'имя',
       'in-use' => '

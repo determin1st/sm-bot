@@ -20,7 +20,7 @@ use function
   array_reverse,
   ### strings
   strpos,strrpos,strlen,trim,rtrim,uniqid,ucfirst,
-  str_repeat,str_replace,
+  str_repeat,str_replace,strtolower,
   lcfirst,strncmp,substr_count,preg_match,preg_match_all,
   hash,http_build_query,
   json_encode,json_decode,json_last_error,
@@ -1015,6 +1015,19 @@ class ArrayNode implements ArrayAccess, JsonSerializable # {{{
     foreach ($this->arr as &$v)
     {
       if ($v === $value) {
+        return $i;
+      }
+      $i++;
+    }
+    return -1;
+  }
+  # }}}
+  function indexOfArray(string $k, int|string $v): int # {{{
+  {
+    $i = 0;
+    foreach ($this->arr as &$a)
+    {
+      if ($a[$k] === $v) {
         return $i;
       }
       $i++;
@@ -7025,7 +7038,8 @@ class BotTxtMessage extends BotMessage # {{{
 # }}}
 # }}}
 ## components
-class BotImgItem extends BotItem # {{{
+# basic {{{
+class BotImgItem extends BotItem
 {
   const OPTION = [# {{{
     'img.variant' => 'title',
@@ -7344,13 +7358,313 @@ class BotImgItem extends BotItem # {{{
   }
   # }}}
 }
-# }}}
-class BotListItem extends BotImgItem # {{{
+class BotTxtItem extends BotItem
 {
   const OPTION = [# {{{
-    ## behaviour
+  ];
+  # }}}
+  function render(object $ctx): array # {{{
+  {
+    return [];
+  }
+  # }}}
+}
+# }}}
+# inputs {{{
+abstract class BotInput
+{
+  static function construct(# {{{
+    object $item, string $name, array $spec
+  ):self
+  {
+    static $T = '\\'.__NAMESPACE__.'\\BotInput';
+    # prepare
+    $type  = strtolower($spec['type']);
+    $class = $T.ucfirst($type);
+    $steps = $item['steps'] ?? [];
+    $step  = 0;
+    $index = 0;
+    # determine input step and index
+    for ($i = 0, $j = count($steps); $i < $j; ++$i)
+    {
+      foreach ($steps as $k)
+      {
+        if ($k === $name) {
+          break 2;
+        }
+        $index++;
+      }
+      $step++;
+    }
+    # construct
+    return new $class(
+      $item, $name, $type, $step, $index,
+      ($spec['required'] ?? true),
+      ($spec['hidden'] ?? false),
+      ($spec['default'] ?? null),
+      $spec
+    );
+  }
+  # }}}
+  function __construct(# {{{
+    public object $item,
+    public string $name,
+    public string $type,
+    public int    $step,
+    public int    $index,
+    public bool   $required,
+    public bool   $hidden,
+    public mixed  $default,
+    array  &$spec
+  ) {
+    $this->restruct($spec);
+  }
+  # }}}
+  function text(object $ctx): string # {{{
+  {
+    return $ctx->text['?'.$this->name]
+      ?: $ctx->text['?'.$this->type];
+  }
+  # }}}
+  function markup(object $ctx): array # {{{
+  {
+    return [];
+  }
+  # }}}
+  abstract function restruct(array &$spec): void;
+  # TODO {{{
+  function defaultValue(object $ctx): mixed # {{{
+  {
+    return null;
+  }
+  # }}}
+  function value(object $data): mixed # {{{
+  {
+    return null;
+  }
+  # }}}
+  function v(object $ctx): bool # {{{
+  {
+    # prepare
+    $bot    = $this->bot;
+    $fields = &$this->skel['fields'][$state[1]];
+    $name   = array_key($fields, $state[2]);
+    $field  = &$fields[$name];
+    $value  = $this->input;
+    $op     = $value ? '✱' : '·';
+    # try custom handler
+    if (($hand = $this->skel['handler']) &&
+        ($a = $hand($this, 'input', $name, $value)))
+    {
+      # accepted,
+      # report result
+      if (!$a[0]) {
+        $this->log->infoInput(__FUNCTION__, $name, "($op)");
+      }
+      else {
+        $this->log->warnInput(__FUNCTION__, $name, "($op)");
+      }
+      # set info and complete
+      $info = $a[1] ?? '';
+      return true;
+    }
+    # default handler
+    if ($value)
+    {
+      switch ($field[1]) {
+      case 'string':
+        # {{{
+        # get text
+        if (($value = $value->text ?? null) === null) {
+          return false;
+        }
+        # validate size
+        if (isset($field[2]) && $field[2] && strlen($value) > $field[2])
+        {
+          # hidden data is considered fragile, so,
+          # instead of cutting, discard it
+          if ($field[0] & 8)
+          {
+            unset($this->data[$name]);
+            $info = $bot->text['oversized'];
+            return true;
+          }
+          # cut to maximal allowed size
+          $value = substr($value, 0, $field[2]);
+          $info  = $bot->text['oversized'];
+        }
+        # validate syntax
+        if (isset($field[3]) && !preg_match($field[3], $value))
+        {
+          # discard fragile/hidden content
+          if ($field[0] & 8) {
+            unset($this->data[$name]);
+          }
+          $info = $bot->text['bad-data'];
+          return true;
+        }
+        # }}}
+        break;
+      case 'int':
+        # {{{
+        # integer[-2147483648..2147483648] or long[0..4294967295]
+        # get text
+        if (($value = $value->text ?? null) === null) {
+          return false;
+        }
+        # extract sign and positive value
+        $a = ($value[0] === '-');
+        $a && ($value = substr($value, 1));
+        # check length and digits
+        if (!($b = strlen($value)) || $b > 10 || !ctype_digit($value))
+        {
+          $info = $bot->text['bad-data'];
+          return true;
+        }
+        # cast to integer
+        $value = intval($value);
+        $a && ($value = -$value);
+        # check minimum and maximum
+        if (isset($field[2]) && $value < $field[2])
+        {
+          $info = $bot->tp->render($bot->text['min-value'], [
+            'x' => $field[2]
+          ]);
+          return true;
+        }
+        elseif (isset($field[3]) && $value > $field[3])
+        {
+          $info = $bot->tp->render($bot->text['max-value'], [
+            'x' => $field[3]
+          ]);
+          return true;
+        }
+        # }}}
+        break;
+      default:
+        $this->log->errorInput(__FUNCTION__, $name, 'unknown type: '.$field[1]);
+        return false;
+      }
+    }
+    elseif (!($field[0] & 4))
+    {
+      # clear is not allowed
+      $this->log->warnInput(__FUNCTION__, $name, $op);
+      return false;
+    }
+    # skip equal
+    if ($value === $this->data[$name]) {
+      return false;
+    }
+    # callback skip
+    if ($hand && ($a = $hand($this, 'change', $name, $value)) && !$a[0])
+    {
+      # check reason specified
+      $this->log->warnInput(__FUNCTION__, $name, $op);
+      if ($info = $a[1] ?? '') {
+        return true;
+      }
+      return false;
+    }
+    # change and complete
+    $this->data[$name] = $value;
+    $this->log->infoInput(__FUNCTION__, $name, $op);
+    return true;
+  }
+  # }}}
+  # }}}
+}
+class BotInputSelect extends BotInput
+{
+  # {{{
+  public $layout = [
+    'func'  => 'select',# list action
+    'cols'  => 3,# columns
+    'rows'  => 3,# rows
+    'flexy' => true,# shrink rows
+    'cycle' => false,# page cycle (first<=>last)
+    'max'   => 1,# selected max, 0=unlimited
+    'min'   => 0,# selected min
+  ];
+  public $items,$state;
+  # }}}
+  function restruct(array &$spec): void # {{{
+  {
+    # set custom layout
+    foreach (($spec['layout'] ?? []) as $b => $c)
+    {
+      if (isset($this->layout[$b])) {
+        $this->layout[$b] = $c;
+      }
+    }
+  }
+  # }}}
+  function markup(object $ctx): array # {{{
+  {
+    # prepare
+    $item = $ctx->item;
+    $mkup = [];
+    if (($size = count($data)) === 0) {
+      return $mkup;
+    }
+    $func = $layout['func'];
+    $cap  = $ctx->caps[$this->name.'.'.$layout['func']];
+    $rows = $layout['rows'];
+    $cols = $layout['cols'];
+    $flex = $layout['flexy'];
+    # iterate
+    for ($i = 0, $a = 0; $a < $rows; ++$a)
+    {
+      # create row
+      $mkup[$a] = [];
+      for ($b = 0; $b < $cols; ++$b, ++$i)
+      {
+        # create callback button
+        if ($i < $size)
+        {
+          $c = $cap
+            ? $ctx->text->render($data[$i], $cap)
+            : $data[$i]['name'];
+          $d = BotItemMarkupBtn::op(
+            $item, $c, $func, $data[$i]['id']
+          );
+        }
+        else {
+          $d = BotItemMarkupBtn::nop($item);
+        }
+        $mkup[$a][$b] = $d;
+      }
+      # check flexy and no more items
+      if ($flex && $i >= $size) {
+        break;
+      }
+    }
+    return $mkup;
+  }
+  # }}}
+}
+class BotInputString extends BotInput
+{
+  function restruct(array &$spec): void # {{{
+  {
+  }
+  # }}}
+}
+# }}}
+# list {{{
+class BotListItem extends BotImgItem
+{
+  const OPTION = [# {{{
     'type.enter'  => true,
-    'list.type'   => 'select',# default action
+    'list.layout' => [
+      'func'  => 'select',# list action
+      'cols'  => 1,# columns
+      'rows'  => 6,# rows
+      'flexy' => true,# shrink rows
+      'cycle' => false,# page cycle (first<=>last)
+    ],
+    'list.order'  => '',# order tag is a data key
+    'list.desc'   => false,# order direction
     'list.select' => [
       'key'   => 'selected',
       'data'  => true,# false=>config
@@ -7358,36 +7672,33 @@ class BotListItem extends BotImgItem # {{{
       'force' => 1,# deselect 0=no 1=first 2=last
       'min'   => 0,# selected min
     ],
-    'list.open'   => '',# child to open
-    'list.cycle'  => false,# cycle movement (first<=>last)
-    ## layout
-    'list.cols'  => 1,
-    'list.rows'  => 6,
-    'list.flexy' => true,# shrink rows
-    ## data sorting tag and direction
-    'list.order' => '',# no sorting when empty
-    'list.desc'  => false,
+    'list.open' => '',# child to open
     ###
-    'markup'  => [
-      'empty' => [['!up']],
-      'head'  => [],
-      'foot'  => [['!prev','!next'],['!up']],
+    'markup' => [
+      'head' => [],
+      'foot' => [['!prev','!next'],['!up']],
     ],
     'markup.flags' => [
+      'empty' => [
+        'prev'=>0,'next'=>0,
+        'back'=>0,'forward'=>0,
+        'first'=>0,'last'=>0,
+      ],
       'single-page' => [
         'prev'=>-1,'next'=>-1,
         'back'=>-1,'forward'=>-1,
         'first'=>0,'last'=>0,
       ],
+      'first-page' => [
+        'first'=>0
+      ],
+      'last-page' => [
+        'last'=>0
+      ],
     ],
   ];
   # }}}
   # hlp {{{
-  static function pageSize(object $o): int # {{{
-  {
-    return $o['list.cols'] * $o['list.rows'];
-  }
-  # }}}
   static function pageCount(# {{{
     object $data, int $pageSize
   ):int
@@ -7405,7 +7716,8 @@ class BotListItem extends BotImgItem # {{{
       $ctx['page'] * $pageSize, $pageSize
     );
     # add specific props
-    if ($ctx->opts['list.type'] === 'select')
+    $o = $ctx->opts['list.layout'];
+    if ($o['func'] === 'select')
     {
       $o = $ctx->item['list.select'];
       $k = $o['key'];
@@ -7419,19 +7731,22 @@ class BotListItem extends BotImgItem # {{{
     return $list;
   }
   # }}}
-  static function &pageMarkup(# {{{
-    object $ctx, array &$data
-  ):array
+  static function &pageMarkup(object $ctx): array # {{{
   {
     # prepare
-    $item = $ctx->item;
-    $opts = $ctx->opts;
-    $size = count($data);
-    $rows = $opts['list.rows'];
-    $cols = $opts['list.cols'];
-    $cap  = $ctx->caps['list.'.$opts['list.type']];
-    $flex = $opts['list.flexy'];
     $mkup = [];
+    $data = &self::pageItems(
+      $ctx, $ctx->vars['pageSize']
+    );
+    if (($size = count($data)) === 0) {
+      return $mkup;
+    }
+    $item = $ctx->item;
+    $opts = $ctx->opts['list.layout'];
+    $cap  = $ctx->caps['list.'.$opts['func']];
+    $rows = $opts['rows'];
+    $cols = $opts['cols'];
+    $flex = $opts['flexy'];
     # iterate
     for ($i = 0, $a = 0; $a < $rows; ++$a)
     {
@@ -7520,16 +7835,16 @@ class BotListItem extends BotImgItem # {{{
     return true;
   }
   # }}}
-  static function dataSort(# {{{
-    array &$data, string $k, bool $desc
+  static function sort(# {{{
+    array &$data, string $key, bool $desc
   ):bool
   {
-    return is_string($data[0][$k])
-      ? self::dataSortStr($data, $k, $desc)
-      : self::dataSortNum($data, $k, $desc);
+    return is_string($data[0][$key])
+      ? self::sortStr($data, $key, $desc)
+      : self::sortNum($data, $key, $desc);
   }
   # }}}
-  static function dataSortNum(# {{{
+  static function sortNum(# {{{
     array &$data, string $k, bool $desc
   ):object
   {
@@ -7546,7 +7861,7 @@ class BotListItem extends BotImgItem # {{{
     });
   }
   # }}}
-  static function dataSortStr(# {{{
+  static function sortStr(# {{{
     array &$data, string $k, bool $desc
   ):bool
   {
@@ -7565,30 +7880,17 @@ class BotListItem extends BotImgItem # {{{
   # }}}
   static function markup(object $ctx): object # {{{
   {
-    # prepare
-    $item = $ctx->item;
-    $mkup = $item['markup'];
-    $vars = &$ctx->vars;
-    # check empty
-    if ($vars['count'] === 0) {
-      return $ctx->markup($mkup['empty']);
-    }
-    # render page markup
-    $x = &self::pageMarkup(
-      $ctx, self::pageItems($ctx, $vars['pageSize'])
-    );
-    # compose
+    $m = $ctx->item['markup'];
     $a = [];
-    foreach ($mkup['head'] as &$b) {
+    foreach ($m['head'] as &$b) {
       $a[] = $b;
     }
-    foreach ($x as &$b) {
+    foreach (self::pageMarkup($ctx) as &$b) {
       $a[] = $b;
     }
-    foreach ($mkup['foot'] as &$b) {
+    foreach ($m['foot'] as &$b) {
       $a[] = $b;
     }
-    # complete
     return $ctx->markup(
       $a, self::markupFlags($ctx)
     );
@@ -7597,12 +7899,22 @@ class BotListItem extends BotImgItem # {{{
   static function markupFlags(object $ctx): array # {{{
   {
     static $k = 'markup.flags';
-    if ($ctx->vars['pageCount'] < 2) {
-      return $ctx->item[$k]['single-page'];
+    $vars = $ctx->vars;
+    $item = $ctx->item;
+    if ($vars['count'] === 0) {
+      return $item[$k]['empty'];
+    }
+    if ($vars['pageCount'] < 2) {
+      return $item[$k]['single-page'];
+    }
+    if ($ctx['page'] === 0) {
+      return $item[$k]['first-page'];
+    }
+    if ($ctx['page'] === $vars['pageCount'] - 1) {
+      return $item[$k]['last-page'];
     }
     return [];
   }
-  # }}}
   # }}}
   static function &vars(object $ctx): array # {{{
   {
@@ -7612,7 +7924,8 @@ class BotListItem extends BotImgItem # {{{
     }
     # initialize temporary variables
     $data  = $ctx->load()[0];
-    $size  = self::pageSize($ctx->opts);
+    $opts  = $ctx->opts['list.layout'];
+    $size  = $opts['cols'] * $opts['rows'];
     $count = self::pageCount($data, $size);
     $last  = $count - 1;
     $vars  = [
@@ -7621,119 +7934,177 @@ class BotListItem extends BotImgItem # {{{
       'count'     => $data->count,
     ];
     # check and correct current page index
-    if ($ctx['page'] >= $count) {
-      $ctx['page'] = $pageLast;
+    if ($ctx['page'] > $last) {
+      $ctx['page'] = $last;
     }
     # complete
     return $vars;
   }
   # }}}
-  function operate(object $ctx, object $q): bool # {{{
+  # }}}
+  # operations {{{
+  function opEnter(object $ctx, object $q): bool # {{{
   {
-    # handle event
-    switch ($q->func) {
-    case '.enter': # {{{
-      # initialize
-      if ($q->args) {
-        $ctx['page'] = 0;
-      }
-      return true;
-      # }}}
-    case '.data': # {{{
-      # check number of items
-      if (count($q->res) < 2) {
-        return true;
-      }
-      # check sorting enabled
-      if (!($tag = $this['list.order'])) {
-        return true;
-      }
-      # sort
-      self::dataSort(
-        $data->arr, $tag, $this['list.desc']
-      );
-      return true;
-      # }}}
+    if ($q->args) {
+      $ctx['page'] = 0;
     }
-    # prepare
+    return true;
+  }
+  # }}}
+  function opData(object $ctx, object $q): bool # {{{
+  {
+    # check sorting is needed and enabled
+    if (count($q->res) < 2 ||
+        !($tag = $this['list.order']))
+    {
+      return true;
+    }
+    # order data
+    $data = $ctx->load()[0];
+    return self::sort(
+      $data->arr, $tag, $this['list.desc']
+    );
+  }
+  # }}}
+  function opFirst(object $ctx): bool # {{{
+  {
+    if ($ctx['page'] === 0) {
+      return false;
+    }
+    $ctx['page'] = 0;
+    return true;
+  }
+  # }}}
+  function opLast(object $ctx): bool # {{{
+  {
     $vars = &self::vars($ctx);
+    $last = $vars['pageCount'] - 1;
+    if ($ctx['page'] === $last) {
+      return false;
+    }
+    $ctx['page'] = $last;
+    return true;
+  }
+  # }}}
+  function opBack(object $ctx): bool # {{{
+  {
+    # prepare
+    $a = &self::vars($ctx);
+    $n = $a['pageCount'] - 1;
+    # make sure current number is correct
+    if (($i = $ctx['page']) > $n)
+    {
+      $ctx['page'] = $n;
+      return true;
+    }
+    # decrement page index
+    if ($i > 0)
+    {
+      $ctx['page'] = $i - 1;
+      return true;
+    }
+    # at the first page,
+    # check whether cycling is possible
+    if ($n && $ctx->opts['list.layout']['cycle'])
+    {
+      $ctx['page'] = $n;
+      return true;
+    }
+    # skip
+    return false;
+  }
+  # }}}
+  function opForward(object $ctx): bool # {{{
+  {
+    # prepare
+    $a = &self::vars($ctx);
+    $n = $a['pageCount'] - 1;
+    # make sure current number is correct
+    if (($i = $ctx['page']) > $n)
+    {
+      $ctx['page'] = $n;
+      return true;
+    }
+    # increment page index
+    if ($i < $n)
+    {
+      $ctx['page'] = $i + 1;
+      return true;
+    }
+    # at the last page,
+    # check whether cycling is possible
+    if ($n && $ctx->opts['list.layout']['cycle'])
+    {
+      $ctx['page'] = 0;
+      return true;
+    }
+    # skip
+    return false;
+  }
+  # }}}
+  function opId(object $ctx, object $q): bool # {{{
+  {
+    # prepare
     $data = $ctx->data[0];
     $opts = $ctx->opts;
-    $page = $ctx['page'];
-    $pageLast = $vars['pageCount'] - 1;
-    # handle operation
+    # locate item index
+    if (($id = $q->args) === '') {
+      throw ErrorEx::fail($q->func, 'no argument');
+    }
+    if (($i = $data->indexOfArray('id', $id)) === -1)
+    {
+      # message may be outdated,
+      # report issue and refresh
+      $ctx->log->warn($q->func,
+        'list item[id='.$id.'] not found'
+      );
+      return true;
+    }
+    # operate
+    switch ($opts['list.layout']['func']) {
+    case 'select':
+      self::dataSelect($ctx, $id);
+      return true;
+    case 'open':
+      # check child exists
+      if (!($k = $opts['list.open']) ||
+          !isset($this->children[$k]))
+      {
+        return true;
+      }
+      # redirect
+      $q->res  = $this->children[$k];
+      $q->args = $id;
+      return true;
+    }
+    # custom
+    return $this($ctx, $q($i));
+  }
+  # }}}
+  # }}}
+  function test(object $ctx, object $q): bool # {{{
+  {
+  }
+  # }}}
+  function operate(object $ctx, object $q): bool # {{{
+  {
     switch ($q->func) {
-    case 'refresh':
-      break;
+    case '.enter':
+      return $this->opEnter($ctx, $q);
+    case '.data':
+      return $this->opData($ctx, $q);
     case 'first':
-      $ctx['page'] = 0;
-      break;
+      return $this->opFirst($ctx);
     case 'last':
-      $ctx['page'] = $pageLast;
-      break;
+      return $this->opLast($ctx);
     case 'prev':
     case 'back':
-      # {{{
-      $ctx['page'] = ($page > 0)
-        ? $page - 1
-        : ($opts['list.cycle']
-          ? $pageLast
-          : 0);
-      # }}}
-      break;
+      return $this->opBack($ctx);
     case 'next':
     case 'forward':
-      # {{{
-      $ctx['page'] = ($page < $pageLast)
-        ? $page + 1
-        : ($opts['list.cycle']
-          ? 0
-          : $pageLast);
-      # }}}
-      break;
+      return $this->opForward($ctx);
     case 'id':
-      # {{{
-      # locate item index
-      if (($id = $q->args) === '') {
-        throw ErrorEx::fail($q->func, 'no argument');
-      }
-      $i = $data->each(function(&$v) use (&$id) {
-        return ($v['id'] !== $id);
-      });
-      if ($i === -1)
-      {
-        # message may be outdated,
-        # report issue and refresh
-        $ctx->log->warn($q->func,
-          'list item[id='.$id.'] not found'
-        );
-        break;
-      }
-      # execute
-      switch ($k = $opts['list.type']) {
-      case 'select':
-        self::dataSelect($ctx, $id);
-        break;
-      case 'open':
-        # check child exists
-        if (!($k = $opts['list.open']) ||
-            !isset($this->children[$k]))
-        {
-          break;
-        }
-        # redirect
-        $q->res  = $this->children[$k];
-        $q->args = $id;
-        break;
-      default:
-        # custom
-        if (!$this($ctx, $q($i))) {
-          throw ErrorEx::skip();
-        }
-        break;
-      }
-      # }}}
-      break;
+      return $this->opId($ctx, $q);
     }
     return $this($ctx, $q);
   }
@@ -7761,7 +8132,8 @@ class BotListItem extends BotImgItem # {{{
   # }}}
 }
 # }}}
-class BotFormItem extends BotImgItem # {{{
+ # form {{{
+class BotFormItem extends BotImgItem
 {
   const OPTION = [# {{{
     'type.enter'    => true,
@@ -7821,184 +8193,25 @@ class BotFormItem extends BotImgItem # {{{
     'colsFlex' => false,
     ##
     'markup'    => [
-      'failure' => [['!back','!retry'],['!up']],
-      'input'   => [['!clear'],['!back','!ok','!forward'],['!up']],
-      'confirm' => [['!back','!submit'],['!up']],
-      'success' => [['!repeat','!change'],['!up']],
+      'head'    => [],
+      'failure' => [['!back','!retry']],
+      'miss'    => [['!back']],
+      'input'   => [['!back','!forward']],
+      'confirm' => [['!back','!submit']],
+      'done'    => [['!repeat','!change']],
+      'foot'    => [['!up']],
+    ],
+    'markup.flags' => [
     ],
   ];
   const STATUS = [
-    -3 => 'progress',
+    -3 => 'in progress',
     -2 => 'failure',
-    -1 => 'miss',
+    -1 => 'missing required',
      0 => 'input',
      1 => 'confirmation',
      2 => 'complete',
   ];
-  # }}}
-  # TODO: hlp {{{
-  function renderBob(# {{{
-    array  &$cfg,
-    string $fieldName,
-    array  &$field,
-    ?array &$fieldOpts
-  ):?object
-  {
-    # prepare
-    $bot  = $this->bot;
-    $type = $field[1];
-    $hand = $this->skel['handler'];
-    $mkup = '';
-    # compose text
-    $text = $this->text[">$fieldName"] ?: $bot->text[">$type"];
-    $hand && $hand($this, 'hint', $text, $fieldName);
-    # compose markup
-    if ($type === 'select')
-    {
-      ($fieldOpts === null) &&
-      ($fieldOpts = $this->fieldGetOptions($field, $fieldName));
-      if ($fieldOpts === null) {
-        return null;
-      }
-      if ($a = $this->fieldGetOptionsMkup($cfg, $fieldOpts, $fieldName)) {
-        $mkup = json_encode(['inline_keyboard'=>$a], JSON_UNESCAPED_UNICODE);
-      }
-    }
-    # create message
-    $mkup = [
-      'text'   => $text,
-      'markup' => $mkup,
-    ];
-    return BotTxtMessage::construct($bot, $mkup);
-  }
-  # }}}
-  ###
-  function &fieldsGet(# {{{
-    array &$cfg,
-    int   $step
-  ):array
-  {
-    # prepare
-    $list   = [];
-    $fields = &$this->skel['fields'][$step];
-    $count  = count($fields);
-    # iterate
-    reset($fields);
-    for ($i = 0; $i < $count; ++$i, next($fields))
-    {
-      # get field
-      $name  = key($fields);
-      $field = &$fields[$name];
-      # get value
-      $value = (($field[0] & 8) && isset($this->data[$name]))
-        ? $cfg['hiddenValue']
-        : null;# default value
-      # accumulate
-      $list[] = $this->newFieldDescriptor($name, $value, $field[0]);
-    }
-    return $list;
-  }
-  # }}}
-  function &fieldsGetComplete(# {{{
-    array &$cfg,
-    array &$state
-  ):array
-  {
-    # prepare
-    $list = [];
-    $step = ($state[0] === 2)
-      ? $state[1] + 1
-      : $state[1];
-    # check
-    if (!$step) {
-      return $list;
-    }
-    # collect
-    if ($state[0] === 2 && $cfg['isPersistent'])
-    {
-      # only persistent fields
-      for ($i = 0; $i < $step; ++$i)
-      {
-        foreach ($this->fieldsGet($cfg, $i) as &$a) {
-          ($a['type'] & 2) && ($list[] = $a);
-        }
-      }
-    }
-    else
-    {
-      # all
-      for ($i = 0; $i < $step; ++$i) {
-        $list = array_merge($list, $this->fieldsGet($cfg, $i));
-      }
-    }
-    return $list;
-  }
-  # }}}
-  function &fieldsGetCurrent(# {{{
-    array &$cfg,
-    array &$state
-  ):?array
-  {
-    static $NULL = null;
-    # check
-    if ($state[0] === 2) {
-      return $NULL;
-    }
-    # get fields of the step
-    $list = &$this->fieldsGet($cfg, $state[1]);
-    # set flags
-    switch ($state[0]) {
-    case 0:
-      # current input
-      foreach ($list as $a => &$b) {
-        $b['flag'] = $a === $state[2];
-      }
-      break;
-    case -1:
-      # missing required
-      foreach ($list as $a => &$b) {
-        $b['flag'] = (($b['type'] & 1) && ($b['value'] === ''));
-      }
-      break;
-    }
-    # callback
-    if ($hand = $this->skel['handler']) {
-      $hand($this, 'fields', $list, $state);
-    }
-    # complete
-    return $list;
-  }
-  # }}}
-  function newFieldDescriptor(# {{{
-    string  $id,
-    ?string $value = null,
-    int     $type  = 0
-  ):array
-  {
-    if ($value === null)
-    {
-      if (isset($this->data[$id]))
-      {
-        if (!is_string($value = $this->data[$id]))
-        {
-          $value = is_array($value)
-            ? implode(',', $value)
-            : "$value";
-        }
-      }
-      else {
-        $value = '';
-      }
-    }
-    return [
-      'id'    => $id,
-      'name'  => ($this->text[".$id"] ?: $id),
-      'value' => $value,
-      'type'  => $type,# bitmask
-      'flag'  => false,
-    ];
-  }
-  # }}}
   # }}}
   # hlp {{{
   function restruct(): void # {{{
@@ -8019,14 +8232,13 @@ class BotFormItem extends BotImgItem # {{{
         '['.$a.'] is not set'
       );
     }
-    foreach ($spec[$a] as $name => &$field)
-    {
-      $field = BotFormField::construct(
-        $this, $name, $field
-      );
-    }
+    # initialize input steps
     if (!isset($spec[$b = 'steps'])) {
       $spec[$b] = [array_keys($spec[$a])];
+    }
+    # create input fields
+    foreach ($spec[$a] as $name => &$field) {
+      $field = BotInput::construct($this, $name, $field);
     }
   }
   # }}}
@@ -8152,6 +8364,31 @@ class BotFormItem extends BotImgItem # {{{
     }
   }
   # }}}
+  static function &vars(object $ctx): array # {{{
+  {
+    # check already done
+    if ($vars = &$ctx->vars) {
+      return $vars;
+    }
+    # initialize temporary variables
+    # determine field vars
+    $fields         = &$this->skel['fields'][$state[1]];
+    $fieldMissCount = $this->fieldMissCount($fields);
+    $fieldName      = array_key($fields, $state[2]);
+    $field          = &$fields[$fieldName];
+    $fieldIsLast    = $state[2] === count($fields) - 1;
+    $vars = [
+      'description' => $text,
+      'complete' => $this->fieldsGetComplete($cfg, $state),
+      'current'  => $this->fieldsGetCurrent($cfg, $state),
+      'status'   => $state[0],
+      'progress' => ($this['progress'] ?? 0),
+      'info'     => $info,
+    ];
+    # complete
+    return $vars;
+  }
+  # }}}
   # }}}
   # operations {{{
   function opEnter(object $ctx): bool # {{{
@@ -8175,6 +8412,23 @@ class BotFormItem extends BotImgItem # {{{
         ? $this->restore($ctx)
         : $this->opReset($ctx);
     }
+    return true;
+  }
+  # }}}
+  function opInput(object $ctx): bool # {{{
+  {
+    static $Q = new BotItemQuery('input');
+    # check current status
+    if (($s = $this->state($ctx))[0]) {
+      return false;
+    }
+    # get field value
+    $o = $this->field($s[1], $s[2]);
+    if (($v = $o->value($ctx->input)) === null) {
+      return false;
+    }
+    # store and complete
+    $ctx->conf[$o->name] = $v;
     return true;
   }
   # }}}
@@ -8418,23 +8672,6 @@ class BotFormItem extends BotImgItem # {{{
     return true;
   }
   # }}}
-  function opInput(object $ctx): bool # {{{
-  {
-    static $Q = new BotItemQuery('input');
-    # check current status
-    if (($s = $this->state($ctx))[0]) {
-      return false;
-    }
-    # get field value
-    $o = $this->field($s[1], $s[2]);
-    if (($v = $o->value($ctx->input)) === null) {
-      return false;
-    }
-    # store and complete
-    $ctx->conf[$o->name] = $v;
-    return false;
-  }
-  # }}}
   # }}}
   function operate(object $ctx, object $q): bool # {{{
   {
@@ -8465,32 +8702,6 @@ class BotFormItem extends BotImgItem # {{{
   # }}}
   function render(object $ctx): array # {{{
   {
-    # sync {{{
-    $a = '';
-    if ($state[0] !== ($c = $this[$b = 'status']))
-    {
-      $a .= self::STATUS[$state[0]].'→'.self::STATUS[$c].' ';
-      $state[0] = $c;
-    }
-    if ($state[1] !== ($c = $this[$b = 'step']))
-    {
-      $a .= $b.':'.$state[1].'→'.$c.' ';
-      $state[1] = $c;
-    }
-    if ($state[2] !== ($c = $this[$b = 'field']))
-    {
-      $a .= $b.':'.$state[2].'→'.$c.' ';
-      $state[2] = $c;
-    }
-    # report change
-    $a && $this->log->info($func, $a);
-    # determine field vars
-    $fields         = &$this->skel['fields'][$state[1]];
-    $fieldMissCount = $this->fieldMissCount($fields);
-    $fieldName      = array_key($fields, $state[2]);
-    $field          = &$fields[$fieldName];
-    $fieldIsLast    = $state[2] === count($fields) - 1;
-    # }}}
     # compose markup {{{
     if ($state[0])
     {
@@ -8604,408 +8815,22 @@ class BotFormItem extends BotImgItem # {{{
     }
     return $this;
     # }}}
+    # render vars
+    $vars = &self::vars($ctx);
+    # render message
+    $skel = &self::renderImg($ctx);
+    if (!isset($skel[$k = 'text'])) {
+      $skel[$k] = $ctx->text->render($vars);
+    }
+    if (!isset($skel[$k = 'markup'])) {
+      $skel[$k] = self::markup($ctx);
+    }
+    return [
+      BotImgMessage::construct($this->bot, $skel)
+    ];
   }
   # }}}
-}
-# }}}
-abstract class BotFormField # {{{
-{
-  final static function construct(# {{{
-    object $item, string $name, array $spec
-  ):self
-  {
-    static $T = '\\'.__NAMESPACE__.'\\BotFormField';
-    $type  = $T.ucfirst($spec[0]);
-    $flag  = $spec[1];
-    $step  = 0;
-    $index = 0;
-    $steps = $item['steps'];
-    for ($i = 0, $j = count($steps); $i < $j; ++$i)
-    {
-      foreach ($steps as $k)
-      {
-        if ($k === $name) {
-          break 2;
-        }
-        $index++;
-      }
-      $step++;
-    }
-    return new $type(
-      $item, $name, $step, $index,
-      (bool)($flag & 1),
-      (bool)($flag & 2),
-      (bool)($flag & 4),
-      (bool)($flag & 8),
-      $spec[2]
-    );
-  }
-  # }}}
-  final function __construct(# {{{
-    public object $item,
-    public string $name,
-    public int    $step,
-    public int    $index,
-    public bool   $required,
-    public bool   $persistent,
-    public bool   $nullable,
-    public bool   $hidden,
-    array &$spec
-  ) {
-    $this->restruct($spec);
-  }
-  # }}}
-  final function defaultValue(object $ctx): mixed # {{{
-  {
-    return null;
-  }
-  # }}}
-  function value(object $data): mixed # {{{
-  {
-    return null;
-  }
-  # }}}
-  function v(object $ctx): bool # {{{
-  {
-    # prepare
-    $bot    = $this->bot;
-    $fields = &$this->skel['fields'][$state[1]];
-    $name   = array_key($fields, $state[2]);
-    $field  = &$fields[$name];
-    $value  = $this->input;
-    $op     = $value ? '✱' : '·';
-    # try custom handler
-    if (($hand = $this->skel['handler']) &&
-        ($a = $hand($this, 'input', $name, $value)))
-    {
-      # accepted,
-      # report result
-      if (!$a[0]) {
-        $this->log->infoInput(__FUNCTION__, $name, "($op)");
-      }
-      else {
-        $this->log->warnInput(__FUNCTION__, $name, "($op)");
-      }
-      # set info and complete
-      $info = $a[1] ?? '';
-      return true;
-    }
-    # default handler
-    if ($value)
-    {
-      switch ($field[1]) {
-      case 'string':
-        # {{{
-        # get text
-        if (($value = $value->text ?? null) === null) {
-          return false;
-        }
-        # validate size
-        if (isset($field[2]) && $field[2] && strlen($value) > $field[2])
-        {
-          # hidden data is considered fragile, so,
-          # instead of cutting, discard it
-          if ($field[0] & 8)
-          {
-            unset($this->data[$name]);
-            $info = $bot->text['oversized'];
-            return true;
-          }
-          # cut to maximal allowed size
-          $value = substr($value, 0, $field[2]);
-          $info  = $bot->text['oversized'];
-        }
-        # validate syntax
-        if (isset($field[3]) && !preg_match($field[3], $value))
-        {
-          # discard fragile/hidden content
-          if ($field[0] & 8) {
-            unset($this->data[$name]);
-          }
-          $info = $bot->text['bad-data'];
-          return true;
-        }
-        # }}}
-        break;
-      case 'int':
-        # {{{
-        # integer[-2147483648..2147483648] or long[0..4294967295]
-        # get text
-        if (($value = $value->text ?? null) === null) {
-          return false;
-        }
-        # extract sign and positive value
-        $a = ($value[0] === '-');
-        $a && ($value = substr($value, 1));
-        # check length and digits
-        if (!($b = strlen($value)) || $b > 10 || !ctype_digit($value))
-        {
-          $info = $bot->text['bad-data'];
-          return true;
-        }
-        # cast to integer
-        $value = intval($value);
-        $a && ($value = -$value);
-        # check minimum and maximum
-        if (isset($field[2]) && $value < $field[2])
-        {
-          $info = $bot->tp->render($bot->text['min-value'], [
-            'x' => $field[2]
-          ]);
-          return true;
-        }
-        elseif (isset($field[3]) && $value > $field[3])
-        {
-          $info = $bot->tp->render($bot->text['max-value'], [
-            'x' => $field[3]
-          ]);
-          return true;
-        }
-        # }}}
-        break;
-      default:
-        $this->log->errorInput(__FUNCTION__, $name, 'unknown type: '.$field[1]);
-        return false;
-      }
-    }
-    elseif (!($field[0] & 4))
-    {
-      # clear is not allowed
-      $this->log->warnInput(__FUNCTION__, $name, $op);
-      return false;
-    }
-    # skip equal
-    if ($value === $this->data[$name]) {
-      return false;
-    }
-    # callback skip
-    if ($hand && ($a = $hand($this, 'change', $name, $value)) && !$a[0])
-    {
-      # check reason specified
-      $this->log->warnInput(__FUNCTION__, $name, $op);
-      if ($info = $a[1] ?? '') {
-        return true;
-      }
-      return false;
-    }
-    # change and complete
-    $this->data[$name] = $value;
-    $this->log->infoInput(__FUNCTION__, $name, $op);
-    return true;
-  }
-  # }}}
-  abstract function restruct(array &$spec):void;
-}
-class BotFormFieldString extends BotFormField
-{
-  function restruct(array &$spec): void # {{{
-  {
-  }
-  # }}}
-}
-class BotFormFieldSelect extends BotFormField
-{
-  function restruct(array &$spec): void # {{{
-  {
-  }
-  # }}}
-  function fieldSetOption(# {{{
-    array   &$cfg,
-    array   &$state,
-    string  &$info,
-    ?array  &$opts,
-    string  $key
-  ):bool
-  {
-    # check current mode/status
-    if ($state[0] !== 0)
-    {
-      $this->log->warn(__FUNCTION__, 'incorrect state '.implode(':', $state));
-      return false;
-    }
-    # prepare
-    $fields = &$this->skel['fields'][$state[1]];
-    $name   = array_key($fields, $state[2]);
-    $field  = &$fields[$name];
-    $max    = $field[2] ?? 1;
-    $data   = $this->data;
-    # check field type
-    if ($field[1] !== 'select')
-    {
-      $this->log->warn(__FUNCTION__, $name, 'incorrect field type: '.$field[1]);
-      return false;
-    }
-    # determine options
-    if (!$opts && !($opts = $this->fieldGetOptions($field, $name)))
-    {
-      $this->log->warn(__FUNCTION__, $name, 'failed to get options');
-      return false;
-    }
-    # check key
-    if (!strlen($key) || !isset($opts[$key]))
-    {
-      $this->log->warn(__FUNCTION__, $name, "incorrect option [$key]");
-      return false;
-    }
-    # operate
-    # select first
-    if (!isset($data[$name]))
-    {
-      $data[$name] = ($max > 1)
-        ? [$key] # multiple
-        : $key;  # single
-      $this->log->info(__FUNCTION__, $name, "(+)$key");
-      return true;
-    }
-    # select next
-    if ($max === 1)
-    {
-      # SINGLE-SELECT,
-      # replace
-      if ($key !== ($a = $data[$name]))
-      {
-        $data[$name] = $key;
-        $this->log->info(__FUNCTION__, $name, "$a(=)$key");
-        return true;
-      }
-      # de-select
-      if ($cfg['selectDeselect'])
-      {
-        unset($data[$name]);
-        $this->log->info(__FUNCTION__, $name, "(-)$key");
-        return true;
-      }
-      return false;
-    }
-    # MULTI-SELECT,
-    # get array reference
-    $opts = &$data->data[$name];
-    # de-select selected
-    if (($a = array_search($key, $opts, true)) !== false)
-    {
-      # de-select last remaining
-      if (count($opts) === 1)
-      {
-        if (!$cfg['selectDeselect']) {
-          return false;# not allowed
-        }
-        unset($data[$name]);
-        $this->log->info(__FUNCTION__, $name, "(-)$key");
-        return true;
-      }
-      # de-select
-      array_splice($opts, $a, 1);
-      $data->changed = true;
-      $this->log->info(__FUNCTION__, $name, "(-)$key");
-      return true;
-    }
-    # select and de-select (LIFO)
-    if (count($opts) >= $max)
-    {
-      $a = $opts[0];
-      array_splice($opts, 0, 1);
-      $opts[] = $key;
-      $data->changed = true;
-      $this->log->info(__FUNCTION__, $name, "$a(~)$key");
-      return true;
-    }
-    # select (LI)
-    $opts[] = $key;
-    $data->changed = true;
-    $this->log->info(__FUNCTION__, $name, "(+)$key");
-    return true;
-  }
-  # }}}
-  function &fieldGetOptions(# {{{
-    array   &$field,
-    string  $name
-  ):?array
-  {
-    static $NULL = null;
-    # get options,
-    # from field descriptor (keys are mapped to the item's text)
-    if (is_array($field[$a = count($field) - 1]))
-    {
-      $opts = [];
-      foreach ($field[$a] as $b) {
-        $opts[$b] = $this->text[".$name.$b"] ?: $b;
-      }
-      return $opts;
-    }
-    # from item's handler
-    if (($hand = $this->skel['handler']) &&
-        ($opts = $hand($this, 'options', $name)))
-    {
-      return $opts;
-    }
-    return $NULL;
-  }
-  # }}}
-  function &fieldGetOptionsMkup(# {{{
-    array   &$cfg,
-    array   &$opts,
-    string  $name,
-  ):array
-  {
-    # get selected keys
-    if (($keys = $this->data[$name]) !== null && !is_array($keys)) {
-      $keys = [$keys];
-    }
-    # prepare
-    $id    = $this->id;
-    $templ = $this->caps['select'];
-    $tp    = $this->bot->tp;
-    $cols  = $cfg['cols'];
-    $row   = [];
-    $mkup  = [];
-    # iterate
-    foreach ($opts as $a => $b)
-    {
-      # create inline button
-      $row[] = [
-        'callback_data' => "/$id!select $a",
-        'text' => $tp->render($templ, [
-          'v'  => ($keys && in_array($a, $keys, true)),
-          'x'  => $b,
-        ])
-      ];
-      # accumulate
-      if (--$cols <= 0)
-      {
-        $mkup[] = $row;
-        $row    = [];
-        $cols   = $cfg['cols'];
-      }
-    }
-    # add last row
-    if ($row)
-    {
-      # add placeholders when non-flexible
-      if (($a = count($row)) < ($cols = $cfg['cols']) &&
-          !$cfg['colsFlex'])
-      {
-        for ($a; $a < $cols; ++$a) {
-          $row[] = '!';
-        }
-      }
-      $mkup[] = $row;
-    }
-    # complete
-    return $mkup;
-  }
-  # }}}
-}
-# }}}
-class BotTxtItem extends BotItem # {{{
-{
-  const OPTION = [# {{{
-  ];
-  # }}}
-  function render(object $ctx): array # {{{
-  {
-    return [];
-  }
-  # }}}
+  ###
 }
 # }}}
 # TODO {{{
@@ -9015,12 +8840,12 @@ class BotTxtItem extends BotItem # {{{
 * feature: item fixation
 * architect: BotConfig/dirs (where to put dirs?)
 * architect: event debounce and throttle
-* feature: input filters
+* feature: filters
 * feature: WebHook
 * solve: form data separation, user changes its own data until completion
 * solve: old message callback action does ZAP? or.. REFRESH?!
 * perf: mustache parser text reference and prepare()
-* perf: api.actions pool of curl instances
+* perf: api.actions: pool of curl instances
 *
 * ᛣ 2021 - ᛉ 2023 - ...
 ***

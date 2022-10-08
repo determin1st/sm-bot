@@ -105,9 +105,10 @@
     'change'     => 'change',
     'start'      => 'start',
     'stop'       => 'stop',
-    '>string'    => '{:LINEPAD:}input a string',
-    '>int'       => '{:LINEPAD:}input an integer',
-    '>select'    => '{:LINEPAD:}select a value from the list',
+    ###
+    '?string'    => '{:LINEPAD:}enter a string',
+    '?int'       => '{:LINEPAD:}enter an integer',
+    '?select'    => '{:LINEPAD:}select a value from the list',
   ],
   # }}}
   'ru' => [# {{{
@@ -160,9 +161,10 @@
     'change'     => 'изменить',
     'start'      => 'запустить',
     'stop'       => 'остановить',
-    '>string'    => '{:LINEPAD:}введите строку',
-    '>int'       => '{:LINEPAD:}введите целое число',
-    '>select'    => '{:LINEPAD:}выберите значение из списка',
+    ###
+    '?string'    => '{:LINEPAD:}введите строку',
+    '?int'       => '{:LINEPAD:}введите целое число',
+    '?select'    => '{:LINEPAD:}выберите значение из списка',
   ],
   # }}}
 ];
