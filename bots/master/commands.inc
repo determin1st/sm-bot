@@ -14,13 +14,17 @@
 '/start/bots' => # {{{
 [
   'type'        => 'list',
+  'list.config' => [
+    'func'      => 'open',
+    'order'     => 'order',
+  ],
   'list.layout' => [
     'func'      => 'open',
   ],
   'list.open'  => 'bot',
   'list.order' => 'order',
-  'data.scope' => 'bot',
-  'data.fetch' => 5,
+  'data.scope'  => 'bot',
+  'data.fetch'  => 10,
   'markup' => [
     'head' => [['!create','!refresh']],
   ],
@@ -103,19 +107,21 @@
 '/start/bots/create' => # {{{
 [
   'type' => 'form',
-  'fields' => [
+  'fields' =>
+  [
     'class' =>
     [
-      'type'     => 'select',
+      'type'   => 'select',
     ],
     'token' =>
     [
-      'type'     => 'string',
-      'hidden'   => true,
-      'maxSize'  => 46,
-      'regexp'   => \SM\BotConfig::EXP_TOKEN,
+      'type'   => 'string',
+      'length' => 46,
+      'regexp' => \SM\BotConfig::EXP_TOKEN,
+      'hidden' => true,
     ],
   ],
+  'results' => ['class','id','name'],
   'text' => [
     'en' => [
       '@' => 'new bot',
@@ -146,6 +152,10 @@
       ',
     ],
   ],
+],
+# }}}
+'/ON' => # {{{
+[
 ],
 # }}}
 ];

@@ -1,7 +1,6 @@
 <?php declare(strict_types=1);
-# globals {{{
+# {{{
 namespace SM;
-# }}}
 function getBotList(object $bot): array # {{{
 {
   $list = [];
@@ -98,18 +97,18 @@ function dropCache(object $item, array &$data): bool # {{{
   return true;
 }
 # }}}
+# }}}
 return [
-'/start/bots' => function (object $q): bool # {{{
+'/start/bots' => function(object $q): ?object # {{{
 {
   switch ($q->func) {
   case '.data':
     $q->res = getBotList($this->item->bot);
     break;
   }
-  return true;
 },
 # }}}
-'/start/bots/bot' => function (object $q): bool # {{{
+'/start/bots/bot' => function(object $q): ?object # {{{
 {
   # set identifier
   if ($q->func === 'id')
@@ -178,7 +177,7 @@ return [
   return true;
 },
 # }}}
-'/start/bots/create' => function (object $q): bool # {{{
+'/start/bots/create' => function(object $q): bool # {{{
 {
   static $NEWBOT_EXP = '/^.+ t\.me\/([^.]{5,32})\..+ HTTP API:\n([^\n]{44,46})\n.+$/s';
   switch ($func) {
@@ -289,6 +288,15 @@ return [
     }
     break;
   # }}}
+  }
+  return null;
+},
+# }}}
+'/MESSAGE' => function(object $q): ?object # {{{
+{
+  switch ($q->func) {
+  case 'text':
+    break;
   }
   return null;
 },

@@ -1,7 +1,6 @@
 /arc/
 /bots/b2b
 /data/*
-/inc/sm-mustache
 /inc/config.inc
 *.vim
 *.swp
