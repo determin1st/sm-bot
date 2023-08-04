@@ -2925,7 +2925,9 @@ class BotConsoleProcess extends BotProcess # {{{
   # }}}
   function signal(bool $interrupt): void # {{{
   {
-    $this->log->infoInput('signal', ($interrupt ? 'Ctrl+C' : 'Ctrl+Break'));
+    $this->log->infoInput(
+      'signal', ($interrupt ? 'Ctrl+C' : 'Ctrl+Break')
+    );
     $this->exitcode = $interrupt
       ? self::EXIT_SIGINT
       : self::EXIT_SIGTERM;
